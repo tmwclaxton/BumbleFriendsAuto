@@ -1,0 +1,67 @@
+# Copy to config.yaml and tweak for your phone / session.
+
+# Bumble Friends / BFF package (main Bumble dating app is com.bumble.app)
+package: com.bumblebff.app
+
+# Session limits
+max_swipes: 30
+like_ratio: 1.0          # 1.0 = always like; 0.8 = like ~80% of the time
+
+# Delay between profiles after a decision (seconds), sampled uniformly
+delay_min: 2.5
+delay_max: 7.0
+
+# Spend time looking through each profile before liking/passing.
+# Each profile randomly picks a style (photos_first, scroll_first, interleave,
+# photos_only, scroll_only, skim, deep) so taps/scrolls aren't identical.
+browse:
+  enabled: true
+  look_min: 1.8          # stare at a photo
+  look_max: 4.5
+  photo_taps_min: 0      # 0 allowed — some styles skip gallery taps
+  photo_taps_max: 4
+  back_photo_chance: 0.28
+  scrolls_min: 0         # 0 allowed — some styles barely open the bio
+  scrolls_max: 3
+  read_min: 1.5          # pause after each scroll ("reading")
+  read_max: 4.0
+  scroll_back_chance: 0.35
+  pre_swipe_min: 0.5
+  pre_swipe_max: 1.4
+  photo_tap_x_right: 0.78
+  photo_tap_x_left: 0.22
+  photo_tap_y: 0.42      # keep above compliment / SuperSwipe buttons
+  scroll_x: 0.50
+  scroll_y_start: 0.72
+  scroll_y_end: 0.38
+  scroll_duration_ms_min: 350
+  scroll_duration_ms_max: 650
+  jitter: 0.02
+
+# Swipe region as fractions of screen width/height (0.0–1.0)
+# Start near the left/center of the card; end near the right edge for a like.
+swipe:
+  start_x: 0.22
+  start_y: 0.50
+  end_x_like: 0.92
+  end_x_pass: 0.08
+  end_y: 0.50
+  duration_ms_min: 180
+  duration_ms_max: 280
+  jitter: 0.02           # random offset applied to each coordinate (fraction of screen)
+
+# Optional: bring Bumble to foreground at start (does not log you in)
+bring_to_foreground: true
+
+# Where dump_ui writes artifacts
+dump_dir: dumps
+
+# Message New friends circles on the Chats tab (python -m src.messenger)
+messenger:
+  template: >-
+    Hi {name}, I'm putting together a wee group for hiking / board games / sports.
+    Does that sound like something you would be interested in?
+  max_messages: 20
+  delay_min: 2.5
+  delay_max: 5.0
+  type_pause: 0.8
