@@ -17,11 +17,12 @@ class ScreenKind(str, Enum):
     PERMISSION = "permission"
     CHATS = "chats"
     OTHER_TAB = "other_tab"
+    LOADING = "loading"
     NOT_BUMBLE = "not_bumble"
     UNKNOWN = "unknown"
 
 
-# Stop immediately on these (do not swipe through).
+# Hard stops — do not swipe through. UNKNOWN/LOADING are retried in the loop.
 STOP_KINDS = frozenset(
     {
         ScreenKind.PAYWALL,
@@ -29,7 +30,6 @@ STOP_KINDS = frozenset(
         ScreenKind.EMPTY,
         ScreenKind.PERMISSION,
         ScreenKind.NOT_BUMBLE,
-        ScreenKind.UNKNOWN,
     }
 )
 
@@ -59,6 +59,8 @@ _MATCH_PATTERNS = (
     r"both\s*have\s*\d+\s*hours",
     r"start\s*chatting",
     r"send\s*a\s*message\.\.\.",
+    r"keep\s*swiping",
+    r"say\s*hello",
 )
 
 _EMPTY_PATTERNS = (
@@ -109,7 +111,24 @@ _CARD_HINTS = (
     r"\bpass\b",
     r"\bsuper\s*like\b",
     r"\bverified\b",
+    r"\bfilters\b",
+    r"\bhe/him\b",
+    r"\bshe/her\b",
 )
+
+_CARD_RIDS = (
+    "profile_details_badgeSuperSwipe",
+    "toolbar_filter",
+)
+
+_CHATS_RIDS = (
+    "connectionItem",
+    "connections_expiringConnectionsTitle",
+    "connections_connectionsTitleValue",
+    "connectionsItem_personName",
+)
+
+_NAV_LABELS = frozenset({"profile", "plans", "people", "liked you", "chats"})
 
 
 @dataclass(frozen=True)
@@ -118,6 +137,23 @@ class ScreenState:
     package: str
     texts: tuple[str, ...]
     reason: str = ""
+
+
+def _collect_resource_ids(xml: str) -> frozenset[str]:
+    ids: set[str] = set()
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        for match in re.finditer(r'resource-id="([^"]+)"', xml):
+            rid = match.group(1).rsplit("/", 1)[-1]
+            if rid:
+                ids.add(rid)
+        return frozenset(ids)
+    for node in root.iter():
+        rid = (node.attrib.get("resource-id") or "").rsplit("/", 1)[-1]
+        if rid:
+            ids.add(rid)
+    return frozenset(ids)
 
 
 def _collect_texts(xml: str) -> tuple[str, ...]:
@@ -166,16 +202,42 @@ def _bounds_center(bounds: str) -> tuple[int, int] | None:
     return ((x1 + x2) // 2, (y1 + y2) // 2)
 
 
+def _is_sparse_dump(xml: str, texts: tuple[str, ...], rids: frozenset[str]) -> bool:
+    """True when hierarchy is mostly chrome (status bar / nav) during a transition."""
+    if "progressBar" in "".join(rids) or any("progress" in r.lower() for r in rids):
+        return True
+    if len(xml) < 4000:
+        return True
+    body = [
+        t
+        for t in texts
+        if t.strip().lower() not in _NAV_LABELS
+        and not re.fullmatch(r"\d{1,2}:\d{2}", t.strip())
+        and "percent" not in t.lower()
+        and "notification" not in t.lower()
+        and "battery" not in t.lower()
+        and "signal" not in t.lower()
+        and "k/s" not in t.lower()
+        and "b/s" not in t.lower()
+    ]
+    bumble_rids = [r for r in rids if not r.startswith("status") and r not in {"clock", "speed"}]
+    return len(body) <= 2 and not any(r in rids for r in _CARD_RIDS) and len(bumble_rids) < 8
+
+
 def classify(
     package: str,
     xml: str,
     expected_package: str = "com.bumblebff.app",
 ) -> ScreenState:
-    """Best-effort screen classification. Uncertain → UNKNOWN (stop)."""
+    """Best-effort screen classification. Uncertain → UNKNOWN (retry, don't swipe)."""
     texts = _collect_texts(xml)
+    rids = _collect_resource_ids(xml)
     blob = _joined_lower(texts)
 
     if package and not _is_bumble_package(package, expected_package):
+        # Transition dumps are often systemui-only while BFF is still focused.
+        if _is_sparse_dump(xml, texts, rids):
+            return ScreenState(ScreenKind.LOADING, package, texts, reason="sparse-systemui")
         return ScreenState(
             kind=ScreenKind.NOT_BUMBLE,
             package=package,
@@ -190,8 +252,13 @@ def classify(
         return ScreenState(ScreenKind.VERIFY, package, texts, reason=hit)
 
     # Chats / other tabs before paywall/match so list UI isn't misclassified.
-    if hit := _matches_any(blob, _CHATS_PATTERNS):
-        return ScreenState(ScreenKind.CHATS, package, texts, reason=hit)
+    if any(rid in rids for rid in _CHATS_RIDS) or (hit := _matches_any(blob, _CHATS_PATTERNS)):
+        return ScreenState(
+            ScreenKind.CHATS,
+            package,
+            texts,
+            reason="chats-rid" if any(rid in rids for rid in _CHATS_RIDS) else hit,
+        )
 
     if hit := _matches_any(blob, _EMPTY_PATTERNS):
         return ScreenState(ScreenKind.EMPTY, package, texts, reason=hit)
@@ -201,6 +268,10 @@ def classify(
 
     if hit := _matches_any(blob, _PAYWALL_PATTERNS):
         return ScreenState(ScreenKind.PAYWALL, package, texts, reason=hit)
+
+    card_rid_hits = [rid for rid in _CARD_RIDS if rid in rids]
+    if card_rid_hits:
+        return ScreenState(ScreenKind.CARD, package, texts, reason=",".join(card_rid_hits[:2]))
 
     card_hits = [p for p in _CARD_HINTS if re.search(p, blob, flags=re.IGNORECASE)]
     if card_hits:
@@ -219,8 +290,7 @@ def classify(
 
     # Avoid treating bottom-nav labels ("Liked You") as the Liked You screen.
     # Require body copy beyond the 5 nav labels.
-    nav_only = {"profile", "plans", "people", "liked you", "chats"}
-    body = [t for t in texts if t.strip().lower() not in nav_only]
+    body = [t for t in texts if t.strip().lower() not in _NAV_LABELS]
     body_blob = _joined_lower(tuple(body))
     if re.search(r"people\s+like\s+you|see\s+who\s+likes\s+you", body_blob):
         return ScreenState(ScreenKind.OTHER_TAB, package, texts, reason="liked-you-body")
@@ -230,6 +300,13 @@ def classify(
         # Plans promo can also appear on chats; chats already handled above.
         if re.search(r"\bplans\b", body_blob) and "new friends" not in body_blob:
             return ScreenState(ScreenKind.OTHER_TAB, package, texts, reason="plans-body")
+
+    # Match overlay is often just Close + a photo, no "You're friends" in the dump.
+    if re.search(r"\b(close|dismiss|keep swiping)\b", blob) and "filters" not in blob:
+        return ScreenState(ScreenKind.MATCH, package, texts, reason="close-overlay")
+
+    if _is_sparse_dump(xml, texts, rids):
+        return ScreenState(ScreenKind.LOADING, package, texts, reason="sparse-hierarchy")
 
     return ScreenState(
         kind=ScreenKind.UNKNOWN,

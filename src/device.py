@@ -87,26 +87,26 @@ def current_package(device: u2.Device, xml: str | None = None) -> str:
 
     On some Huawei devices uiautomator2's app_current() reports a stale package,
     so prefer hierarchy / dumpsys / device.info.
+    Transition frames are often systemui-only — ignore those and use dumpsys.
     """
-    if xml:
-        from_xml = _package_from_hierarchy(xml)
-        if from_xml:
-            return from_xml
-
+    from_xml = _package_from_hierarchy(xml) if xml else ""
     serial = getattr(device, "serial", None)
     from_adb = _package_from_adb_focus(serial if isinstance(serial, str) else None)
+
+    if from_xml and from_xml not in _SYSTEM_PACKAGES:
+        return from_xml
     if from_adb and from_adb not in _SYSTEM_PACKAGES:
         return from_adb
 
     info_pkg = str(device.info.get("currentPackageName") or "")
-    if info_pkg:
+    if info_pkg and info_pkg not in _SYSTEM_PACKAGES:
         return info_pkg
 
     try:
         app = device.app_current()
         return str(app.get("package") or "")
     except Exception:
-        return ""
+        return from_xml or from_adb or info_pkg
 
 
 def bring_app_foreground(device: u2.Device, package: str) -> None:
@@ -116,8 +116,18 @@ def bring_app_foreground(device: u2.Device, package: str) -> None:
 
 
 def dump_hierarchy(device: u2.Device) -> str:
-    """Return the current UI hierarchy as XML."""
-    return device.dump_hierarchy()
+    """Return the current UI hierarchy as XML. Retry briefly on ADB blips."""
+    last: Exception | None = None
+    for attempt in range(4):
+        try:
+            return device.dump_hierarchy()
+        except Exception as exc:
+            last = exc
+            log.warning("hierarchy dump failed (%s); retry %d", exc, attempt + 1)
+            time.sleep(0.6 + attempt * 0.4)
+    if last:
+        raise last
+    return ""
 
 
 def take_screenshot(device: u2.Device, path: Path) -> Path:

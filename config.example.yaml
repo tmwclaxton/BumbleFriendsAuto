@@ -56,6 +56,9 @@ bring_to_foreground: true
 # Where dump_ui writes artifacts
 dump_dir: dumps
 
+# SQLite store for people + chat progress (python -m src.sync_chats / src.store)
+db_path: data/friends.db
+
 # Message New friends circles on the Chats tab (python -m src.messenger)
 messenger:
   template: >-

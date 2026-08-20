@@ -10,6 +10,7 @@ from pathlib import Path
 
 from src.chats import (
     chat_partner_name,
+    dismiss_icebreaker_if_present,
     find_back_button,
     find_send_button,
     format_opener,
@@ -28,27 +29,33 @@ INPUT_RID = "com.bumblebff.app:id/chatInput_text"
 
 def go_to_chats(device, package: str) -> str:
     xml = dump_hierarchy(device)
+    if chat_partner_name(xml) or "chatInput_text" in xml:
+        leave_chat(device)
+        xml = dump_hierarchy(device)
     point = find_tab_point(xml, "Chats")
     if point is None:
-        width = int(device.info["displayWidth"])
-        height = int(device.info["displayHeight"])
-        point = (int(width * 0.90), int(height * 0.96))
-        log.info("Chats tab not found; tapping fallback %s", point)
-    else:
-        log.info("navigate Chats tab @ %s", point)
+        log.warning("Chats tab not visible; refusing composer-area fallback")
+        return dump_hierarchy(device)
+    log.info("navigate Chats tab @ %s", point)
     tap(device, point[0], point[1])
     wait_idle(device, 1.8)
     return dump_hierarchy(device)
 
 
-def leave_chat(device) -> None:
-    # Dismiss keyboard first so the toolbar Back is reliable.
-    try:
-        device.press("back")
-        wait_idle(device, 0.4)
-    except Exception:
-        pass
+def ensure_chats_list(device, package: str) -> str:
+    """Return hierarchy for Chats with New friends row; navigate if needed."""
     xml = dump_hierarchy(device)
+    if list_new_friends(xml) or "New friends" in xml:
+        return xml
+    return go_to_chats(device, package)
+
+
+def leave_chat(device) -> None:
+    xml = dump_hierarchy(device)
+    if "connectionItem" in xml and "chatInput_text" not in xml:
+        return
+    if not (chat_partner_name(xml) or "chatInput_text" in xml):
+        return
     back = find_back_button(xml)
     if back:
         log.info("leave chat via toolbar Back @ %s", back)
@@ -56,7 +63,14 @@ def leave_chat(device) -> None:
     else:
         log.info("leave chat via system back")
         device.press("back")
-    wait_idle(device, 1.4)
+    wait_idle(device, 1.3)
+    xml = dump_hierarchy(device)
+    if "connectionItem" in xml and "chatInput_text" not in xml:
+        return
+    if chat_partner_name(xml) or "chatInput_text" in xml:
+        log.info("still in thread after leave; system back")
+        device.press("back")
+        wait_idle(device, 1.0)
 
 
 def send_opener(device, message: str) -> bool:
@@ -89,6 +103,38 @@ def send_opener(device, message: str) -> bool:
 
     wait_idle(device, 1.0)
     return True
+
+
+def send_named_message(name: str, text: str, *, serial: str | None = None) -> tuple[bool, str]:
+    """Search-open a chat on the phone, send `text`, record it in SQLite."""
+    text = text.strip()
+    name = name.strip()
+    if not name or not text:
+        return False, "name and message required"
+
+    from src.store import add_message, connect as db_connect, db_path_from_config, upsert_chat
+    from src.sync_chats import open_chat_via_search
+
+    cfg = load_config()
+    package = str(cfg["package"])
+    device = connect(serial)
+    bring_app_foreground(device, package)
+    wait_idle(device, 0.8)
+    partner = open_chat_via_search(device, package, name)
+    if not partner:
+        return False, f"could not open chat with {name}"
+    ok = send_opener(device, text)
+    try:
+        leave_chat(device)
+    except Exception:
+        pass
+    if not ok:
+        return False, "composer/send failed — nothing sent"
+    conn = db_connect(db_path_from_config(cfg))
+    person_id = upsert_chat(conn, partner, last_from="you", last_text=text, badge="")
+    add_message(conn, person_id, "you", text)
+    conn.commit()
+    return True, f"sent to {partner}"
 
 
 def run_messenger(cfg: dict, *, dry_run: bool = False, serial: str | None = None) -> int:
@@ -129,28 +175,43 @@ def run_messenger(cfg: dict, *, dry_run: bool = False, serial: str | None = None
     skipped = 0
     # Re-query the row each time — circles disappear after you message.
     attempted: set[str] = set()
+    empty_rounds = 0
 
     while sent < max_messages:
-        xml = dump_hierarchy(device)
+        xml = ensure_chats_list(device, package)
         friends = list_new_friends(xml)
         remaining = [f for f in friends if f.name.lower() not in attempted]
         if not remaining:
-            log.info("no more new-friend circles")
-            break
+            empty_rounds += 1
+            if empty_rounds >= 2:
+                log.info("no more new-friend circles")
+                break
+            wait_idle(device, 1.0)
+            go_to_chats(device, package)
+            continue
+        empty_rounds = 0
 
         friend = remaining[0]
         attempted.add(friend.name.lower())
         log.info("open new friend: %s", friend.name)
         tap(device, friend.x, friend.y)
-        wait_idle(device, 2.0)
+        wait_idle(device, 2.2)
 
         chat_xml = dump_hierarchy(device)
         partner = chat_partner_name(chat_xml) or friend.name
+
+        ice = dismiss_icebreaker_if_present(chat_xml)
+        if ice:
+            log.info("dismiss icebreaker @ %s", ice)
+            tap(device, ice[0], ice[1])
+            wait_idle(device, 1.0)
+            chat_xml = dump_hierarchy(device)
 
         if not is_empty_outbound_chat(chat_xml):
             log.info("skip %s — chat not empty / they may have messaged", partner)
             skipped += 1
             leave_chat(device)
+            ensure_chats_list(device, package)
             continue
 
         body = format_opener(template, partner)
@@ -160,26 +221,26 @@ def run_messenger(cfg: dict, *, dry_run: bool = False, serial: str | None = None
         if not ok:
             log.warning("failed to send to %s", partner)
             leave_chat(device)
+            ensure_chats_list(device, package)
             skipped += 1
             continue
 
         sent += 1
         log.info("sent %d/%d → %s", sent, max_messages, partner)
-        leave_chat(device)
-        wait_idle(device, 1.0)
+        try:
+            from src.store import connect as db_connect, mark_opener_sent
 
-        # Ensure we're back on the Chats list with New friends visible.
-        xml = dump_hierarchy(device)
-        if not list_new_friends(xml) and "New friends" not in xml:
-            xml = go_to_chats(device, package)
+            mark_opener_sent(db_connect(), partner, body)
+        except Exception as exc:
+            log.warning("could not record opener in db: %s", exc)
+        leave_chat(device)
+        ensure_chats_list(device, package)
 
         if sent < max_messages:
             more = list_new_friends(dump_hierarchy(device))
             if not more:
-                # One more refresh — row can lag after send.
                 wait_idle(device, 1.2)
-                xml = go_to_chats(device, package)
-                more = list_new_friends(xml)
+                more = list_new_friends(go_to_chats(device, package))
             if not more:
                 log.info("no more new-friend circles")
                 break

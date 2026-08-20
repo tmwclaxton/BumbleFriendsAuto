@@ -53,6 +53,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "bring_to_foreground": True,
     "dump_dir": "dumps",
+    "db_path": "data/friends.db",
     "messenger": {
         "template": (
             "Hi {name}, I'm putting together a wee group for hiking / board games / sports. "

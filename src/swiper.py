@@ -6,11 +6,19 @@ import argparse
 import logging
 import random
 import sys
+import time
 from pathlib import Path
 
 from src.browse import browse_profile
 from src.config import load_config
-from src.device import bring_app_foreground, connect, current_package, dump_hierarchy, wait_idle
+from src.device import (
+    bring_app_foreground,
+    connect,
+    current_package,
+    dump_artifacts,
+    dump_hierarchy,
+    wait_idle,
+)
 from src.gestures import sleep_between_swipes, swipe, tap
 from src.screen import STOP_KINDS, ScreenKind, classify, find_dismiss_point, find_tab_point
 
@@ -23,10 +31,35 @@ def _screen_size(device) -> tuple[int, int]:
 
 
 def _read_state(device, package: str):
-    wait_idle(device, 0.5)
+    wait_idle(device, 0.4)
     xml = dump_hierarchy(device)
     pkg = current_package(device, xml)
     return classify(pkg, xml, expected_package=package), xml
+
+
+def _dump_unknown(device, dump_dir: Path, xml: str) -> None:
+    try:
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        (dump_dir / f"unknown-{stamp}.xml").write_text(xml, encoding="utf-8")
+        dump_artifacts(device, dump_dir, prefix="unknown")
+    except Exception as exc:
+        log.warning("could not dump unknown screen: %s", exc)
+
+
+def _is_adb_drop(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(
+        s in msg
+        for s in (
+            "not found",
+            "device offline",
+            "closed",
+            "protocol fault",
+            "connection refused",
+            "unable to connect",
+        )
+    )
 
 
 def dismiss_match(device, xml: str) -> bool:
@@ -59,6 +92,7 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
     delay_min = float(cfg["delay_min"])
     delay_max = float(cfg["delay_max"])
     swipe_cfg = dict(cfg["swipe"])
+    dump_dir = Path(str(cfg.get("dump_dir") or "dumps"))
 
     device = connect(serial)
     if cfg.get("bring_to_foreground", True):
@@ -69,6 +103,8 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
     passes = 0
     matches_dismissed = 0
     nav_attempts = 0
+    recover_attempts = 0
+    dumped_unknown = False
 
     log.info(
         "session start max_swipes=%d like_ratio=%.2f delay=%.1f–%.1fs package=%s",
@@ -81,13 +117,40 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
 
     try:
         while swipes < max_swipes:
-            state, xml = _read_state(device, package)
+            try:
+                state, xml = _read_state(device, package)
+            except Exception as exc:
+                if _is_adb_drop(exc) and recover_attempts < 5:
+                    recover_attempts += 1
+                    log.warning("adb dropped (%s); reconnect %d/5", exc, recover_attempts)
+                    time.sleep(2)
+                    device = connect(serial)
+                    bring_app_foreground(device, package)
+                    wait_idle(device, 1.5)
+                    go_to_people(device, dump_hierarchy(device))
+                    continue
+                raise
+
             log.info(
                 "screen=%s package=%s reason=%s",
                 state.kind.value,
                 state.package,
                 state.reason or "-",
             )
+
+            if state.kind in {ScreenKind.LOADING, ScreenKind.UNKNOWN}:
+                recover_attempts += 1
+                if recover_attempts == 1 and not dumped_unknown:
+                    dumped_unknown = True
+                    _dump_unknown(device, dump_dir, xml)
+                if recover_attempts >= 8:
+                    log.warning("stop:%s (%s)", state.kind.value, state.reason or "stuck")
+                    return 2
+                log.info("wait for card (%s) attempt %d", state.kind.value, recover_attempts)
+                wait_idle(device, 1.2)
+                if recover_attempts in {3, 6}:
+                    go_to_people(device, xml)
+                continue
 
             if state.kind in {ScreenKind.CHATS, ScreenKind.OTHER_TAB}:
                 if nav_attempts >= 3:
@@ -103,6 +166,7 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                     log.warning("stop:match_undismissable")
                     return 2
                 matches_dismissed += 1
+                recover_attempts = 0
                 continue
 
             if state.kind in STOP_KINDS:
@@ -114,9 +178,16 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 return 2
 
             nav_attempts = 0
+            recover_attempts = 0
             browse_profile(device, cfg.get("browse") or {})
             # Re-check after browsing — scrolling can hit empty/paywall overlays rarely.
-            state_after, xml_after = _read_state(device, package)
+            try:
+                state_after, xml_after = _read_state(device, package)
+            except Exception as exc:
+                if _is_adb_drop(exc):
+                    log.warning("adb dropped after browse; will recover next loop")
+                    continue
+                raise
             if state_after.kind == ScreenKind.MATCH:
                 log.info("dismiss_match")
                 if not dismiss_match(device, xml_after):
@@ -124,14 +195,16 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                     return 2
                 matches_dismissed += 1
                 continue
-            if state_after.kind in STOP_KINDS:
+            if state_after.kind in {ScreenKind.LOADING, ScreenKind.UNKNOWN}:
+                log.info("post-browse %s — swipe anyway", state_after.kind.value)
+            elif state_after.kind in STOP_KINDS:
                 log.warning(
                     "stop:%s (%s)",
                     state_after.kind.value,
                     state_after.reason or "after browse",
                 )
                 return 2
-            if state_after.kind in {ScreenKind.CHATS, ScreenKind.OTHER_TAB}:
+            elif state_after.kind in {ScreenKind.CHATS, ScreenKind.OTHER_TAB}:
                 nav_attempts += 1
                 go_to_people(device, xml_after)
                 continue
@@ -146,24 +219,34 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 passes += 1
                 log.info("action=pass count=%d/%d", swipes, max_swipes)
 
-            wait_idle(device, 0.9)
-            post, post_xml = _read_state(device, package)
-            if post.kind == ScreenKind.MATCH:
-                log.info("dismiss_match")
-                if dismiss_match(device, post_xml):
-                    matches_dismissed += 1
-                else:
+            wait_idle(device, 1.2)
+            settled = False
+            for _ in range(6):
+                try:
+                    post, post_xml = _read_state(device, package)
+                except Exception as exc:
+                    if _is_adb_drop(exc):
+                        log.warning("adb dropped after swipe; will recover next loop")
+                        settled = True
+                        break
+                    raise
+                if post.kind == ScreenKind.MATCH:
+                    log.info("dismiss_match")
+                    if dismiss_match(device, post_xml):
+                        matches_dismissed += 1
+                        settled = True
+                        break
                     log.warning("stop:match_undismissable")
                     return 2
-            elif post.kind in {
-                ScreenKind.PAYWALL,
-                ScreenKind.VERIFY,
-                ScreenKind.EMPTY,
-                ScreenKind.PERMISSION,
-                ScreenKind.NOT_BUMBLE,
-            }:
-                log.warning("stop:%s (%s)", post.kind.value, post.reason or "detected")
-                return 2
+                if post.kind in STOP_KINDS:
+                    log.warning("stop:%s (%s)", post.kind.value, post.reason or "detected")
+                    return 2
+                if post.kind in {ScreenKind.CARD, ScreenKind.CHATS, ScreenKind.OTHER_TAB}:
+                    settled = True
+                    break
+                wait_idle(device, 0.8)
+            if not settled:
+                log.info("post-swipe still settling — continue")
 
             if swipes < max_swipes:
                 sleep_between_swipes(delay_min, delay_max)

@@ -115,11 +115,16 @@ def is_empty_outbound_chat(xml: str) -> bool:
     has_composer = False
     has_empty_hint = False
     has_message_bubble = False
+    blob_parts: list[str] = []
 
     for node in root.iter():
         rid = node.attrib.get("resource-id") or ""
         text = (node.attrib.get("text") or "").strip()
         desc = (node.attrib.get("content-desc") or "").strip()
+        if text:
+            blob_parts.append(text)
+        if desc:
+            blob_parts.append(desc)
 
         if rid == "com.bumblebff.app:id/chatInput_text":
             has_composer = True
@@ -129,22 +134,37 @@ def is_empty_outbound_chat(xml: str) -> bool:
         elif text and _EMPTY_CHAT_RE.search(text):
             has_empty_hint = True
 
-        if "message" in rid.lower() and rid not in {
-            "com.bumblebff.app:id/chatInput_text",
-            "com.bumblebff.app:id/chatEmpty_v2_user_expiry_timer_or_display_message",
-        }:
-            if text and (
-                rid.endswith("_message")
-                or "chatMessage" in rid
-                or "Message_text" in rid
-            ):
+        # Real chat bubbles only — ignore icebreaker / input chrome.
+        if rid.startswith("com.bumblebff.app:id/chatMessage") or "ChatMessage" in rid:
+            if text:
                 has_message_bubble = True
         if desc.lower() in {"incoming message", "outgoing message"}:
             has_message_bubble = True
 
+    blob = " ".join(blob_parts).lower()
+    if re.search(r"\d+\s*hours?\s+left\s+to\s+message", blob):
+        has_empty_hint = True
+
     if has_message_bubble:
         return False
     return has_composer and has_empty_hint
+
+
+def dismiss_icebreaker_if_present(xml: str) -> tuple[int, int] | None:
+    """Tap Continue on Bumble's 'break the ice' coach mark if shown."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return None
+    for node in root.iter():
+        text = (node.attrib.get("text") or "").strip().lower()
+        if text != "continue":
+            continue
+        if (node.attrib.get("clickable") or "").lower() != "true":
+            continue
+        bounds = node.attrib.get("bounds") or ""
+        return _bounds_center(bounds)
+    return None
 
 
 def format_opener(template: str, full_name: str) -> str:
@@ -187,8 +207,8 @@ def find_back_button(xml: str) -> tuple[int, int] | None:
         if center is None:
             continue
         x, y = center
-        # Chat toolbar back is near the top; reject anything mid/lower screen.
-        if y > 500:
+        # Chat toolbar back is top-left; ignore overflow / call buttons.
+        if y > 500 or x > 280:
             continue
         cls = node.attrib.get("class") or ""
         score = 0 if "ImageButton" in cls else 1

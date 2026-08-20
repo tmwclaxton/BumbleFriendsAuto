@@ -1,5 +1,7 @@
 config.yaml
 dumps/
+data/
+*.db
 __pycache__/
 *.py[cod]
 .venv/

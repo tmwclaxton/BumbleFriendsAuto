@@ -66,6 +66,29 @@ python -m src.messenger              # actually send
 python -m src.messenger --max-messages 5
 ```
 
+### Chat inbox (SQLite)
+
+People and where each chat is up to live in `data/friends.db` (gitignored). Sync from the Chats list, then query:
+
+```bash
+python -m src.sync_chats --full   # open every chat, save full transcripts
+python -m src.store               # everyone + status
+python -m src.store needs-reply   # Your turn / last message from them
+```
+
+Status is `needs_reply`, `waiting`, `expired`, or `unknown`. Sending an opener with `src.messenger` also records that person as waiting.
+
+### Inbox dashboard
+
+Local browser UI over `friends.db`. Pick a chat, read the thread, type a reply. **Send** opens that chat on the phone and actually sends.
+
+```bash
+python -m src.dashboard
+# http://127.0.0.1:8765
+```
+
+Keep the phone unlocked and on USB. Only one send at a time.
+
 ### Useful flags
 
 | Flag | Meaning |
@@ -98,6 +121,9 @@ src/gestures.py    # Jittered like/pass swipes
 src/swiper.py      # Main swipe loop
 src/chats.py       # New friends parsing + empty-chat checks
 src/messenger.py   # Send template openers to New friends
+src/store.py       # SQLite people + chat progress
+src/sync_chats.py  # Scan Chats list into the db
+src/dashboard.py   # Local web inbox + send-on-phone
 src/dump_ui.py     # One-shot UI dump
 config.example.yaml
 ```
