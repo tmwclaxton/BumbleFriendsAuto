@@ -50,8 +50,8 @@ Docker image talks to the **host ADB server** and the USB **Pixel 7** (`29081FDH
 On the server:
 
 ```bash
-mkdir -p /opt/lgspipeline
-cd /opt/lgspipeline
+mkdir -p ~/lgspipeline
+cd ~/lgspipeline
 # Place docker-compose.yml, .env, config.yaml, cloudflared/ from deploy
 docker compose pull && docker compose up -d
 ```

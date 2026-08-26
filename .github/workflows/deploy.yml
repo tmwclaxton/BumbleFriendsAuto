@@ -58,7 +58,7 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
-            cd /opt/lgspipeline
+            cd "$HOME/lgspipeline"
             echo "${{ secrets.GHCR_PULL_TOKEN }}" | docker login ghcr.io -u tmwclaxton --password-stdin
             docker compose pull
             docker compose up -d
