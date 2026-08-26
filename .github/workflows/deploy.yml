@@ -61,6 +61,9 @@ jobs:
           sudo dpkg -i /tmp/cloudflared.deb
 
       - name: Configure SSH via Cloudflare Access
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.LGPIPELINE_SSH_KEY }}" > ~/.ssh/deploy_key
@@ -69,18 +72,16 @@ jobs:
           Host ${{ env.DEPLOY_HOST }}
             User ${{ env.DEPLOY_USER }}
             IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
             BatchMode yes
             ConnectTimeout 30
             ServerAliveInterval 30
             ServerAliveCountMax 6
             StrictHostKeyChecking accept-new
-            ProxyCommand cloudflared access ssh --hostname %h
+            ProxyCommand cloudflared access ssh --hostname %h --service-token-id ${{ secrets.CF_ACCESS_CLIENT_ID }} --service-token-secret ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
           EOF
 
       - name: Pull and restart on host
-        env:
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           ssh "${{ env.DEPLOY_HOST }}" bash -s <<EOF
