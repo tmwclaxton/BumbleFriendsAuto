@@ -9,7 +9,7 @@ from xml.etree import ElementTree as ET
 
 log = logging.getLogger(__name__)
 
-_MATCH_DESC_RE = re.compile(r"^(.+?),\s*BFF,\s*match$", re.IGNORECASE)
+_MATCH_DESC_RE = re.compile(r"^(.+?),\s*BFF,\s*(?:expired\s+)?match$", re.IGNORECASE)
 _EMPTY_CHAT_RE = re.compile(
     r"(hours?\s+left\s+to\s+message|start\s+the\s+chat|say\s+hello|send\s+a\s+message)",
     re.IGNORECASE,

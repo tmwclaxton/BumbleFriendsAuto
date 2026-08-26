@@ -19,12 +19,51 @@ from src.chats import (
 )
 from src.config import load_config
 from src.device import bring_app_foreground, connect, dump_hierarchy, wait_idle
-from src.gestures import sleep_between_swipes, tap
+from src.gestures import _adb_swipe, sleep_between_swipes, tap
 from src.screen import find_tab_point
 
 log = logging.getLogger(__name__)
 
 INPUT_RID = "com.bumblebff.app:id/chatInput_text"
+_STRIP_RID = "com.bumblebff.app:id/connections_connectionsListExpiring"
+
+
+def _strip_to_start(device) -> None:
+    rv = device(resourceId=_STRIP_RID)
+    if rv.exists:
+        try:
+            rv.fling.horiz.toBeginning()
+            wait_idle(device, 0.6)
+            return
+        except Exception:
+            pass
+    width = int(device.info["displayWidth"])
+    height = int(device.info["displayHeight"])
+    y = int(height * 0.365)
+    _adb_swipe(device, int(width * 0.18), y, int(width * 0.82), y, 480)
+    wait_idle(device, 0.45)
+
+
+def _advance_strip(device) -> None:
+    width = int(device.info["displayWidth"])
+    height = int(device.info["displayHeight"])
+    y = int(height * 0.365)
+    rv = device(resourceId=_STRIP_RID)
+    if rv.exists:
+        try:
+            rv.swipe("left", steps=45)
+            wait_idle(device, 0.45)
+            return
+        except Exception:
+            pass
+    _adb_swipe(device, int(width * 0.82), y, int(width * 0.18), y, 480)
+    wait_idle(device, 0.45)
+
+
+def _tappable_friends(xml: str, device) -> list:
+    width = int(device.info["displayWidth"])
+    friends = list_new_friends(xml)
+    return [f for f in friends if 120 <= int(f.x) <= width - 120]
 
 
 def go_to_chats(device, package: str) -> str:
@@ -147,7 +186,7 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
     return True, f"sent to {partner}"
 
 
-def run_messenger(cfg: dict, *, dry_run: bool = False, serial: str | None = None) -> int:
+def send_new_friend_openers(cfg: dict, *, dry_run: bool = False, serial: str | None = None) -> tuple[int, int]:
     package = str(cfg["package"])
     msg_cfg = dict(cfg.get("messenger") or {})
     template = str(
@@ -162,46 +201,60 @@ def run_messenger(cfg: dict, *, dry_run: bool = False, serial: str | None = None
     max_messages = int(msg_cfg.get("max_messages", 20))
     type_pause = float(msg_cfg.get("type_pause", 0.8))
 
+    already: set[str] = set()
+    try:
+        from src.store import connect as db_connect, db_path_from_config, list_people
+
+        conn = db_connect(db_path_from_config(cfg))
+        try:
+            already = {
+                str(row["name"]).lower()
+                for row in list_people(conn)
+                if int(row["opener_sent"] or 0)
+            }
+        finally:
+            conn.close()
+    except Exception:
+        log.warning("could not load opener_sent flags")
+
     device = connect(serial)
     if cfg.get("bring_to_foreground", True):
         bring_app_foreground(device, package)
 
     xml = go_to_chats(device, package)
-    friends = list_new_friends(xml)
+    _strip_to_start(device)
+    xml = dump_hierarchy(device)
+    friends = _tappable_friends(xml, device)
     log.info("new friends visible: %d — %s", len(friends), ", ".join(f.name for f in friends) or "-")
 
-    if not friends:
-        log.info("nothing to message")
-        return 0
-
     if dry_run:
-        for friend in friends[:max_messages]:
+        shown = [f for f in list_new_friends(xml) if f.name.lower() not in already][:max_messages]
+        for friend in shown:
             body = format_opener(template, friend.name)
             log.info("dry-run would message %s: %s", friend.name, body)
         log.info("dry-run done (no messages sent)")
-        return 0
+        return 0, 0
 
     sent = 0
     skipped = 0
-    # Re-query the row each time — circles disappear after you message.
-    attempted: set[str] = set()
+    attempted: set[str] = set(already)
     empty_rounds = 0
 
     while sent < max_messages:
         xml = ensure_chats_list(device, package)
-        friends = list_new_friends(xml)
-        remaining = [f for f in friends if f.name.lower() not in attempted]
-        if not remaining:
+        friends = [
+            f for f in _tappable_friends(xml, device) if f.name.lower() not in attempted
+        ]
+        if not friends:
             empty_rounds += 1
-            if empty_rounds >= 2:
+            if empty_rounds >= 6:
                 log.info("no more new-friend circles")
                 break
-            wait_idle(device, 1.0)
-            go_to_chats(device, package)
+            _advance_strip(device)
             continue
         empty_rounds = 0
 
-        friend = remaining[0]
+        friend = friends[0]
         attempted.add(friend.name.lower())
         log.info("open new friend: %s", friend.name)
         tap(device, friend.x, friend.y)
@@ -247,16 +300,38 @@ def run_messenger(cfg: dict, *, dry_run: bool = False, serial: str | None = None
         ensure_chats_list(device, package)
 
         if sent < max_messages:
-            more = list_new_friends(dump_hierarchy(device))
-            if not more:
-                wait_idle(device, 1.2)
-                more = list_new_friends(go_to_chats(device, package))
-            if not more:
-                log.info("no more new-friend circles")
-                break
             sleep_between_swipes(delay_min, delay_max)
 
     log.info("messenger done sent=%d skipped=%d", sent, skipped)
+    return sent, skipped
+
+
+def message_new_friends(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+    """Unlock, send the template opener to every empty New-friends match, sleep."""
+    from src.unlock import sleep_screen, wake_and_unlock
+
+    cfg = load_config()
+    msg = dict(cfg.get("messenger") or {})
+    msg["max_messages"] = max(int(msg.get("max_messages") or 20), 80)
+    cfg = {**cfg, "messenger": msg}
+    device = connect(serial)
+    try:
+        wake_and_unlock(device, serial=serial)
+        sent, skipped = send_new_friend_openers(cfg, serial=serial)
+        return True, f"sent opener to {sent} new friend(s), skipped {skipped}"
+    except Exception as exc:
+        log.exception("message_new_friends failed")
+        return False, str(exc)
+    finally:
+        if sleep_after:
+            try:
+                sleep_screen(device, serial=serial)
+            except Exception:
+                log.warning("could not sleep screen after messaging new friends")
+
+
+def run_messenger(cfg: dict, *, dry_run: bool = False, serial: str | None = None) -> int:
+    send_new_friend_openers(cfg, dry_run=dry_run, serial=serial)
     return 0
 
 

@@ -16,10 +16,10 @@ from starlette.responses import HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from src.config import load_config
-from src.dashboard import _load_html, _thread_payload
+from src.dashboard import _load_html, _thread_payload, people_api_payload
 from src.mcp_server import mcp
 from src.phone_queue import cancel_job, enqueue, ensure_worker, queue_snapshot
-from src.store import connect as db_connect, db_path_from_config, list_people
+from src.store import connect as db_connect, db_path_from_config
 
 log = logging.getLogger(__name__)
 
@@ -71,21 +71,7 @@ async def api_people(_: Request) -> JSONResponse:
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
-        people = []
-        for row in list_people(conn):
-            people.append(
-                {
-                    "name": row["name"],
-                    "status": row["status"] or "unknown",
-                    "last_from": row["last_from"],
-                    "last_text": row["last_text"],
-                    "preview": row["preview"],
-                    "location": row["location"],
-                    "phone_provided": bool(row["phone_provided"]),
-                    "draft": row["draft"] or "",
-                }
-            )
-        return JSONResponse({"people": people})
+        return JSONResponse(people_api_payload(conn))
     finally:
         conn.close()
 
@@ -152,6 +138,13 @@ async def api_recapture(_: Request) -> JSONResponse:
     )
 
 
+async def api_message_new_friends(_: Request) -> JSONResponse:
+    job = enqueue("message_new_friends", "")
+    return JSONResponse(
+        {"ok": True, "queued": True, "job": job, "message": "queued opener to all new friends"}
+    )
+
+
 async def api_draft(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
@@ -210,6 +203,7 @@ def build_app() -> Starlette:
         Route("/api/dismiss", api_dismiss, methods=["POST"]),
         Route("/api/refresh", api_refresh, methods=["POST"]),
         Route("/api/recapture", api_recapture, methods=["POST"]),
+        Route("/api/message-new-friends", api_message_new_friends, methods=["POST"]),
         Route("/api/draft", api_draft, methods=["POST"]),
         Route("/api/queue/cancel", api_cancel, methods=["POST"]),
         Route("/api/reply", api_reply, methods=["POST"]),

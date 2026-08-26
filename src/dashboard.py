@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from src.config import ROOT, load_config
 from src.phone_queue import cancel_job, enqueue, ensure_worker, queue_snapshot
-from src.store import connect as db_connect, db_path_from_config, list_people, list_thread
+from src.store import connect as db_connect, db_path_from_config, is_new_friend, list_people, list_thread
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +123,44 @@ def _thread_payload(conn, name: str) -> dict:
         "messages": msgs,
         "status": row["status"] or "unknown",
         "draft": row["draft"] or "",
+    }
+
+
+def people_api_payload(conn) -> dict:
+    from src.chats import format_opener
+
+    cfg = load_config()
+    template = str(
+        (cfg.get("messenger") or {}).get(
+            "template",
+            "Hi {name}, I'm putting together a wee group for hiking / board games / sports. "
+            "Does that sound like something you would be interested in?",
+        )
+    )
+    people = []
+    new_friends: list[str] = []
+    for row in list_people(conn):
+        fresh = is_new_friend(row)
+        item = {
+            "name": row["name"],
+            "status": row["status"] or "unknown",
+            "last_from": row["last_from"],
+            "last_text": row["last_text"],
+            "preview": row["preview"],
+            "location": row["location"],
+            "phone_provided": bool(row["phone_provided"]),
+            "draft": row["draft"] or "",
+            "opener_sent": bool(row["opener_sent"]),
+            "new_friend": fresh,
+            "opener": format_opener(template, str(row["name"])) if fresh else None,
+        }
+        people.append(item)
+        if fresh:
+            new_friends.append(str(row["name"]))
+    return {
+        "people": people,
+        "new_friends": new_friends,
+        "opener_template": template,
     }
 
 
@@ -235,21 +273,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/people":
             conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
             try:
-                people = []
-                for row in list_people(conn):
-                    people.append(
-                        {
-                            "name": row["name"],
-                            "status": row["status"] or "unknown",
-                            "last_from": row["last_from"],
-                            "last_text": row["last_text"],
-                            "preview": row["preview"],
-                            "location": row["location"],
-                            "phone_provided": bool(row["phone_provided"]),
-                            "draft": row["draft"] or "",
-                        }
-                    )
-                self._json({"people": people})
+                self._json(people_api_payload(conn))
             finally:
                 conn.close()
             return
@@ -324,6 +348,17 @@ class Handler(BaseHTTPRequestHandler):
                     "queued": True,
                     "job": job,
                     "message": "queued full inbox recapture",
+                }
+            )
+            return
+        if self.path == "/api/message-new-friends":
+            job = enqueue("message_new_friends", "")
+            self._json(
+                {
+                    "ok": True,
+                    "queued": True,
+                    "job": job,
+                    "message": "queued opener to all new friends",
                 }
             )
             return

@@ -160,6 +160,53 @@ def upsert_person(
     return int(row["id"])
 
 
+def next_duplicate_name(conn: sqlite3.Connection, base: str) -> str:
+    """Return 'Ada 2', 'Ada 3', … for a second person with the same first name."""
+    base = base.strip()
+    n = 2
+    while True:
+        candidate = f"{base} {n}"
+        if conn.execute("SELECT 1 FROM people WHERE name = ? COLLATE NOCASE", (candidate,)).fetchone() is None:
+            return candidate
+        n += 1
+
+
+def name_aliases(conn: sqlite3.Connection, name: str) -> list[str]:
+    rows = conn.execute(
+        "SELECT name FROM people WHERE name = ? COLLATE NOCASE OR name GLOB ?",
+        (name, f"{name} [0-9]*"),
+    ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def person_them_bodies(conn: sqlite3.Connection, name: str) -> set[str]:
+    return {
+        str(r[0])
+        for r in conn.execute(
+            """
+            SELECT m.body FROM messages m
+            JOIN people p ON p.id = m.person_id
+            WHERE p.name = ? AND m.side = 'them'
+            """,
+            (name,),
+        )
+    }
+
+
+def person_message_bodies(conn: sqlite3.Connection, name: str) -> set[str]:
+    return {
+        str(r[0])
+        for r in conn.execute(
+            """
+            SELECT m.body FROM messages m
+            JOIN people p ON p.id = m.person_id
+            WHERE p.name = ?
+            """,
+            (name,),
+        )
+    }
+
+
 def derive_status(
     *,
     badge: str = "",
@@ -355,6 +402,34 @@ def set_draft(conn: sqlite3.Connection, name: str, text: str) -> bool:
     return True
 
 
+_NEW_FRIEND_HINT = re.compile(
+    r"hours?\s+left to message|no messages yet|\bextend\b",
+    re.I,
+)
+
+
+def is_new_friend(row: sqlite3.Row | dict) -> bool:
+    """True for empty New-friends matches that have not had the opener yet."""
+    getter = row.keys() if hasattr(row, "keys") else None
+
+    def _get(key: str, default=None):
+        if getter is not None and key in getter:
+            return row[key]
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return default
+
+    if int(_get("opener_sent") or 0):
+        return False
+    blob = f"{_get('status') or ''} {_get('last_text') or ''} {_get('preview') or ''}"
+    if "expired" in blob.lower():
+        return False
+    n = int(_get("message_count") or 0)
+    if _NEW_FRIEND_HINT.search(blob.strip()):
+        return True
+    return n == 0
+
+
 def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     refresh_phone_flags(conn)
     return list(
@@ -362,7 +437,8 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             """
             SELECT p.name, p.location, p.distance, p.age, p.phone_provided,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
-                   c.opener_sent, c.draft, c.updated_at
+                   c.opener_sent, c.draft, c.updated_at,
+                   (SELECT COUNT(*) FROM messages m WHERE m.person_id = p.id) AS message_count
             FROM people p
             LEFT JOIN chats c ON c.person_id = p.id
             ORDER BY

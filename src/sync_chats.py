@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from src.chats import chat_partner_name
+from src.chats import chat_partner_name, dismiss_icebreaker_if_present, is_empty_outbound_chat, list_new_friends
 from src.config import load_config
 from src.device import bring_app_foreground, connect, dump_hierarchy, wait_idle
 from src.gestures import _adb_swipe, tap
@@ -19,7 +19,11 @@ from src.screen import find_tab_point
 from src.store import (
     connect as db_connect,
     db_path_from_config,
+    name_aliases,
     names_with_messages,
+    next_duplicate_name,
+    person_message_bodies,
+    person_them_bodies,
     replace_thread,
     upsert_chat,
 )
@@ -30,7 +34,7 @@ _CHROME = re.compile(
     r"(your turn to message|their turn to message|hours to reply|"
     r"match has expired|conversation expired|delivered|^seen$|"
     r"need more time|extend this match|not sure what to say|"
-    r"let.?s help you break the ice)",
+    r"let.?s help you break the ice|^extend$|hours?\s+left to message)",
     re.I,
 )
 _OPENER = re.compile(r"putting together a wee group", re.I)
@@ -271,7 +275,20 @@ def recover_to_list(device, package: str) -> str:
         bring_app_foreground(device, package)
         wait_idle(device, 0.8)
         xml = dump_hierarchy(device)
-    log.warning("could not reach Chats list")
+    log.warning("could not reach Chats list — restarting app")
+    try:
+        device.app_stop(package)
+        wait_idle(device, 0.5)
+        device.app_start(package)
+        wait_idle(device, 2.2)
+        bring_app_foreground(device, package)
+        wait_idle(device, 1.0)
+        _tap_chats_tab(device)
+        xml = dump_hierarchy(device)
+        if _on_list(xml):
+            return xml
+    except Exception:
+        log.exception("app restart failed")
     return xml
 
 
@@ -286,28 +303,68 @@ def _search_field(device):
     return None
 
 
-def _ensure_inbox_all(device, xml: str) -> str:
-    """Tap the All filter chip when the inbox is on Your turn / Unread."""
+_INBOX_FILTERS = ("Recent", "Unread", "Nearby")
+_STRIP_RID = "com.bumblebff.app:id/connections_connectionsListExpiring"
+
+
+def _inbox_filter_label(xml: str) -> str:
     try:
         root = ET.fromstring(xml)
     except ET.ParseError:
-        return xml
-    all_pt = None
-    need_all = False
+        return ""
     for node in root.iter():
-        text = (node.attrib.get("text") or "").strip().lower()
-        selected = (node.attrib.get("selected") or "").lower() == "true"
-        clickable = (node.attrib.get("clickable") or "").lower() == "true"
-        if text in {"your turn", "unread", "expired"} and selected:
-            need_all = True
-        if text == "all" and clickable:
-            all_pt = _bounds_center(node.attrib.get("bounds") or "")
-    if all_pt and need_all:
-        log.info("inbox filter → All @ %s", all_pt)
-        tap(device, all_pt[0], all_pt[1])
-        wait_idle(device, 1.0)
+        rid = node.attrib.get("resource-id") or ""
+        if rid.endswith("connections_filterText"):
+            return (node.attrib.get("text") or "").strip()
+    return ""
+
+
+def _set_inbox_filter(device, wanted: str) -> str:
+    """Open the Chats filter menu and pick Unread / Recent / Nearby."""
+    xml = dump_hierarchy(device)
+    current = _inbox_filter_label(xml)
+    if current.lower() == wanted.lower():
+        return xml
+    icon = None
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        root = None
+    if root is not None:
+        for node in root.iter():
+            rid = node.attrib.get("resource-id") or ""
+            if rid.endswith("connections_filterIcon"):
+                icon = _bounds_center(node.attrib.get("bounds") or "")
+                break
+    if icon:
+        log.info("inbox filter %s → %s", current or "?", wanted)
+        tap(device, icon[0], icon[1])
+        wait_idle(device, 1.2)
+        xml = dump_hierarchy(device)
+        target = f"Filter conversations - {wanted}"
+        for node in ET.fromstring(xml).iter():
+            desc = (node.attrib.get("content-desc") or "").strip()
+            if desc.lower() != target.lower():
+                continue
+            point = _bounds_center(node.attrib.get("bounds") or "")
+            if not point:
+                continue
+            tap(device, point[0], point[1])
+            wait_idle(device, 1.0)
+            xml = dump_hierarchy(device)
+            log.info("inbox filter now %s", _inbox_filter_label(xml) or wanted)
+            return xml
+        log.warning("filter option %s not in menu — backing out", wanted)
+        device.press("back")
+        wait_idle(device, 0.6)
         return dump_hierarchy(device)
+    log.warning("inbox filter icon missing")
     return xml
+
+
+def _ensure_inbox_all(device, xml: str) -> str:
+    """Keep the inbox on Recent (Unread/Nearby hide conversations)."""
+    return _set_inbox_filter(device, "Recent")
 
 
 def discover_via_letter_search(device, package: str) -> list[dict[str, str]]:
@@ -356,6 +413,75 @@ def discover_via_letter_search(device, package: str) -> list[dict[str, str]]:
             wait_idle(device, 0.35)
     recover_to_list(device, package)
     log.info("letter-search indexed %d people", len(seen))
+    return list(seen.values())
+
+
+_SEARCH_WORDS = (
+    "hi",
+    "hey",
+    "you",
+    "the",
+    "hiking",
+    "group",
+    "london",
+    "thanks",
+    "yes",
+    "whatsapp",
+    "number",
+    "free",
+    "based",
+    "weekend",
+    "hike",
+    "board",
+)
+
+
+def discover_via_message_search(device, package: str) -> list[dict[str, str]]:
+    """Chats search matches message text — scrape result rows for hidden threads."""
+    width, height = _screen_size(device)
+    seen: dict[str, dict[str, str]] = {}
+    for term in _SEARCH_WORDS:
+        try:
+            _ensure_search(device, package)
+            field = _search_field(device)
+            if field is None:
+                log.warning("search field missing for %r", term)
+                recover_to_list(device, package)
+                continue
+            field.click()
+            wait_idle(device, 0.25)
+            field.set_text(term)
+            wait_idle(device, 1.3)
+            last_key: tuple[str, ...] | None = None
+            stagnant = 0
+            for _ in range(25):
+                xml = dump_hierarchy(device)
+                rows = _list_rows(xml, min_top=0, height=height, width=width)
+                for row in rows:
+                    name = str(row["name"])
+                    if name not in seen:
+                        seen[name] = {
+                            "name": name,
+                            "badge": str(row.get("badge") or ""),
+                            "preview": str(row.get("preview") or ""),
+                        }
+                        log.info("search-seen %s via %r", name, term)
+                key = tuple(str(r["name"]) for r in rows)
+                if key == last_key:
+                    stagnant += 1
+                else:
+                    stagnant = 0
+                    last_key = key
+                if stagnant >= 4 or not rows:
+                    break
+                _scroll_inbox(device, width, height, older=True, distance=int(height * 0.18))
+        except Exception as exc:
+            log.warning("message search %r failed: %s", term, exc)
+        finally:
+            device.press("back")
+            wait_idle(device, 0.3)
+    recover_to_list(device, package)
+    log.info("message-search indexed %d people", len(seen))
     return list(seen.values())
 
 
@@ -513,8 +639,6 @@ def scan_chat_list(device, package: str) -> list[dict[str, str]]:
     width = int(device.info["displayWidth"])
     height = int(device.info["displayHeight"])
     xml = _go_top_of_inbox(device, package, width, height)
-    xml = _ensure_inbox_all(device, xml)
-    _go_top_of_inbox(device, package, width, height)
 
     seen: dict[str, dict[str, str]] = {}
     stagnant = 0
@@ -553,21 +677,87 @@ def _usable_list_band(height: int, tab_top: int | None = None) -> tuple[int, int
     return lo, hi, aim
 
 
+def _row_already_saved(conn, row: dict) -> bool:
+    """True if this list row is the same person we already stored (not a namesake)."""
+    name = str(row["name"])
+    preview = str(row.get("preview") or "").strip()
+    aliases = name_aliases(conn, name)
+    if not aliases:
+        return False
+    if not preview:
+        return False
+    needle = preview[:48]
+    for alias in aliases:
+        texts = person_message_bodies(conn, alias)
+        row_chat = conn.execute(
+            """
+            SELECT c.last_text, c.preview FROM chats c
+            JOIN people p ON p.id = c.person_id WHERE p.name = ?
+            """,
+            (alias,),
+        ).fetchone()
+        if row_chat:
+            texts.update(t for t in row_chat if t)
+        blob = "\n".join(texts)
+        if needle and needle in blob:
+            return True
+    return False
+
+
+def _save_name_for_thread(conn, partner: str, thread: list[tuple[str, str]]) -> str:
+    """Keep 'David' if their bubbles match; otherwise store as 'David 2'.
+
+    Ignore the shared opener template — every namesake starts with the same Hi {name} line.
+    """
+    aliases = name_aliases(conn, partner)
+    if not aliases:
+        return partner
+    them_new = {body for side, body in thread if side == "them"}
+    you_new = {body for side, body in thread if side == "you" and not _OPENER.search(body)}
+    for alias in aliases:
+        them_old = person_them_bodies(conn, alias)
+        if them_new and them_old and them_new & them_old:
+            return alias
+        if not them_new and not them_old:
+            you_old = {b for b in person_message_bodies(conn, alias) if not _OPENER.search(b)}
+            if you_new and you_old and you_new & you_old:
+                return alias
+            row = conn.execute(
+                """
+                SELECT c.last_text FROM chats c
+                JOIN people p ON p.id = c.person_id WHERE p.name = ?
+                """,
+                (alias,),
+            ).fetchone()
+            blob = (row[0] or "").lower() if row else ""
+            if "hours left to message" in blob or "no messages yet" in blob:
+                return alias
+    if any(a.casefold() == partner.casefold() for a in aliases):
+        return next_duplicate_name(conn, partner)
+    return partner
+
+
 def _pick_row(
     rows: list[dict],
     done: set[str],
     *,
     height: int,
     tab_top: int | None = None,
+    skip_row=None,
 ) -> dict | None:
     """Prefer a mid-screen unfinished row; otherwise any row in the list well.
 
     Top-of-inbox rows (Pixel ~y=1100 on 2400) can never be scrolled into a
     Honor-style 0.55–0.82 band, so refusing those left Nollan/Kavya unopened.
     """
-    pending = [r for r in rows if r["name"] not in done and not r.get("clipped")]
+    def _skip(row: dict) -> bool:
+        if skip_row is not None:
+            return bool(skip_row(row))
+        return str(row["name"]) in done
+
+    pending = [r for r in rows if not _skip(r) and not r.get("clipped")]
     if not pending:
-        pending = [r for r in rows if r["name"] not in done]
+        pending = [r for r in rows if not _skip(r)]
     if not pending:
         return None
     prefer_lo, prefer_hi, aim = _tap_zone(height)
@@ -659,12 +849,21 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
     _ensure_inbox_all(device, xml)
     xml = _go_top_of_inbox(device, package, width, height)
 
-    done = set() if recapture else names_with_messages(conn)
+    opened: set[str] = set()
     misses: dict[str, int] = {}
     if recapture:
         log.info("recapture: opening every inbox row (not skipping saved chats)")
-    elif done:
-        log.info("resume: skipping %d already-saved chats", len(done))
+    else:
+        log.info("resume: skip rows whose preview already lives in SQLite")
+
+    def _skip(row: dict) -> bool:
+        key = f"{row['name']}|{str(row.get('preview') or '')[:80]}"
+        if key in opened:
+            return True
+        if recapture:
+            return False
+        return _row_already_saved(conn, row)
+
     stagnant = 0
     captured = 0
     last_inbox_key: tuple[str, ...] | None = None
@@ -678,6 +877,8 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
             log.info("inbox: %s", ", ".join(f"{r['name']}@{r['y']}" for r in rows) or "(none)")
             for seen in rows:
+                if name_aliases(conn, str(seen["name"])) and not _row_already_saved(conn, seen):
+                    continue
                 badge = str(seen["badge"] or "")
                 upsert_chat(
                     conn,
@@ -690,14 +891,14 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             conn.commit()
             tab_top = _tab_bar_top(xml, height)
             key = tuple(str(r["name"]) for r in rows)
-            row = _pick_row(rows, done, height=height, tab_top=tab_top)
+            row = _pick_row(rows, set(), height=height, tab_top=tab_top, skip_row=_skip)
             if row is None:
                 if key == last_inbox_key:
                     stagnant += 1
                 else:
                     stagnant = 0
                     last_inbox_key = key
-                pending = [r for r in rows if r["name"] not in done]
+                pending = [r for r in rows if not _skip(r)]
                 if stagnant >= 6:
                     if pending:
                         row = min(
@@ -721,6 +922,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
                     continue
             last_inbox_key = key
             stagnant = 0
+            row_key = f"{row['name']}|{str(row.get('preview') or '')[:80]}"
             _open_named_chat(device, str(row["name"]), int(row["x"]), int(row["y"]))
             wait_idle(device, 1.5)
             xml = _wait_thread(device)
@@ -743,23 +945,15 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
                         last_text=str(row["preview"]) or "expired",
                     )
                     conn.commit()
-                    done.add(str(row["name"]))
+                    opened.add(row_key)
                     recover_to_list(device, package)
                     continue
-                misses[str(row["name"])] = misses.get(str(row["name"]), 0) + 1
-                log.warning("tap missed %s (%d)", row["name"], misses[str(row["name"])])
+                misses[row_key] = misses.get(row_key, 0) + 1
+                log.warning("tap missed %s (%d)", row["name"], misses[row_key])
                 recover_to_list(device, package)
-                if misses[str(row["name"])] >= 2:
+                if misses[row_key] >= 2:
                     log.warning("giving up opening %s — indexing from list", row["name"])
-                    upsert_chat(
-                        conn,
-                        str(row["name"]),
-                        preview=str(row["preview"]),
-                        badge=str(row["badge"]),
-                        last_text=str(row["preview"]) or None,
-                    )
-                    conn.commit()
-                    done.add(str(row["name"]))
+                    opened.add(row_key)
                 else:
                     _adb_swipe(device, width // 2, int(height * 0.72), width // 2, int(height * 0.52), 280)
                     wait_idle(device, 0.5)
@@ -771,9 +965,9 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             thread = capture_thread(device, width, height, expected=partner)
             if not thread:
                 log.warning("empty/wrong transcript for %s — not saving", partner)
-                misses[str(row["name"])] = misses.get(str(row["name"]), 0) + 1
-                if misses[str(row["name"])] >= 2:
-                    done.add(str(row["name"]))
+                misses[row_key] = misses.get(row_key, 0) + 1
+                if misses[row_key] >= 2:
+                    opened.add(row_key)
                 recover_to_list(device, package)
                 continue
             last_from = thread[-1][0]
@@ -782,9 +976,12 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             if "match has expired" in banner or "conversation expired" in banner:
                 last_from = last_from or "them"
                 last_text = last_text or "expired"
+            save_as = _save_name_for_thread(conn, partner, thread)
+            if save_as != partner:
+                log.info("namesake %s stored as %s", partner, save_as)
             person_id = upsert_chat(
                 conn,
-                partner,
+                save_as,
                 preview=str(row["preview"]),
                 badge=str(row["badge"]),
                 last_from=last_from,
@@ -793,14 +990,13 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             )
             replace_thread(conn, person_id, thread)
             conn.commit()
-            done.add(str(row["name"]))
-            done.add(partner)
+            opened.add(row_key)
             captured += 1
-            log.info("saved %s msgs=%d last=%s", partner, len(thread), last_from)
+            log.info("saved %s msgs=%d last=%s", save_as, len(thread), last_from)
             recover_to_list(device, package)
             xml = dump_hierarchy(device)
             if not _on_list(xml):
-                log.warning("not on inbox after %s", partner)
+                log.warning("not on inbox after %s", save_as)
                 recover_to_list(device, package)
         except Exception as exc:
             log.warning("capture error (%s); reconnect", exc)
@@ -1031,6 +1227,201 @@ def refresh_named_chat(name: str, *, serial: str | None = None) -> tuple[bool, s
     return False, f"could not recapture {name} — keep the phone unlocked on Chats"
 
 
+def _strip_gutter_y(xml: str, height: int) -> int:
+    """Y just below the New-friends rings so a swipe doesn't tap a face."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return int(height * 0.365)
+    for node in root.iter():
+        rid = node.attrib.get("resource-id") or ""
+        if rid != _STRIP_RID:
+            continue
+        bounds = node.attrib.get("bounds") or ""
+        match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+        if match:
+            return max(int(match.group(2)) + 8, int(match.group(4)) - 14)
+    return int(height * 0.365)
+
+
+def _scroll_new_friends_strip(device, xml: str, width: int, height: int, *, toward_end: bool) -> None:
+    """toward_end=True reveals names to the right (finger moves left)."""
+    y = _strip_gutter_y(xml, height)
+    rv = device(resourceId=_STRIP_RID)
+    if rv.exists:
+        try:
+            rv.swipe("left" if toward_end else "right", steps=45)
+            wait_idle(device, 0.45)
+            return
+        except Exception:
+            pass
+    if toward_end:
+        _adb_swipe(device, int(width * 0.82), y, int(width * 0.18), y, 480)
+    else:
+        _adb_swipe(device, int(width * 0.18), y, int(width * 0.82), y, 480)
+    wait_idle(device, 0.45)
+
+
+def collect_new_friend_names(device, package: str) -> list[str]:
+    """Swipe the New-friends strip both ways and return every unique name."""
+    width, height = _screen_size(device)
+    xml = _go_top_of_inbox(device, package, width, height)
+    rv = device(resourceId=_STRIP_RID)
+    if rv.exists:
+        try:
+            rv.fling.horiz.toBeginning()
+            wait_idle(device, 0.6)
+        except Exception:
+            _scroll_new_friends_strip(device, xml, width, height, toward_end=False)
+            _scroll_new_friends_strip(device, xml, width, height, toward_end=False)
+    seen: dict[str, None] = {}
+    stagnant = 0
+    last_key: tuple[str, ...] | None = None
+    for _ in range(40):
+        xml = dump_hierarchy(device)
+        if not _on_list(xml):
+            xml = recover_to_list(device, package)
+        friends = list_new_friends(xml)
+        for friend in friends:
+            if friend.name not in seen:
+                seen[friend.name] = None
+                log.info("strip seen %s @%s", friend.name, friend.x)
+        key = tuple(f.name for f in friends)
+        if key == last_key:
+            stagnant += 1
+        else:
+            stagnant = 0
+            last_key = key
+        if stagnant >= 5:
+            break
+        _scroll_new_friends_strip(device, xml, width, height, toward_end=True)
+    log.info("new-friend strip unique=%d: %s", len(seen), ", ".join(seen))
+    return list(seen)
+
+
+def _people_names(conn) -> set[str]:
+    return {str(r[0]) for r in conn.execute("SELECT name FROM people")}
+
+
+def _new_friend_already_saved(conn, name: str) -> bool:
+    if name in names_with_messages(conn):
+        return True
+    row = conn.execute(
+        """
+        SELECT c.last_text FROM chats c
+        JOIN people p ON p.id = c.person_id WHERE p.name = ?
+        """,
+        (name,),
+    ).fetchone()
+    blob = (row[0] or "").lower() if row else ""
+    return bool(
+        blob
+        and (
+            "hours left to message" in blob
+            or "expired" in blob
+            or "no messages yet" in blob
+        )
+    )
+
+
+def capture_new_friend_chats(device, conn, package: str) -> int:
+    """Open every New-friends carousel match and save the thread (often empty)."""
+    width, height = _screen_size(device)
+    xml = _go_top_of_inbox(device, package, width, height)
+    already = _people_names(conn)
+    captured = 0
+    attempted: set[str] = set()
+    stagnant_rounds = 0
+    rv = device(resourceId=_STRIP_RID)
+    if rv.exists:
+        try:
+            rv.fling.horiz.toBeginning()
+            wait_idle(device, 0.6)
+        except Exception:
+            _scroll_new_friends_strip(device, xml, width, height, toward_end=False)
+    for _ in range(80):
+        xml = recover_to_list(device, package)
+        if not _on_list(xml):
+            bring_app_foreground(device, package)
+            wait_idle(device, 1.0)
+            device.app_stop(package)
+            wait_idle(device, 0.5)
+            device.app_start(package)
+            wait_idle(device, 2.2)
+            xml = recover_to_list(device, package)
+        visible = list_new_friends(xml)
+        friends = [
+            f
+            for f in visible
+            if 120 <= int(f.x) <= width - 120 and f.name not in attempted
+        ]
+        if not friends:
+            _scroll_new_friends_strip(device, xml, width, height, toward_end=True)
+            xml = dump_hierarchy(device)
+            friends = [
+                f
+                for f in list_new_friends(xml)
+                if 120 <= int(f.x) <= width - 120 and f.name not in attempted
+            ]
+            if not friends:
+                stagnant_rounds += 1
+                if stagnant_rounds >= 8:
+                    break
+                continue
+        stagnant_rounds = 0
+        friend = friends[0]
+        attempted.add(friend.name)
+        if _new_friend_already_saved(conn, friend.name):
+            log.info("new-friend %s already captured", friend.name)
+            continue
+        log.info("new-friend tap %s @ (%s,%s)", friend.name, friend.x, friend.y)
+        tap(device, friend.x, friend.y)
+        wait_idle(device, 1.8)
+        xml = _wait_thread(device)
+        ice = dismiss_icebreaker_if_present(xml)
+        if ice:
+            tap(device, ice[0], ice[1])
+            wait_idle(device, 0.8)
+            xml = dump_hierarchy(device)
+        partner = chat_partner_name(xml) or friend.name
+        if partner in already and partner != friend.name:
+            log.info("new-friend %s already indexed as %s — skip", friend.name, partner)
+            recover_to_list(device, package)
+            continue
+        if is_empty_outbound_chat(xml) or re.search(r"hours?\s+left to message", _texts(xml), re.I):
+            thread = []
+        else:
+            thread = capture_thread(device, width, height, expected=partner)
+        last_text = thread[-1][1] if thread else None
+        last_from = thread[-1][0] if thread else None
+        if not thread and is_empty_outbound_chat(xml):
+            blob = _texts(xml)
+            hours = re.search(r"\d+\s*hours?\s+left to message", blob, re.I)
+            last_text = hours.group(0) if hours else "(no messages yet)"
+        person_id = upsert_chat(
+            conn,
+            partner,
+            preview=last_text or "",
+            last_from=last_from,
+            last_text=last_text,
+        )
+        if thread:
+            replace_thread(conn, person_id, thread)
+        conn.commit()
+        already.add(partner)
+        already.add(friend.name)
+        captured += 1
+        log.info(
+            "saved new-friend %s msgs=%d last=%s",
+            partner,
+            len(thread),
+            last_from,
+        )
+        recover_to_list(device, package)
+    log.info("new-friend chats captured=%d attempted=%d", captured, len(attempted))
+    return captured
+
+
 def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
     """Unlock (if PIN set), open every Chats row, save transcripts, optionally sleep."""
     from src.unlock import sleep_screen, wake_and_unlock
@@ -1057,19 +1448,29 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
                     )
                 conn.commit()
 
-            indexed = scan_chat_list(device, package)
-            _index(indexed)
-            log.info("indexed %d inbox rows", len(indexed))
-            extra = discover_via_letter_search(device, package)
-            _index(extra)
-            total_names = conn.execute("SELECT count(*) FROM people").fetchone()[0]
-            log.info("after letter-search: %d people in db (%d new from search)", total_names, max(0, total_names - len(indexed)))
+            indexed_names: set[str] = set()
+            for filt in _INBOX_FILTERS:
+                _set_inbox_filter(device, filt)
+                rows = scan_chat_list(device, package)
+                _index(rows)
+                indexed_names.update(str(r["name"]) for r in rows)
+                log.info("indexed %d inbox rows via %s (union %d)", len(rows), filt, len(indexed_names))
+            strip_names = collect_new_friend_names(device, package)
+            for name in strip_names:
+                indexed_names.add(name)
+            searched = discover_via_message_search(device, package)
+            _index(searched)
+            indexed_names.update(str(r["name"]) for r in searched)
+            log.info("union after search %d", len(indexed_names))
+            conn.commit()
+            n_new = capture_new_friend_chats(device, conn, package)
+            _set_inbox_filter(device, "Recent")
             n = capture_all_chats(device, conn, package, recapture=True)
             n_search = fill_via_search(device, conn, package)
+            total_names = conn.execute("SELECT count(*) FROM people").fetchone()[0]
         finally:
             conn.close()
-        people_n = total_names
-        msg = f"recaptured {n} chats ({people_n} people, {n_search} via search)"
+        msg = f"recaptured {n} list + {n_new} new-friend chats ({total_names} people, {n_search} via search)"
         log.info(msg)
         return True, msg
     except Exception as exc:
@@ -1101,6 +1502,9 @@ def fill_via_search(device, conn, package: str) -> int:
         blob = f"{row[0] or ''} {row[1] or ''}".lower() if row else ""
         if "expired" in blob:
             log.info("search-fill skip expired %s", name)
+            continue
+        if "hours left to message" in blob or "(no messages yet)" in blob:
+            log.info("search-fill skip empty new-friend %s", name)
             continue
         targets.append(name)
     log.info("search-fill %d people", len(targets))

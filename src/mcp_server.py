@@ -10,7 +10,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from src.config import load_config
 from src.phone_queue import enqueue, ensure_worker, get_job, job_poll_payload, queue_snapshot
-from src.store import connect as db_connect, db_path_from_config, list_needs_reply, list_people, list_thread
+from src.store import connect as db_connect, db_path_from_config, is_new_friend, list_needs_reply, list_people, list_thread
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +62,8 @@ def list_inbox_people() -> dict:
                     "preview": row["preview"],
                     "phone_provided": bool(row["phone_provided"]),
                     "draft": row["draft"] or "",
+                    "opener_sent": bool(row["opener_sent"]),
+                    "new_friend": is_new_friend(row),
                 }
             )
         return {"count": len(people), "people": people}
@@ -157,6 +159,20 @@ def start_recapture_inbox() -> dict:
         "status": job["status"],
         "suggested_wait_seconds": 15,
         "hint": "Poll get_job every 10–15s until done/error. Do not treat queued/running as success.",
+    }
+
+
+@mcp.tool()
+def start_message_new_friends() -> dict:
+    """Enqueue sending the template opener to every empty New-friends match on the phone. Returns job_id — poll get_job. Only use when the user clearly asked to message all new friends."""
+    ensure_worker()
+    job = enqueue("message_new_friends", "")
+    return {
+        "ok": True,
+        "job_id": job["id"],
+        "status": job["status"],
+        "suggested_wait_seconds": 15,
+        "hint": "Poll get_job until status is done or error. Do not treat queued/running as success.",
     }
 
 

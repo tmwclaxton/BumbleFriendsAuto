@@ -18,27 +18,37 @@
     --exp: #6b6570;
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
   body {
     font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
     background: var(--bg);
     color: var(--text);
     display: grid;
     grid-template-columns: 320px 1fr;
+    grid-template-rows: 100%;
+    min-height: 0;
   }
   aside {
     border-right: 1px solid var(--line);
     display: flex;
     flex-direction: column;
     min-height: 0;
+    height: 100%;
+    overflow: hidden;
   }
   header {
+    flex-shrink: 0;
     padding: 16px 16px 10px;
     border-bottom: 1px solid var(--line);
   }
   header h1 { margin: 0; font-size: 18px; font-weight: 650; }
   header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
   #filter {
+    flex-shrink: 0;
     width: calc(100% - 24px);
     margin: 10px 12px;
     padding: 8px 10px;
@@ -47,7 +57,13 @@
     background: var(--bg);
     color: var(--text);
   }
-  #list { overflow: auto; flex: 1; }
+  #sidebar-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  #list { overflow: visible; }
   .row {
     display: block;
     width: 100%;
@@ -75,8 +91,42 @@
   .needs_reply { background: #3a2218; color: var(--need); }
   .waiting { background: #17332c; color: var(--wait); }
   .expired { background: #2a272c; color: var(--exp); }
+  .new { background: #2a2438; color: #c9b6ff; }
   .phone { background: #1d2a3a; color: #8ec8ff; }
-  main { display: flex; flex-direction: column; min-height: 0; }
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 14px 6px;
+    font-size: 11px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #new-wrap { border-bottom: 1px solid var(--line); }
+  #new-wrap[hidden] { display: none; }
+  #msg-all {
+    text-transform: none;
+    letter-spacing: 0;
+    font: 12px/1.2 inherit;
+    background: var(--you);
+    color: #1a1508;
+    border: 0;
+    border-radius: 8px;
+    padding: 5px 10px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  #msg-all:hover { filter: brightness(1.08); }
+  #msg-all:disabled { opacity: .45; cursor: default; }
+  main {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+  }
   #thread-head {
     padding: 16px 20px;
     border-bottom: 1px solid var(--line);
@@ -113,6 +163,7 @@
   #refresh-chat:disabled { opacity: .45; cursor: default; }
   #msgs {
     flex: 1;
+    min-height: 0;
     overflow: auto;
     padding: 18px 22px 28px;
     display: flex;
@@ -136,7 +187,7 @@
     color: var(--muted);
     font-size: 12px;
   }
-  #composer-wrap { position: relative; }
+  #composer-wrap { position: relative; flex-shrink: 0; }
   #composer {
     display: flex;
     gap: 8px;
@@ -237,7 +288,16 @@
     <p id="meta">Loading…</p>
   </header>
   <input id="filter" placeholder="Filter names" autocomplete="off"/>
-  <div id="list"></div>
+  <div id="sidebar-scroll">
+    <div id="new-wrap" hidden>
+      <div class="section-head">
+        <span id="new-label">New friends</span>
+        <button type="button" id="msg-all">Message all</button>
+      </div>
+      <div id="new-list"></div>
+    </div>
+    <div id="list"></div>
+  </div>
 </aside>
 <main>
   <div id="thread-head"><h2>Select a chat</h2></div>
@@ -255,6 +315,10 @@
 </main>
 <script>
 const listEl = document.getElementById("list");
+const newWrap = document.getElementById("new-wrap");
+const newListEl = document.getElementById("new-list");
+const newLabel = document.getElementById("new-label");
+const msgAllBtn = document.getElementById("msg-all");
 const msgsEl = document.getElementById("msgs");
 const headEl = document.getElementById("thread-head");
 const metaEl = document.getElementById("meta");
@@ -265,6 +329,7 @@ const emojiPanel = document.getElementById("emoji-panel");
 const statusEl = document.getElementById("status");
 const queueEl = document.getElementById("queue");
 let people = [];
+let openerTemplate = "";
 let current = null;
 let lastFinished = 0;
 let seenFinished = null;
@@ -302,9 +367,11 @@ async function loadPeople() {
   const res = await fetch("/api/people");
   const data = await res.json();
   people = data.people || [];
+  openerTemplate = data.opener_template || "";
   const n = people.filter(p => p.status === "needs_reply").length;
   const phones = people.filter(p => p.phone_provided).length;
-  metaEl.textContent = people.length + " people · " + n + " need a reply · " + phones + " phone provided";
+  const fresh = people.filter(p => p.new_friend).length;
+  metaEl.textContent = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + phones + " phone provided";
   renderList();
 }
 
@@ -322,23 +389,37 @@ function setChatUrl(name, push) {
   else history.replaceState({chat: name}, "", next);
 }
 
+function rowHtml(p) {
+  const on = current === p.name ? " on" : "";
+  const snip = esc(p.last_text || p.preview || "");
+  const st = p.new_friend ? "new" : (p.status || "unknown");
+  const stLabel = p.new_friend ? "new friend" : st.replace("_"," ");
+  const href = "?chat=" + encodeURIComponent(p.name);
+  const phone = p.phone_provided
+    ? '<span class="tag phone">phone provided</span>'
+    : "";
+  return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
+    <div><span class="name">${esc(p.name)}</span><span class="tag ${st}">${esc(stLabel)}</span>${phone}</div>
+    <div class="snip">${snip}</div>
+  </a>`;
+}
+
 function renderList() {
   const q = document.getElementById("filter").value.trim().toLowerCase();
-  listEl.innerHTML = people
-    .filter(p => !q || p.name.toLowerCase().includes(q))
-    .map(p => {
-      const on = current === p.name ? " on" : "";
-      const snip = esc(p.last_text || p.preview || "");
-      const st = p.status || "unknown";
-      const href = "?chat=" + encodeURIComponent(p.name);
-      const phone = p.phone_provided
-        ? '<span class="tag phone">phone provided</span>'
-        : "";
-      return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
-        <div><span class="name">${esc(p.name)}</span><span class="tag ${st}">${esc(st.replace("_"," "))}</span>${phone}</div>
-        <div class="snip">${snip}</div>
-      </a>`;
-    }).join("");
+  const match = p => !q || p.name.toLowerCase().includes(q);
+  const fresh = people.filter(p => p.new_friend && match(p));
+  const rest = people.filter(p => !p.new_friend && match(p));
+  if (fresh.length) {
+    newWrap.hidden = false;
+    newLabel.textContent = "New friends · " + fresh.length;
+    msgAllBtn.disabled = false;
+    newListEl.innerHTML = fresh.map(rowHtml).join("");
+  } else {
+    newWrap.hidden = true;
+    msgAllBtn.disabled = true;
+    newListEl.innerHTML = "";
+  }
+  listEl.innerHTML = rest.map(rowHtml).join("");
 }
 
 function isDayLabel(body) {
@@ -445,12 +526,29 @@ window.addEventListener("beforeunload", persistCurrentDraft);
 document.addEventListener("click", e => {
   if (!e.target.closest("#composer-wrap")) emojiPanel.classList.remove("open");
 });
-listEl.addEventListener("click", e => {
+document.querySelector("aside").addEventListener("click", e => {
   const link = e.target.closest("a[data-name]");
   if (!link) return;
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
   e.preventDefault();
   openThread(link.dataset.name);
+});
+msgAllBtn.addEventListener("click", async () => {
+  const fresh = people.filter(p => p.new_friend);
+  if (!fresh.length) return;
+  const sample = fresh[0].opener || openerTemplate.replace("{name}", fresh[0].name.split(/\s+/)[0]);
+  const names = fresh.map(p => p.name).join(", ");
+  if (!confirm(
+    "Send this opener to " + fresh.length + " new friend" + (fresh.length === 1 ? "" : "s") +
+    " on the phone?\n\n" + sample + "\n\n" + names
+  )) return;
+  msgAllBtn.disabled = true;
+  statusEl.textContent = "Queued opener to " + fresh.length + " new friends";
+  const res = await fetch("/api/message-new-friends", {method: "POST"});
+  const data = await res.json();
+  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+  if (data.ok) pollQueue();
+  else msgAllBtn.disabled = false;
 });
 document.getElementById("filter").addEventListener("input", renderList);
 window.addEventListener("popstate", () => {
@@ -475,12 +573,17 @@ document.getElementById("composer").addEventListener("submit", async e => {
 
 function jobLabel(job) {
   if (job.kind === "refresh") return "Refresh " + job.name;
+  if (job.kind === "recapture_all") return "Recapture inbox";
+  if (job.kind === "message_new_friends") return "Message new friends";
   const snip = String(job.text || "").replace(/\s+/g, " ").slice(0, 42);
   return "Reply to " + job.name + (snip ? " — " + snip : "");
 }
 
 function renderQueue(jobs) {
   const active = jobs.filter(j => j.status === "running" || j.status === "queued");
+  const messaging = active.some(j => j.kind === "message_new_friends");
+  if (messaging) msgAllBtn.disabled = true;
+  else if (people.some(p => p.new_friend)) msgAllBtn.disabled = false;
   if (!active.length) {
     queueEl.innerHTML = "";
     return;
@@ -532,9 +635,9 @@ async function pollQueue() {
           draftEl.value = job.status === "error" ? job.text : "";
         }
       }
-      if (job.status === "done" && job.name === current) {
+      if (job.status === "done" && (job.name === current || job.kind === "message_new_friends" || job.kind === "recapture_all")) {
         await loadPeople();
-        await openThread(current, {push: false});
+        if (current) await openThread(current, {push: false});
       }
     }
   } catch (err) {
