@@ -5,19 +5,189 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
+import signal
+import socket
+import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from src.config import load_config
+from src.config import ROOT, load_config
 from src.store import connect as db_connect, db_path_from_config, list_people, list_thread
 
 log = logging.getLogger(__name__)
 
-_SEND_LOCK = threading.Lock()
+_HTML_PATH = Path(__file__).with_name("dashboard.html")
+_PID_PATH = ROOT / "data" / "dashboard.pid"
+_LOG_PATH = ROOT / "data" / "dashboard.log"
+_QUEUE_PATH = ROOT / "data" / "action_queue.json"
+_ENV_SUPERVISOR = "BFF_DASHBOARD_SUPERVISOR"
+_ENV_WORKER = "BFF_DASHBOARD_WORKER"
+
+_jobs: list[dict] = []
+_jobs_lock = threading.Lock()
+_jobs_wake = threading.Event()
+_job_seq = 0
+
+
+def _queue_snapshot() -> list[dict]:
+    with _jobs_lock:
+        return [dict(j) for j in _jobs]
+
+
+def _persist_queue() -> None:
+    pending = [j for j in _jobs if j.get("status") in {"queued", "running"}]
+    _QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _QUEUE_PATH.write_text(json.dumps(pending, indent=2), encoding="utf-8")
+
+
+def _load_queue() -> None:
+    global _job_seq
+    if not _QUEUE_PATH.exists():
+        return
+    try:
+        raw = json.loads(_QUEUE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    restored: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        job = dict(item)
+        if job.get("status") == "running":
+            job["status"] = "queued"
+            job["error"] = None
+        if job.get("status") != "queued":
+            continue
+        restored.append(job)
+    with _jobs_lock:
+        _jobs[:] = restored
+        _job_seq = max([int(j.get("id") or 0) for j in _jobs] + [_job_seq])
+    if restored:
+        log.info("restored %d queued phone action(s)", len(restored))
+        _jobs_wake.set()
+
+
+def _enqueue(kind: str, name: str, text: str = "") -> dict:
+    global _job_seq
+    with _jobs_lock:
+        _job_seq += 1
+        job = {
+            "id": _job_seq,
+            "kind": kind,
+            "name": name,
+            "text": text,
+            "status": "queued",
+            "error": None,
+            "message": None,
+        }
+        _jobs.append(job)
+        _persist_queue()
+        snap = dict(job)
+    _jobs_wake.set()
+    return snap
+
+
+def _cancel_job(job_id: int) -> bool:
+    with _jobs_lock:
+        for job in _jobs:
+            if int(job["id"]) == job_id and job["status"] == "queued":
+                job["status"] = "cancelled"
+                snap = dict(job)
+                _persist_queue()
+                break
+        else:
+            return False
+    if snap.get("kind") == "reply":
+        from src.store import set_draft
+
+        conn = db_connect(db_path_from_config(load_config()))
+        try:
+            set_draft(conn, str(snap.get("name") or ""), str(snap.get("text") or ""))
+        finally:
+            conn.close()
+    return True
+
+
+def _update_job(job_id: int, **fields: object) -> None:
+    with _jobs_lock:
+        for job in _jobs:
+            if int(job["id"]) == job_id:
+                job.update(fields)
+                done = [j for j in _jobs if j["status"] in {"done", "error", "cancelled"}]
+                if len(done) > 40:
+                    keep_done = done[-20:]
+                    keep_ids = {id(j) for j in keep_done}
+                    _jobs[:] = [
+                        j
+                        for j in _jobs
+                        if j["status"] in {"queued", "running"} or id(j) in keep_ids
+                    ]
+                _persist_queue()
+                return
+
+
+def _next_queued() -> dict | None:
+    with _jobs_lock:
+        for job in _jobs:
+            if job["status"] == "queued":
+                return dict(job)
+    return None
+
+
+def _run_job(job: dict) -> tuple[bool, str]:
+    kind = job["kind"]
+    name = job["name"]
+    if kind == "reply":
+        from src.messenger import send_named_message
+
+        return send_named_message(name, str(job.get("text") or ""))
+    if kind == "refresh":
+        from src.sync_chats import refresh_named_chat
+
+        return refresh_named_chat(name)
+    return False, f"unknown action {kind}"
+
+
+def _queue_worker() -> None:
+    log.info("phone action queue ready")
+    while True:
+        job = _next_queued()
+        if job is None:
+            _jobs_wake.wait(timeout=1.0)
+            _jobs_wake.clear()
+            continue
+        _update_job(job["id"], status="running")
+        log.info("queue run #%s %s %s", job["id"], job["kind"], job["name"])
+        try:
+            ok, message = _run_job(job)
+        except Exception as exc:
+            log.exception("queue job failed")
+            ok, message = False, str(exc)
+        _update_job(
+            job["id"],
+            status="done" if ok else "error",
+            message=message,
+            error=None if ok else message,
+        )
+        if job.get("kind") == "reply":
+            from src.store import set_draft
+
+            conn = db_connect(db_path_from_config(load_config()))
+            try:
+                person = str(job.get("name") or "")
+                if ok:
+                    set_draft(conn, person, "")
+                else:
+                    set_draft(conn, person, str(job.get("text") or ""))
+            except Exception:
+                log.exception("could not save draft after reply job")
+            finally:
+                conn.close()
+        log.info("queue #%s %s — %s", job["id"], "ok" if ok else "fail", message)
 
 
 def _norm_body(text: str) -> str:
@@ -28,10 +198,23 @@ def _is_day_label(text: str) -> bool:
     return bool(re.match(r"^\d{1,2} [A-Za-z]+ 20\d{2}$", (text or "").strip()))
 
 
+def _preview_already_in_thread(preview: str, msgs: list[dict]) -> bool:
+    """Inbox list often ellipsizes the last bubble — don't append that stub."""
+    norm = _norm_body(preview)
+    if not norm:
+        return True
+    stub = _norm_body(preview.rstrip(".").strip()) if preview.rstrip().endswith("...") else norm
+    for msg in msgs:
+        body = _norm_body(msg["body"])
+        if body == norm or body.startswith(stub) or stub.startswith(body):
+            return True
+    return False
+
+
 def _thread_payload(conn, name: str) -> dict:
     row = conn.execute(
         """
-        SELECT p.name, c.status, c.last_from, c.last_text, c.preview
+        SELECT p.name, c.status, c.last_from, c.last_text, c.preview, c.draft
         FROM people p
         LEFT JOIN chats c ON c.person_id = p.id
         WHERE p.name = ?
@@ -43,7 +226,7 @@ def _thread_payload(conn, name: str) -> dict:
         for r in list_thread(conn, name)
     ]
     if row is None:
-        return {"name": name, "messages": msgs}
+        return {"name": name, "messages": msgs, "status": "unknown", "draft": ""}
     extras: list[str] = []
     for candidate in (row["last_text"], row["preview"]):
         text = (candidate or "").strip()
@@ -53,7 +236,7 @@ def _thread_payload(conn, name: str) -> dict:
             extras.append(text)
     have = {_norm_body(m["body"]) for m in msgs}
     for text in extras:
-        if _norm_body(text) in have:
+        if _preview_already_in_thread(text, msgs):
             continue
         side = row["last_from"] or "them"
         real = [m for m in msgs if not _is_day_label(m["body"])]
@@ -62,295 +245,81 @@ def _thread_payload(conn, name: str) -> dict:
             side = "them"
         msgs.append({"side": side, "body": text, "from_preview": True})
         have.add(_norm_body(text))
-    return {"name": row["name"] or name, "messages": msgs}
+    return {
+        "name": row["name"] or name,
+        "messages": msgs,
+        "status": row["status"] or "unknown",
+        "draft": row["draft"] or "",
+    }
 
 
-_PAGE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>BFF inbox</title>
-<style>
-  :root {
-    --bg: #111114;
-    --panel: #1b1b21;
-    --line: #2c2c34;
-    --text: #f2efe8;
-    --muted: #9a9588;
-    --you: #e8c547;
-    --them: #2a2a32;
-    --need: #ff8a5b;
-    --wait: #7eb8a4;
-    --exp: #6b6570;
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
-  body {
-    font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    display: grid;
-    grid-template-columns: 320px 1fr;
-  }
-  aside {
-    border-right: 1px solid var(--line);
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  header {
-    padding: 16px 16px 10px;
-    border-bottom: 1px solid var(--line);
-  }
-  header h1 { margin: 0; font-size: 18px; font-weight: 650; }
-  header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-  #filter {
-    width: calc(100% - 24px);
-    margin: 10px 12px;
-    padding: 8px 10px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--bg);
-    color: var(--text);
-  }
-  #list { overflow: auto; flex: 1; }
-  .row {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 10px 14px;
-    border: 0;
-    border-bottom: 1px solid var(--line);
-    background: transparent;
-    color: inherit;
-    text-decoration: none;
-    cursor: pointer;
-  }
-  .row:hover, .row.on { background: #24242c; }
-  .row .name { font-weight: 600; }
-  .row .snip { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .tag {
-    display: inline-block;
-    font-size: 10px;
-    letter-spacing: .04em;
-    text-transform: uppercase;
-    padding: 1px 6px;
-    border-radius: 999px;
-    margin-left: 6px;
-  }
-  .needs_reply { background: #3a2218; color: var(--need); }
-  .waiting { background: #17332c; color: var(--wait); }
-  .expired { background: #2a272c; color: var(--exp); }
-  .unknown { background: #222; color: var(--muted); }
-  main { display: flex; flex-direction: column; min-height: 0; }
-  #thread-head {
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--line);
-    min-height: 64px;
-  }
-  #thread-head h2 { margin: 0; font-size: 20px; }
-  #msgs {
-    flex: 1;
-    overflow: auto;
-    padding: 18px 22px 28px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .bubble {
-    max-width: 68%;
-    padding: 8px 12px;
-    border-radius: 14px;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .bubble.you { align-self: flex-end; background: var(--you); color: #1a1508; }
-  .bubble.them { align-self: flex-start; background: var(--them); }
-  .day {
-    align-self: center;
-    max-width: none;
-    padding: 4px 0;
-    background: transparent;
-    color: var(--muted);
-    font-size: 12px;
-  }
-  #composer {
-    display: flex;
-    gap: 8px;
-    padding: 12px 16px 16px;
-    border-top: 1px solid var(--line);
-  }
-  #composer textarea {
-    flex: 1;
-    min-height: 54px;
-    resize: vertical;
-    padding: 10px 12px;
-    border-radius: 10px;
-    border: 1px solid var(--line);
-    background: var(--panel);
-    color: var(--text);
-    font: inherit;
-  }
-  #composer button {
-    background: var(--you);
-    color: #1a1508;
-    border: 0;
-    border-radius: 10px;
-    padding: 0 16px;
-    font-weight: 650;
-    cursor: pointer;
-  }
-  #composer button:disabled { opacity: .45; cursor: default; }
-  #status { padding: 0 16px 10px; font-size: 12px; color: var(--muted); min-height: 18px; }
-  .empty { margin: auto; color: var(--muted); }
-</style>
-</head>
-<body>
-<aside>
-  <header>
-    <h1>BFF inbox</h1>
-    <p id="meta">Loading…</p>
-  </header>
-  <input id="filter" placeholder="Filter names" autocomplete="off"/>
-  <div id="list"></div>
-</aside>
-<main>
-  <div id="thread-head"><h2>Select a chat</h2></div>
-  <div id="msgs"><p class="empty">Pick someone on the left.</p></div>
-  <div id="status"></div>
-  <form id="composer">
-    <textarea id="draft" placeholder="Reply — this sends on the phone" disabled></textarea>
-    <button type="submit" id="send" disabled>Send</button>
-  </form>
-</main>
-<script>
-const listEl = document.getElementById("list");
-const msgsEl = document.getElementById("msgs");
-const headEl = document.getElementById("thread-head");
-const metaEl = document.getElementById("meta");
-const draftEl = document.getElementById("draft");
-const sendEl = document.getElementById("send");
-const statusEl = document.getElementById("status");
-let people = [];
-let current = null;
+def _load_html() -> bytes:
+    return _HTML_PATH.read_bytes()
 
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-  }[c]));
-}
 
-async function loadPeople() {
-  const res = await fetch("/api/people");
-  const data = await res.json();
-  people = data.people || [];
-  const n = people.filter(p => p.status === "needs_reply").length;
-  metaEl.textContent = people.length + " people · " + n + " need a reply";
-  renderList();
-}
+def _port_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.4):
+            return True
+    except OSError:
+        return False
 
-function chatFromUrl() {
-  return new URLSearchParams(location.search).get("chat") || "";
-}
 
-function setChatUrl(name, push) {
-  const url = new URL(location.href);
-  if (name) url.searchParams.set("chat", name);
-  else url.searchParams.delete("chat");
-  const next = url.pathname + url.search + url.hash;
-  if (next === location.pathname + location.search + location.hash) return;
-  if (push) history.pushState({chat: name}, "", next);
-  else history.replaceState({chat: name}, "", next);
-}
+def _watch_stamp() -> float:
+    latest = 0.0
+    for path in Path(__file__).parent.glob("*.py"):
+        try:
+            latest = max(latest, path.stat().st_mtime)
+        except OSError:
+            pass
+    return latest
 
-function renderList() {
-  const q = document.getElementById("filter").value.trim().toLowerCase();
-  listEl.innerHTML = people
-    .filter(p => !q || p.name.toLowerCase().includes(q))
-    .map(p => {
-      const on = current === p.name ? " on" : "";
-      const snip = esc(p.last_text || p.preview || "");
-      const st = p.status || "unknown";
-      const href = "?chat=" + encodeURIComponent(p.name);
-      return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
-        <div><span class="name">${esc(p.name)}</span><span class="tag ${st}">${esc(st.replace("_"," "))}</span></div>
-        <div class="snip">${snip}</div>
-      </a>`;
-    }).join("");
-}
 
-function isDayLabel(body) {
-  return /^[0-9]{1,2} [A-Za-z]+ 20[0-9]{2}$/.test(String(body || "").trim());
-}
+def _write_pid(pid: int) -> None:
+    _PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _PID_PATH.write_text(str(pid), encoding="utf-8")
 
-async function openThread(name, opts) {
-  const push = !opts || opts.push !== false;
-  current = name;
-  setChatUrl(name, push);
-  renderList();
-  headEl.innerHTML = `<h2>${esc(name)}</h2>`;
-  draftEl.disabled = false;
-  sendEl.disabled = false;
-  const res = await fetch("/api/thread?name=" + encodeURIComponent(name));
-  const data = await res.json();
-  const msgs = data.messages || [];
-  if (!msgs.length) {
-    msgsEl.innerHTML = '<p class="empty">No transcript stored.</p>';
-    return;
-  }
-  msgsEl.innerHTML = msgs.map(m => {
-    if (isDayLabel(m.body)) return `<div class="day">${esc(m.body)}</div>`;
-    const side = m.side === "you" ? "you" : "them";
-    const extra = m.from_preview ? " title='from inbox preview (not in captured thread)'" : "";
-    return `<div class="bubble ${side}"${extra}>${esc(m.body)}</div>`;
-  }).join("");
-  msgsEl.scrollTop = msgsEl.scrollHeight;
-}
 
-listEl.addEventListener("click", e => {
-  const link = e.target.closest("a[data-name]");
-  if (!link) return;
-  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-  e.preventDefault();
-  openThread(link.dataset.name);
-});
-document.getElementById("filter").addEventListener("input", renderList);
-window.addEventListener("popstate", () => {
-  const name = chatFromUrl();
-  if (name) openThread(name, {push: false});
-});
+def _read_pid() -> int | None:
+    try:
+        return int(_PID_PATH.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
 
-document.getElementById("composer").addEventListener("submit", async e => {
-  e.preventDefault();
-  if (!current) return;
-  const text = draftEl.value.trim();
-  if (!text) return;
-  sendEl.disabled = true;
-  statusEl.textContent = "Sending on the phone… keep it unlocked.";
-  const res = await fetch("/api/reply", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: current, text}),
-  });
-  const data = await res.json();
-  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
-  sendEl.disabled = false;
-  if (data.ok) {
-    draftEl.value = "";
-    await loadPeople();
-    await openThread(current, {push: false});
-  }
-});
 
-loadPeople().then(() => {
-  const name = chatFromUrl();
-  if (name) return openThread(name, {push: false});
-});
-</script>
-</body>
-</html>
-"""
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _stop(host: str, port: int) -> int:
+    pid = _read_pid()
+    if pid and _pid_alive(pid):
+        log.info("stopping dashboard pid %s", pid)
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        for _ in range(30):
+            if not _pid_alive(pid) and not _port_open(host, port):
+                break
+            time.sleep(0.1)
+        if _pid_alive(pid):
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    elif _port_open(host, port):
+        log.warning("port %s is in use but pid file is stale", port)
+    if _PID_PATH.exists():
+        _PID_PATH.unlink()
+    return 0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -363,14 +332,16 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def _html(self) -> None:
-        body = _PAGE.encode("utf-8")
+        body = _load_html()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -393,6 +364,8 @@ class Handler(BaseHTTPRequestHandler):
                             "last_text": row["last_text"],
                             "preview": row["preview"],
                             "location": row["location"],
+                            "phone_provided": bool(row["phone_provided"]),
+                            "draft": row["draft"] or "",
                         }
                     )
                 self._json({"people": people})
@@ -407,37 +380,176 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
             return
+        if parsed.path == "/api/queue":
+            self._json({"jobs": _queue_snapshot()})
+            return
         self.send_error(404)
 
-    def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/api/reply":
-            self.send_error(404)
-            return
+    def _read_json(self) -> dict | None:
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length)
         try:
             data = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError:
             self._json({"ok": False, "error": "invalid json"}, 400)
+            return None
+        if not isinstance(data, dict):
+            self._json({"ok": False, "error": "invalid json"}, 400)
+            return None
+        return data
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/dismiss":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            if not name:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            from src.store import dismiss_needs_reply
+
+            conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
+            try:
+                ok = dismiss_needs_reply(conn, name)
+            finally:
+                conn.close()
+            if not ok:
+                self._json({"ok": False, "error": "person not found"}, 404)
+                return
+            self._json({"ok": True, "message": f"dismissed needs-reply for {name}"})
+            return
+        if self.path == "/api/refresh":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            if not name:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            job = _enqueue("refresh", name)
+            self._json({"ok": True, "queued": True, "job": job, "message": f"queued refresh of {name}"})
+            return
+        if self.path == "/api/draft":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            text = str(data.get("text") or "")
+            if not name:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            from src.store import set_draft
+
+            conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
+            try:
+                ok = set_draft(conn, name, text)
+            finally:
+                conn.close()
+            if not ok:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            self._json({"ok": True})
+            return
+        if self.path == "/api/queue/cancel":
+            data = self._read_json()
+            if data is None:
+                return
+            try:
+                job_id = int(data.get("id"))
+            except (TypeError, ValueError):
+                self._json({"ok": False, "error": "id required"}, 400)
+                return
+            ok = _cancel_job(job_id)
+            self._json({"ok": ok, "error": None if ok else "cannot cancel"})
+            return
+        if self.path != "/api/reply":
+            self.send_error(404)
+            return
+        data = self._read_json()
+        if data is None:
             return
         name = str(data.get("name") or "").strip()
         text = str(data.get("text") or "").strip()
         if not name or not text:
             self._json({"ok": False, "error": "name and text required"}, 400)
             return
-        if not _SEND_LOCK.acquire(blocking=False):
-            self._json({"ok": False, "error": "already sending another reply"}, 409)
-            return
-        try:
-            from src.messenger import send_named_message
+        job = _enqueue("reply", name, text)
+        self._json({"ok": True, "queued": True, "job": job, "message": f"queued reply to {name}"})
 
-            ok, message = send_named_message(name, text)
-            self._json({"ok": ok, "message": message, "error": None if ok else message}, 200 if ok else 500)
-        except Exception as exc:
-            log.exception("reply failed")
-            self._json({"ok": False, "error": str(exc)}, 500)
-        finally:
-            _SEND_LOCK.release()
+
+class InboxServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def _serve_worker(host: str, port: int, db_path: Path) -> int:
+    _load_queue()
+    threading.Thread(target=_queue_worker, name="phone-queue", daemon=True).start()
+    httpd = InboxServer((host, port), Handler)
+    httpd.db_path = db_path  # type: ignore[attr-defined]
+    log.info("Inbox at http://%s:%s/  (db %s)", host, port, db_path)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        log.info("stopped")
+    finally:
+        httpd.server_close()
+    return 0
+
+
+def _run_supervisor(host: str, port: int, extra: list[str]) -> int:
+    _write_pid(os.getpid())
+    log.info("dashboard supervisor pid %s", os.getpid())
+    while True:
+        stamp = _watch_stamp()
+        env = os.environ.copy()
+        env[_ENV_WORKER] = "1"
+        env.pop(_ENV_SUPERVISOR, None)
+        cmd = [sys.executable, "-m", "src.dashboard", "--host", host, "--port", str(port), *extra]
+        worker = subprocess.Popen(cmd, env=env, cwd=str(ROOT))
+        while True:
+            time.sleep(0.5)
+            code = worker.poll()
+            if code is not None:
+                log.warning("dashboard worker exited %s — restarting", code)
+                time.sleep(0.4)
+                break
+            if _watch_stamp() > stamp:
+                log.info("code changed — restarting dashboard worker")
+                worker.terminate()
+                try:
+                    worker.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
+                break
+
+
+def _detach_supervisor(host: str, port: int, argv: list[str]) -> int:
+    if _port_open(host, port):
+        log.info("Inbox already running at http://%s:%s/", host, port)
+        return 0
+    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env[_ENV_SUPERVISOR] = "1"
+    log_f = open(_LOG_PATH, "a", encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "src.dashboard", *argv],
+        env=env,
+        cwd=str(ROOT),
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        close_fds=True,
+    )
+    _write_pid(proc.pid)
+    for _ in range(50):
+        if _port_open(host, port):
+            log.info("Inbox at http://%s:%s/  (detached pid %s, log %s)", host, port, proc.pid, _LOG_PATH)
+            return 0
+        time.sleep(0.1)
+    log.error("dashboard did not bind %s:%s — see %s", host, port, _LOG_PATH)
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -445,24 +557,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--stop", action="store_true", help="Stop the detached dashboard")
+    parser.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Run in this terminal (no detach / auto-restart)",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
-    cfg = load_config(args.config)
-    db_path = db_path_from_config(cfg)
-    httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-    httpd.db_path = db_path  # type: ignore[attr-defined]
-    url = f"http://{args.host}:{args.port}/"
-    log.info("Inbox at %s  (db %s)", url, db_path)
-    log.info("Replies send on the connected phone — keep it unlocked")
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        log.info("stopped")
-    return 0
+    if args.stop:
+        return _stop(args.host, args.port)
+
+    extra: list[str] = []
+    if args.config:
+        extra.extend(["--config", str(args.config)])
+
+    if os.environ.get(_ENV_WORKER) == "1":
+        cfg = load_config(args.config)
+        return _serve_worker(args.host, args.port, db_path_from_config(cfg))
+
+    if os.environ.get(_ENV_SUPERVISOR) == "1":
+        return _run_supervisor(args.host, args.port, extra)
+
+    if args.foreground:
+        cfg = load_config(args.config)
+        return _serve_worker(args.host, args.port, db_path_from_config(cfg))
+
+    forwarded: list[str] = ["--host", args.host, "--port", str(args.port)]
+    if args.config:
+        forwarded.extend(["--config", str(args.config)])
+    return _detach_supervisor(args.host, args.port, forwarded)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>BFF inbox</title>
+<style>
+  :root {
+    --bg: #111114;
+    --panel: #1b1b21;
+    --line: #2c2c34;
+    --text: #f2efe8;
+    --muted: #9a9588;
+    --you: #e8c547;
+    --them: #2a2a32;
+    --need: #ff8a5b;
+    --wait: #7eb8a4;
+    --exp: #6b6570;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: grid;
+    grid-template-columns: 320px 1fr;
+  }
+  aside {
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  header {
+    padding: 16px 16px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 650; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  #filter {
+    width: calc(100% - 24px);
+    margin: 10px 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  #list { overflow: auto; flex: 1; }
+  .row {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 10px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .row:hover, .row.on { background: #24242c; }
+  .row .name { font-weight: 600; }
+  .row .snip { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tag {
+    display: inline-block;
+    font-size: 10px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 999px;
+    margin-left: 6px;
+  }
+  .needs_reply { background: #3a2218; color: var(--need); }
+  .waiting { background: #17332c; color: var(--wait); }
+  .expired { background: #2a272c; color: var(--exp); }
+  .phone { background: #1d2a3a; color: #8ec8ff; }
+  main { display: flex; flex-direction: column; min-height: 0; }
+  #thread-head {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--line);
+    min-height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  #thread-head h2 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 8px; }
+  #dismiss-reply {
+    flex-shrink: 0;
+    background: #3a2218;
+    color: var(--need);
+    border: 1px solid #ff8a5b55;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: 12px/1.2 inherit;
+    cursor: pointer;
+  }
+  #dismiss-reply:hover { background: #4a2c20; }
+  #thread-head .actions { display: flex; gap: 8px; align-items: center; }
+  #refresh-chat {
+    flex-shrink: 0;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: 12px/1.2 inherit;
+    cursor: pointer;
+  }
+  #refresh-chat:hover { background: #24242c; }
+  #refresh-chat:disabled { opacity: .45; cursor: default; }
+  #msgs {
+    flex: 1;
+    overflow: auto;
+    padding: 18px 22px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .bubble {
+    max-width: 68%;
+    padding: 8px 12px;
+    border-radius: 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .bubble.you { align-self: flex-end; background: var(--you); color: #1a1508; }
+  .bubble.them { align-self: flex-start; background: var(--them); }
+  .day {
+    align-self: center;
+    max-width: none;
+    padding: 4px 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  #composer-wrap { position: relative; }
+  #composer {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px 16px;
+    border-top: 1px solid var(--line);
+    align-items: stretch;
+  }
+  #composer textarea {
+    flex: 1;
+    min-height: 54px;
+    resize: vertical;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    font: inherit;
+  }
+  #composer button {
+    border: 0;
+    border-radius: 10px;
+    cursor: pointer;
+    font: inherit;
+  }
+  #composer button:disabled { opacity: .45; cursor: default; }
+  #send {
+    background: var(--you);
+    color: #1a1508;
+    padding: 0 16px;
+    font-weight: 650;
+  }
+  #emoji-btn {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line) !important;
+    padding: 0 12px;
+    font-size: 20px;
+    line-height: 1;
+  }
+  #emoji-panel {
+    position: absolute;
+    right: 16px;
+    bottom: 78px;
+    width: 280px;
+    max-height: 220px;
+    overflow: auto;
+    padding: 8px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: #16161c;
+    display: none;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 2px;
+    z-index: 5;
+    box-shadow: 0 8px 24px #0008;
+  }
+  #emoji-panel.open { display: grid; }
+  #emoji-panel button {
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    padding: 6px 0;
+    font-size: 20px;
+    cursor: pointer;
+    line-height: 1;
+  }
+  #emoji-panel button:hover { background: #24242c; }
+  #status { padding: 0 16px 10px; font-size: 12px; color: var(--muted); min-height: 18px; }
+  #queue {
+    padding: 0 16px 10px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  #queue .q-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+  }
+  #queue .q-run { color: var(--you); }
+  #queue .q-err { color: var(--need); }
+  #queue button {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 6px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .empty { margin: auto; color: var(--muted); }
+</style>
+</head>
+<body>
+<aside>
+  <header>
+    <h1>BFF inbox</h1>
+    <p id="meta">Loading…</p>
+  </header>
+  <input id="filter" placeholder="Filter names" autocomplete="off"/>
+  <div id="list"></div>
+</aside>
+<main>
+  <div id="thread-head"><h2>Select a chat</h2></div>
+  <div id="msgs"><p class="empty">Pick someone on the left.</p></div>
+  <div id="status"></div>
+  <div id="queue"></div>
+  <div id="composer-wrap">
+    <div id="emoji-panel"></div>
+    <form id="composer">
+      <textarea id="draft" placeholder="Reply — this sends on the phone" disabled></textarea>
+      <button type="button" id="emoji-btn" title="Emoji" disabled>😊</button>
+      <button type="submit" id="send" disabled>Send</button>
+    </form>
+  </div>
+</main>
+<script>
+const listEl = document.getElementById("list");
+const msgsEl = document.getElementById("msgs");
+const headEl = document.getElementById("thread-head");
+const metaEl = document.getElementById("meta");
+const draftEl = document.getElementById("draft");
+const sendEl = document.getElementById("send");
+const emojiBtn = document.getElementById("emoji-btn");
+const emojiPanel = document.getElementById("emoji-panel");
+const statusEl = document.getElementById("status");
+const queueEl = document.getElementById("queue");
+let people = [];
+let current = null;
+let lastFinished = 0;
+let seenFinished = null;
+let draftTimer = 0;
+
+function persistDraft(name, text) {
+  if (!name) return Promise.resolve();
+  const person = people.find(p => p.name === name);
+  if (person) person.draft = text;
+  return fetch("/api/draft", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name, text: String(text || "")}),
+    keepalive: true,
+  }).catch(() => {});
+}
+
+function persistCurrentDraft() {
+  return persistDraft(current, draftEl.value);
+}
+
+function schedulePersistDraft() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => persistCurrentDraft(), 250);
+}
+const EMOJIS = ["😀","😁","😂","🤣","😊","😍","😘","😜","🤗","🤔","🙄","😴","🥺","😭","😅","😉","😎","🥳","👍","👎","👏","🙏","🔥","❤️","💜","✨","👀","🙌","💪","🎉","✅","❌","😇","🥹","🫡","☕","🎮","🏃","🥾"];
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+async function loadPeople() {
+  const res = await fetch("/api/people");
+  const data = await res.json();
+  people = data.people || [];
+  const n = people.filter(p => p.status === "needs_reply").length;
+  const phones = people.filter(p => p.phone_provided).length;
+  metaEl.textContent = people.length + " people · " + n + " need a reply · " + phones + " phone provided";
+  renderList();
+}
+
+function chatFromUrl() {
+  return new URLSearchParams(location.search).get("chat") || "";
+}
+
+function setChatUrl(name, push) {
+  const url = new URL(location.href);
+  if (name) url.searchParams.set("chat", name);
+  else url.searchParams.delete("chat");
+  const next = url.pathname + url.search + url.hash;
+  if (next === location.pathname + location.search + location.hash) return;
+  if (push) history.pushState({chat: name}, "", next);
+  else history.replaceState({chat: name}, "", next);
+}
+
+function renderList() {
+  const q = document.getElementById("filter").value.trim().toLowerCase();
+  listEl.innerHTML = people
+    .filter(p => !q || p.name.toLowerCase().includes(q))
+    .map(p => {
+      const on = current === p.name ? " on" : "";
+      const snip = esc(p.last_text || p.preview || "");
+      const st = p.status || "unknown";
+      const href = "?chat=" + encodeURIComponent(p.name);
+      const phone = p.phone_provided
+        ? '<span class="tag phone">phone provided</span>'
+        : "";
+      return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
+        <div><span class="name">${esc(p.name)}</span><span class="tag ${st}">${esc(st.replace("_"," "))}</span>${phone}</div>
+        <div class="snip">${snip}</div>
+      </a>`;
+    }).join("");
+}
+
+function isDayLabel(body) {
+  return /^[0-9]{1,2} [A-Za-z]+ 20[0-9]{2}$/.test(String(body || "").trim());
+}
+
+function renderHead(name, status, phoneProvided) {
+  const dismiss = status === "needs_reply"
+    ? '<button type="button" id="dismiss-reply">Dismiss needs reply</button>'
+    : "";
+  const phone = phoneProvided ? '<span class="tag phone">phone provided</span>' : "";
+  headEl.innerHTML = `<h2>${esc(name)} ${phone}</h2><div class="actions">
+    <button type="button" id="refresh-chat">Refresh</button>${dismiss}
+  </div>`;
+}
+
+async function openThread(name, opts) {
+  const push = !opts || opts.push !== false;
+  const switching = current !== name;
+  if (current && switching) await persistCurrentDraft();
+  current = name;
+  setChatUrl(name, push);
+  renderList();
+  const known = people.find(p => p.name === name);
+  renderHead(name, known && known.status, known && known.phone_provided);
+  draftEl.disabled = false;
+  sendEl.disabled = false;
+  emojiBtn.disabled = false;
+  if (switching) draftEl.value = (known && known.draft) || "";
+  const res = await fetch("/api/thread?name=" + encodeURIComponent(name));
+  const data = await res.json();
+  if (current !== name) return;
+  renderHead(name, data.status || (known && known.status), known && known.phone_provided);
+  if (switching || !draftEl.value) draftEl.value = data.draft || "";
+  const msgs = data.messages || [];
+  if (!msgs.length) {
+    msgsEl.innerHTML = '<p class="empty">No transcript stored.</p>';
+    return;
+  }
+  msgsEl.innerHTML = msgs.map(m => {
+    if (isDayLabel(m.body)) return `<div class="day">${esc(m.body)}</div>`;
+    const side = m.side === "you" ? "you" : "them";
+    const extra = m.from_preview ? " title='from inbox preview (not in captured thread)'" : "";
+    return `<div class="bubble ${side}"${extra}>${esc(m.body)}</div>`;
+  }).join("");
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+}
+
+headEl.addEventListener("click", async e => {
+  const refreshBtn = e.target.closest("#refresh-chat");
+  if (refreshBtn && current) {
+    statusEl.textContent = "Queued refresh of " + current;
+    const res = await fetch("/api/refresh", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: current}),
+    });
+    const data = await res.json();
+    statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+    pollQueue();
+    return;
+  }
+  const btn = e.target.closest("#dismiss-reply");
+  if (!btn || !current) return;
+  btn.disabled = true;
+  const res = await fetch("/api/dismiss", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: current}),
+  });
+  const data = await res.json();
+  statusEl.textContent = data.ok ? "Needs reply dismissed" : ("Failed: " + (data.error || res.status));
+  if (data.ok) {
+    await loadPeople();
+    await openThread(current, {push: false});
+  } else {
+    btn.disabled = false;
+  }
+});
+
+function insertAtCursor(el, text) {
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  el.value = el.value.slice(0, start) + text + el.value.slice(end);
+  const pos = start + text.length;
+  el.focus();
+  el.setSelectionRange(pos, pos);
+}
+
+emojiPanel.innerHTML = EMOJIS.map(e => `<button type="button" data-emoji="${e}">${e}</button>`).join("");
+emojiBtn.addEventListener("click", e => {
+  e.preventDefault();
+  if (emojiBtn.disabled) return;
+  emojiPanel.classList.toggle("open");
+});
+emojiPanel.addEventListener("click", e => {
+  const btn = e.target.closest("[data-emoji]");
+  if (!btn || draftEl.disabled) return;
+  insertAtCursor(draftEl, btn.dataset.emoji);
+  persistCurrentDraft();
+});
+draftEl.addEventListener("input", schedulePersistDraft);
+window.addEventListener("beforeunload", persistCurrentDraft);
+document.addEventListener("click", e => {
+  if (!e.target.closest("#composer-wrap")) emojiPanel.classList.remove("open");
+});
+listEl.addEventListener("click", e => {
+  const link = e.target.closest("a[data-name]");
+  if (!link) return;
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+  e.preventDefault();
+  openThread(link.dataset.name);
+});
+document.getElementById("filter").addEventListener("input", renderList);
+window.addEventListener("popstate", () => {
+  const name = chatFromUrl();
+  if (name) openThread(name, {push: false});
+});
+
+document.getElementById("composer").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!current) return;
+  const text = draftEl.value.trim();
+  if (!text) return;
+  const res = await fetch("/api/reply", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: current, text}),
+  });
+  const data = await res.json();
+  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+  if (data.ok) pollQueue();
+});
+
+function jobLabel(job) {
+  if (job.kind === "refresh") return "Refresh " + job.name;
+  const snip = String(job.text || "").replace(/\s+/g, " ").slice(0, 42);
+  return "Reply to " + job.name + (snip ? " — " + snip : "");
+}
+
+function renderQueue(jobs) {
+  const active = jobs.filter(j => j.status === "running" || j.status === "queued");
+  if (!active.length) {
+    queueEl.innerHTML = "";
+    return;
+  }
+  queueEl.innerHTML = active.map(j => {
+    const cls = j.status === "running" ? "q-run" : "";
+    const cancel = j.status === "queued"
+      ? `<button type="button" data-cancel="${j.id}">Cancel</button>`
+      : "";
+    const state = j.status === "running" ? "sending" : "queued";
+    return `<div class="q-row ${cls}"><span>${esc(state)}: ${esc(jobLabel(j))}</span>${cancel}</div>`;
+  }).join("");
+}
+
+queueEl.addEventListener("click", async e => {
+  const btn = e.target.closest("[data-cancel]");
+  if (!btn) return;
+  await fetch("/api/queue/cancel", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({id: Number(btn.dataset.cancel)}),
+  });
+  pollQueue();
+});
+
+async function pollQueue() {
+  try {
+    const res = await fetch("/api/queue");
+    const data = await res.json();
+    const jobs = data.jobs || [];
+    renderQueue(jobs);
+    const finished = jobs.filter(j => j.status === "done" || j.status === "error");
+    if (seenFinished === null) {
+      seenFinished = new Set(finished.map(j => j.id));
+      lastFinished = finished.reduce((m, j) => Math.max(m, j.id), 0);
+      return;
+    }
+    const fresh = finished.filter(j => !seenFinished.has(j.id)).sort((a, b) => a.id - b.id);
+    for (const job of fresh) {
+      seenFinished.add(job.id);
+      lastFinished = Math.max(lastFinished, job.id);
+      statusEl.textContent = job.status === "done"
+        ? (job.message || "done")
+        : ("Failed: " + (job.error || "error"));
+      if (job.kind === "reply" && job.text) {
+        if (job.status === "error") persistDraft(job.name, job.text);
+        else if (job.status === "done") persistDraft(job.name, "");
+        if (job.name === current) {
+          draftEl.value = job.status === "error" ? job.text : "";
+        }
+      }
+      if (job.status === "done" && job.name === current) {
+        await loadPeople();
+        await openThread(current, {push: false});
+      }
+    }
+  } catch (err) {
+    /* ignore brief restarts */
+  }
+}
+
+loadPeople().then(() => {
+  const name = chatFromUrl();
+  if (name) return openThread(name, {push: false});
+});
+setInterval(pollQueue, 1000);
+pollQueue();
+</script>
+</body>
+</html>

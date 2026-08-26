@@ -1,0 +1,15 @@
+#!/bin/sh
+# Reject commits that are not authored as GitHub user tmwclaxton.
+email=$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\([^>]*\)>.*/\1/p')
+case "$email" in
+  *tmwclaxton*)
+    exit 0
+    ;;
+  *)
+    echo "This repo only accepts commits as GitHub user tmwclaxton." >&2
+    echo "Got author email: $email" >&2
+    echo "Expected something like 57643714+tmwclaxton@users.noreply.github.com" >&2
+    echo "This clone should have: git config --local user.email 57643714+tmwclaxton@users.noreply.github.com" >&2
+    exit 1
+    ;;
+esac

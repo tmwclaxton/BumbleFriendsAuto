@@ -85,9 +85,12 @@ Local browser UI over `friends.db`. Pick a chat, read the thread, type a reply. 
 ```bash
 python -m src.dashboard
 # http://127.0.0.1:8765
+python -m src.dashboard --stop
 ```
 
-Keep the phone unlocked and on USB. Only one send at a time.
+It detaches from the terminal, restarts if it crashes, and reloads Python after `src/` changes. HTML/JS updates apply on refresh without a restart. Logs: `data/dashboard.log`.
+
+Keep the phone unlocked and on USB. Send and Refresh go on a queue so you can stack several replies (same person or others) while the phone works through them one at a time.
 
 ### Useful flags
 

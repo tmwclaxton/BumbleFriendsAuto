@@ -51,6 +51,11 @@ _SKIP_EXACT = {
     "Learn more",
 }
 
+_DATE_LABEL = re.compile(
+    r"^(?:\d{1,2} [A-Za-z]+ 20\d{2}|Today|Yesterday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)$",
+    re.I,
+)
+
 
 def _list_rows(xml: str, *, min_top: int = 1200) -> list[dict]:
     rows: list[dict] = []
@@ -144,6 +149,12 @@ def recover_to_list(device, package: str) -> str:
     device.shell("cmd statusbar collapse")
     xml = _dump(device)
     for attempt in range(8):
+        if SEARCH_FIELD in xml:
+            log.info("leave chats search (%d)", attempt)
+            device.press("back")
+            wait_idle(device, 0.8)
+            xml = dump_hierarchy(device)
+            continue
         if _on_list(xml):
             return xml
         if _on_profile(xml):
@@ -194,11 +205,23 @@ def extract_messages(xml: str, width: int) -> list[dict]:
     for node in root.iter():
         text = (node.attrib.get("text") or "").strip()
         rid = node.attrib.get("resource-id") or ""
-        if not text or text in _SKIP_EXACT:
+        if not text or text in _SKIP_EXACT or _DATE_LABEL.match(text):
             continue
         if _CHROME.search(text):
             continue
-        if any(k in rid for k in ("toolbar", "tabBar", "Input", "clock", "battery", "filter", "Title")):
+        if any(
+            k in rid
+            for k in (
+                "toolbar",
+                "tabBar",
+                "Input",
+                "clock",
+                "battery",
+                "filter",
+                "Title",
+                "timestamp",
+            )
+        ):
             continue
         if text.lower().startswith("let's go social"):
             continue
@@ -207,7 +230,7 @@ def extract_messages(xml: str, width: int) -> list[dict]:
         if not match:
             continue
         x1, y1, x2, y2 = map(int, match.groups())
-        if y1 < 310 or y2 > 2480 or len(text) < 2:
+        if y1 < 310 or y1 >= 2540 or len(text) < 2:
             continue
         msgs.append(
             {
@@ -226,45 +249,85 @@ def extract_messages(xml: str, width: int) -> list[dict]:
 
 
 def _same_person(a: str, b: str) -> bool:
-    return a.strip().split()[0].lower() == b.strip().split()[0].lower()
+    """Exact display name. First-name-only matched Lauren to Lauren Mizaela."""
+    return a.strip().casefold() == b.strip().casefold()
 
 
 def capture_thread(device, width: int, height: int, expected: str | None = None) -> list[tuple[str, str]]:
-    """Scroll toward older messages, then return oldest→newest unique bubbles."""
+    """Scroll to the newest, then oldest, then newest again; return oldest→newest bubbles."""
     seen: set[tuple[str, str]] = set()
     thread: list[tuple[str, str]] = []
     x = width // 2
     y_mid = int(height * 0.52)
     y_low = int(height * 0.72)
-    for pass_i in range(3):
-        xml = dump_hierarchy(device)
+
+    def _ingest(xml: str, prepend: bool) -> int:
+        nonlocal thread
         partner = chat_partner_name(xml)
         if not partner:
-            log.warning("left the thread while capturing (pass %d)", pass_i)
-            break
+            return -1
         if expected and not _same_person(partner, expected):
-            log.warning("wrong thread %s (wanted %s) — abort capture", partner, expected)
-            return []
+            return -2
         chunk = extract_messages(xml, width)
         unseen = [(m["side"], m["text"]) for m in chunk if (m["side"], m["text"]) not in seen]
         for item in unseen:
             seen.add(item)
-        thread = unseen + thread if pass_i else unseen
-        if pass_i > 0 and not unseen:
-            break
-        if pass_i < 2:
+        if prepend:
+            thread = unseen + thread
+        else:
+            thread.extend(unseen)
+        return len(unseen)
+
+    def _scroll(toward_older: bool) -> None:
+        if toward_older:
             _adb_swipe(device, x, y_mid, x, y_low, 380)
-            wait_idle(device, 0.5)
-    _adb_swipe(device, x, y_low, x, y_mid, 360)
-    wait_idle(device, 0.35)
+        else:
+            _adb_swipe(device, x, y_low, x, y_mid, 300)
+        wait_idle(device, 0.4)
+
+    def _until_end(*, toward_older: bool, prepend: bool, limit: int) -> int | None:
+        stagnant = 0
+        last_code = 0
+        for pass_i in range(limit):
+            _scroll(toward_older)
+            xml = dump_hierarchy(device)
+            code = _ingest(xml, prepend)
+            if code == -2:
+                log.warning(
+                    "wrong thread %s (wanted %s) — abort capture",
+                    chat_partner_name(xml),
+                    expected,
+                )
+                return -2
+            if code == -1:
+                log.warning("left the thread while capturing (pass %d)", pass_i)
+                return -1
+            last_code = code
+            if code == 0:
+                stagnant += 1
+            else:
+                stagnant = 0
+            if stagnant >= 3:
+                break
+        return last_code
+
+    # Newest messages sit at the bottom, just above the composer.
     xml = dump_hierarchy(device)
-    partner = chat_partner_name(xml)
-    if partner and (not expected or _same_person(partner, expected)):
-        for msg in extract_messages(xml, width):
-            key = (msg["side"], msg["text"])
-            if key not in seen:
-                seen.add(key)
-                thread.append(key)
+    code = _ingest(xml, prepend=False)
+    if code == -2:
+        log.warning("wrong thread while capturing (wanted %s)", expected)
+        return []
+    if code == -1:
+        log.warning("left the thread while capturing")
+        return []
+    if _until_end(toward_older=False, prepend=False, limit=24) == -2:
+        return []
+
+    if _until_end(toward_older=True, prepend=True, limit=40) == -2:
+        return []
+
+    if _until_end(toward_older=False, prepend=False, limit=40) == -2:
+        return []
     return thread
 
 
@@ -280,7 +343,7 @@ def scan_chat_list(device, package: str) -> list[dict[str, str]]:
         xml = dump_hierarchy(device)
         if not _on_list(xml):
             xml = recover_to_list(device, package)
-        visible = _list_rows(xml)
+        visible = _list_rows(xml, min_top=200)
         for row in visible:
             name = str(row["name"])
             if name not in seen:
@@ -305,7 +368,7 @@ def scan_chat_list(device, package: str) -> list[dict[str, str]]:
 def _pick_row(rows: list[dict], done: set[str]) -> dict | None:
     """Only a middle-of-screen unfinished row. Edge rows are scrolled, not tapped."""
     pending = [r for r in rows if r["name"] not in done and not r.get("clipped")]
-    safe = [r for r in pending if 1650 <= int(r["y"]) <= 2100]
+    safe = [r for r in pending if 1450 <= int(r["y"]) <= 2200]
     if not safe:
         return None
     for row in safe:
@@ -335,14 +398,23 @@ def _wait_thread(device) -> str:
     return xml
 
 
-def _scroll_inbox(device, width: int, height: int, *, toward_top: bool) -> None:
-    """Fast fling — slow drags are ignored at the ends of this list."""
+def _scroll_inbox(
+    device,
+    width: int,
+    height: int,
+    *,
+    toward_top: bool,
+    distance: int = 650,
+    duration_ms: int = 180,
+) -> None:
+    """Scroll the Chats list. toward_top is finger-up, toward Jorge / newest."""
     x = width // 2
+    distance = max(80, min(int(distance), 700))
     if toward_top:
-        _adb_swipe(device, x, 1500, x, 2250, 180)
+        _adb_swipe(device, x, 2000, x, 2000 - distance, duration_ms)
     else:
-        _adb_swipe(device, x, 2200, x, 1400, 180)
-    wait_idle(device, 0.7)
+        _adb_swipe(device, x, 1700, x, 1700 + distance, duration_ms)
+    wait_idle(device, 0.55)
 
 
 def _inbox_key(xml: str) -> tuple[str, ...]:
@@ -365,14 +437,16 @@ def _go_top_of_inbox(device, package: str, width: int, height: int) -> str:
     return xml
 
 
-def capture_all_chats(device, conn, package: str, limit: int = 0) -> int:
+def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: bool = False) -> int:
     width = int(device.info["displayWidth"])
     height = int(device.info["displayHeight"])
     xml = _go_top_of_inbox(device, package, width, height)
 
-    done = names_with_messages(conn)
+    done = set() if recapture else names_with_messages(conn)
     misses: dict[str, int] = {}
-    if done:
+    if recapture:
+        log.info("recapture: opening every inbox row (not skipping saved chats)")
+    elif done:
         log.info("resume: skipping %d already-saved chats", len(done))
     stagnant = 0
     captured = 0
@@ -383,15 +457,17 @@ def capture_all_chats(device, conn, package: str, limit: int = 0) -> int:
             xml = dump_hierarchy(device)
             if not _on_list(xml):
                 xml = recover_to_list(device, package)
-            rows = _list_rows(xml)
+            rows = _list_rows(xml, min_top=200)
             log.info("inbox: %s", ", ".join(f"{r['name']}@{r['y']}" for r in rows) or "(none)")
             for seen in rows:
+                badge = str(seen["badge"] or "")
                 upsert_chat(
                     conn,
                     str(seen["name"]),
                     preview=str(seen["preview"]),
-                    badge=str(seen["badge"]),
+                    badge=badge,
                     last_text=str(seen["preview"]) or None,
+                    last_from="them" if badge.strip().lower() == "your turn" else None,
                 )
             conn.commit()
             row = _pick_row(rows, done)
@@ -400,7 +476,9 @@ def capture_all_chats(device, conn, package: str, limit: int = 0) -> int:
                 if stagnant >= 14:
                     break
                 if _on_list(xml):
-                    _scroll_inbox(device, width, height, toward_top=False)
+                    _scroll_inbox(
+                        device, width, height, toward_top=False, distance=700, duration_ms=180
+                    )
                 continue
             stagnant = 0
             _open_named_chat(device, str(row["name"]), int(row["x"]), int(row["y"]))
@@ -515,12 +593,22 @@ def open_chat_via_search(device, package: str, name: str) -> str | None:
     field.click()
     wait_idle(device, 0.3)
     field.set_text(name)
-    wait_idle(device, 1.6)
-    device.press("back")
-    wait_idle(device, 0.5)
+    wait_idle(device, 1.8)
     xml = dump_hierarchy(device)
-    rows = _list_rows(xml, min_top=300)
+    blob = _texts(xml).lower()
+    if "no results" in blob:
+        log.warning("search no results for %s", name)
+        device.press("back")
+        wait_idle(device, 0.4)
+        return None
+    rows = _list_rows(xml, min_top=200)
     match = next((r for r in rows if str(r["name"]).lower() == name.strip().lower()), None)
+    if match is None:
+        device.press("back")
+        wait_idle(device, 0.5)
+        xml = dump_hierarchy(device)
+        rows = _list_rows(xml, min_top=300)
+        match = next((r for r in rows if str(r["name"]).lower() == name.strip().lower()), None)
     if match is None:
         log.warning("search had no row for %s (got %s)", name, [r["name"] for r in rows])
         return None
@@ -532,6 +620,136 @@ def open_chat_via_search(device, package: str, name: str) -> str | None:
         log.warning("search opened %s wanted %s", partner, name)
         return None
     return partner
+
+
+_TAP_Y_LO = 1550
+_TAP_Y_HI = 2150
+_TAP_Y_AIM = 1850
+
+
+def _row_in_tap_zone(row: dict) -> bool:
+    return _TAP_Y_LO <= int(row["y"]) <= _TAP_Y_HI
+
+
+def open_chat_from_list(device, package: str, name: str) -> str | None:
+    """Scroll the Chats inbox and tap an exact name. Used when search misses."""
+    width = int(device.info["displayWidth"])
+    height = int(device.info["displayHeight"])
+    xml = recover_to_list(device, package)
+    want = name.strip().lower()
+    if not any(str(r["name"]).lower() == want for r in _list_rows(xml, min_top=200)):
+        xml = _go_top_of_inbox(device, package, width, height)
+    last_key: tuple[str, ...] | None = None
+    stagnant = 0
+    tap_tries = 0
+    for _ in range(60):
+        if not _on_list(xml):
+            xml = recover_to_list(device, package)
+        rows = _list_rows(xml, min_top=200)
+        names = [str(r["name"]) for r in rows]
+        hit = next((r for r in rows if str(r["name"]).lower() == want), None)
+        if hit is not None and not _row_in_tap_zone(hit):
+            y = int(hit["y"])
+            delta = y - _TAP_Y_AIM
+            dist = min(380, max(140, abs(delta) * 2 // 3))
+            log.info("nudge %s y=%s → %s (%s)", name, y, _TAP_Y_AIM, names)
+            _scroll_inbox(
+                device,
+                width,
+                height,
+                toward_top=delta > 0,
+                distance=dist,
+                duration_ms=260,
+            )
+            xml = dump_hierarchy(device)
+            stagnant = 0
+            last_key = None
+            continue
+        if hit is not None:
+            wait_idle(device, 0.7)
+            log.info("list-tap %s @ y=%s y1=%s", name, hit["y"], hit["y1"])
+            name_node = device(resourceId="com.bumblebff.app:id/personName", text=name)
+            if name_node.exists(timeout=1.2):
+                name_node.click()
+            else:
+                tap(device, 480, int(hit["y1"]) + 70)
+            wait_idle(device, 1.6)
+            partner = chat_partner_name(_wait_thread(device))
+            if partner and _same_person(partner, name):
+                return partner
+            log.warning("list opened %s wanted %s", partner, name)
+            tap_tries += 1
+            if partner:
+                leave_chat(device)
+            if tap_tries >= 3:
+                return None
+            xml = recover_to_list(device, package)
+            continue
+        log.info("inbox looking for %s: %s", name, ", ".join(names) or "(none)")
+        key = tuple(names)
+        if key == last_key:
+            stagnant += 1
+        else:
+            stagnant = 0
+            last_key = key
+        if stagnant >= 6:
+            break
+        _scroll_inbox(device, width, height, toward_top=False, distance=320, duration_ms=240)
+        xml = dump_hierarchy(device)
+    log.warning("list had no row for %s", name)
+    return None
+
+
+def recapture_person(device, conn, package: str, name: str) -> bool:
+    """Search-open one chat and replace its stored transcript."""
+    partner = open_chat_via_search(device, package, name)
+    if not partner:
+        recover_to_list(device, package)
+        partner = open_chat_from_list(device, package, name)
+    if not partner:
+        log.warning("could not open %s", name)
+        return False
+    width = int(device.info["displayWidth"])
+    height = int(device.info["displayHeight"])
+    thread = capture_thread(device, width, height, expected=partner)
+    try:
+        leave_chat(device)
+    except Exception:
+        pass
+    if not thread:
+        log.warning("empty recapture for %s", partner)
+        return False
+    person_id = upsert_chat(
+        conn,
+        partner,
+        last_from=thread[-1][0],
+        last_text=thread[-1][1],
+        opener_sent=any(_OPENER.search(body) for _side, body in thread),
+    )
+    replace_thread(conn, person_id, thread)
+    conn.commit()
+    log.info("recaptured %s msgs=%d last=%s %r", partner, len(thread), thread[-1][0], thread[-1][1][:80])
+    return True
+
+
+def refresh_named_chat(name: str, *, serial: str | None = None) -> tuple[bool, str]:
+    """Open a named chat on the phone and replace the stored transcript."""
+    name = name.strip()
+    if not name:
+        return False, "name required"
+    cfg = load_config()
+    package = str(cfg["package"])
+    device = connect(serial)
+    bring_app_foreground(device, package)
+    wait_idle(device, 0.6)
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        ok = recapture_person(device, conn, package, name)
+    finally:
+        conn.close()
+    if ok:
+        return True, f"refreshed {name} from the phone"
+    return False, f"could not recapture {name} — keep the phone unlocked on Chats"
 
 
 def fill_via_search(device, conn, package: str) -> int:
@@ -625,6 +843,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Open every chat and save the full transcript",
     )
     parser.add_argument(
+        "--recapture",
+        action="store_true",
+        help="With --full, reopen chats that already have a saved transcript",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=0,
@@ -634,6 +857,12 @@ def main(argv: list[str] | None = None) -> int:
         "--search-fill",
         action="store_true",
         help="Search for each person missing a transcript and save the thread",
+    )
+    parser.add_argument(
+        "--person",
+        action="append",
+        default=[],
+        help="Recapture this chat via search (repeatable)",
     )
     args = parser.parse_args(argv)
 
@@ -656,19 +885,30 @@ def main(argv: list[str] | None = None) -> int:
         n = fill_via_search(device, conn, package)
         log.info("search-filled %d chats → %s", n, path)
         return 0
+    if args.person:
+        n = 0
+        for name in args.person:
+            if recapture_person(device, conn, package, name):
+                n += 1
+        log.info("recaptured %d/%d → %s", n, len(args.person), path)
+        return 0
     if args.full:
-        n = capture_all_chats(device, conn, package, limit=args.limit)
+        n = capture_all_chats(
+            device, conn, package, limit=args.limit, recapture=args.recapture
+        )
         log.info("captured %d chats → %s", n, path)
         return 0
 
     rows = scan_chat_list(device, package)
     for row in rows:
+        badge = str(row["badge"] or "")
         upsert_chat(
             conn,
             row["name"],
             preview=row["preview"],
-            badge=row["badge"],
+            badge=badge,
             last_text=row["preview"] or None,
+            last_from="them" if badge.strip().lower() == "your turn" else None,
         )
     conn.commit()
     log.info("synced %d people → %s", len(rows), path)

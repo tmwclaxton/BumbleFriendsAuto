@@ -28,6 +28,10 @@ _SYSTEM_PACKAGES = frozenset(
 
 def connect(serial: str | None = None) -> u2.Device:
     """Connect to a USB/Wi-Fi Android device via ADB."""
+    if not serial:
+        from src.config import load_config
+
+        serial = str(load_config().get("serial") or "").strip() or None
     if serial:
         device = u2.connect(serial)
     else:

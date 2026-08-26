@@ -29,6 +29,13 @@ INPUT_RID = "com.bumblebff.app:id/chatInput_text"
 
 def go_to_chats(device, package: str) -> str:
     xml = dump_hierarchy(device)
+    for _ in range(3):
+        if "navbar_search" not in xml:
+            break
+        log.info("leave chats search")
+        device.press("back")
+        wait_idle(device, 0.8)
+        xml = dump_hierarchy(device)
     if chat_partner_name(xml) or "chatInput_text" in xml:
         leave_chat(device)
         xml = dump_hierarchy(device)
@@ -113,7 +120,7 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
         return False, "name and message required"
 
     from src.store import add_message, connect as db_connect, db_path_from_config, upsert_chat
-    from src.sync_chats import open_chat_via_search
+    from src.sync_chats import open_chat_from_list, open_chat_via_search, recover_to_list
 
     cfg = load_config()
     package = str(cfg["package"])
@@ -121,6 +128,9 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
     bring_app_foreground(device, package)
     wait_idle(device, 0.8)
     partner = open_chat_via_search(device, package, name)
+    if not partner:
+        recover_to_list(device, package)
+        partner = open_chat_from_list(device, package, name)
     if not partner:
         return False, f"could not open chat with {name}"
     ok = send_opener(device, text)

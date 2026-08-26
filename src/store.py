@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS people (
     distance TEXT,
     age INTEGER,
     notes TEXT,
+    phone_provided INTEGER NOT NULL DEFAULT 0,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
@@ -33,6 +35,8 @@ CREATE TABLE IF NOT EXISTS chats (
     last_from TEXT,
     last_text TEXT,
     opener_sent INTEGER NOT NULL DEFAULT 0,
+    dismissed_reply_text TEXT,
+    draft TEXT,
     updated_at TEXT NOT NULL
 );
 
@@ -70,7 +74,50 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    chat_cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(chats)")}
+    if "dismissed_reply_text" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN dismissed_reply_text TEXT")
+    people_cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(people)")}
+    if "phone_provided" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN phone_provided INTEGER NOT NULL DEFAULT 0")
+    if "draft" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN draft TEXT")
+    conn.commit()
+
+
+_PHONE_RE = re.compile(
+    r"(?<!\d)(?:"
+    r"(?:\+|00)[\s.\-()]*\d(?:[\s.\-()]*\d){7,14}"
+    r"|"
+    r"07[\s.\-()]*\d(?:[\s.\-()]*\d){8}"
+    r")(?!\d)"
+)
+
+
+def message_has_phone(text: str) -> bool:
+    return bool(_PHONE_RE.search(text or ""))
+
+
+def refresh_phone_flags(conn: sqlite3.Connection) -> int:
+    """Tag people whose stored texts include a phone number."""
+    hits: set[int] = set()
+    for row in conn.execute("SELECT person_id, body FROM messages"):
+        if message_has_phone(row["body"]):
+            hits.add(int(row["person_id"]))
+    for row in conn.execute("SELECT person_id, last_text, preview FROM chats"):
+        blob = f"{row['last_text'] or ''} {row['preview'] or ''}"
+        if message_has_phone(blob):
+            hits.add(int(row["person_id"]))
+    conn.execute("UPDATE people SET phone_provided = 0")
+    for person_id in hits:
+        conn.execute("UPDATE people SET phone_provided = 1 WHERE id = ?", (person_id,))
+    conn.commit()
+    return len(hits)
 
 
 def upsert_person(
@@ -119,16 +166,22 @@ def derive_status(
     preview: str = "",
     last_from: str | None = None,
     last_text: str = "",
+    dismissed_reply_text: str | None = None,
 ) -> str:
     blob = f"{badge} {preview} {last_text}".lower()
     if "expired" in blob:
         return "expired"
+    last_norm = " ".join((last_text or "").split()).casefold()
+    dismissed_norm = " ".join((dismissed_reply_text or "").split()).casefold()
+    if dismissed_norm and last_norm == dismissed_norm:
+        return "waiting"
+    # Phone "Your turn" wins over a stale last_from=you from an older opener.
+    if badge.strip().lower() == "your turn" or "your turn" in blob:
+        return "needs_reply"
     if last_from == "them":
         return "needs_reply"
     if last_from == "you":
         return "waiting"
-    if badge.strip().lower() == "your turn" or "your turn" in blob:
-        return "needs_reply"
     if "their turn" in blob:
         return "waiting"
     return "unknown"
@@ -149,7 +202,7 @@ def upsert_chat(
 ) -> int:
     person_id = upsert_person(conn, name, location=location, distance=distance, age=age)
     existing = conn.execute(
-        "SELECT preview, badge, last_from, last_text, opener_sent FROM chats WHERE person_id = ?",
+        "SELECT preview, badge, last_from, last_text, opener_sent, dismissed_reply_text FROM chats WHERE person_id = ?",
         (person_id,),
     ).fetchone()
     preview_v = preview if preview is not None else (existing["preview"] if existing else None)
@@ -166,6 +219,7 @@ def upsert_chat(
         preview=preview_v or "",
         last_from=last_from_v,
         last_text=last_text_v or "",
+        dismissed_reply_text=existing["dismissed_reply_text"] if existing else None,
     )
     conn.execute(
         """
@@ -184,6 +238,41 @@ def upsert_chat(
         (person_id, preview_v, badge_v, status, last_from_v, last_text_v, sent_v, _now()),
     )
     return person_id
+
+
+def dismiss_needs_reply(conn: sqlite3.Connection, name: str) -> bool:
+    """Clear needs_reply until they send a different last message."""
+    name = name.strip()
+    row = conn.execute(
+        """
+        SELECT p.id, c.last_text, c.last_from, c.preview, c.badge
+        FROM people p
+        LEFT JOIN chats c ON c.person_id = p.id
+        WHERE p.name = ?
+        """,
+        (name,),
+    ).fetchone()
+    if row is None:
+        return False
+    last_text = (row["last_text"] or row["preview"] or "").strip()
+    person_id = upsert_chat(
+        conn,
+        name,
+        last_from=row["last_from"],
+        last_text=row["last_text"],
+        preview=row["preview"],
+        badge=row["badge"],
+    )
+    conn.execute(
+        """
+        UPDATE chats
+        SET dismissed_reply_text = ?, status = 'waiting', updated_at = ?
+        WHERE person_id = ?
+        """,
+        (last_text, _now(), person_id),
+    )
+    conn.commit()
+    return True
 
 
 def replace_thread(
@@ -252,13 +341,28 @@ def mark_opener_sent(conn: sqlite3.Connection, name: str, body: str) -> None:
     conn.commit()
 
 
+def set_draft(conn: sqlite3.Connection, name: str, text: str) -> bool:
+    """Save or clear the inbox composer draft for this person."""
+    name = name.strip()
+    if not name:
+        return False
+    person_id = upsert_chat(conn, name)
+    conn.execute(
+        "UPDATE chats SET draft = ? WHERE person_id = ?",
+        ((text or "").strip() or None, person_id),
+    )
+    conn.commit()
+    return True
+
+
 def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    refresh_phone_flags(conn)
     return list(
         conn.execute(
             """
-            SELECT p.name, p.location, p.distance, p.age,
+            SELECT p.name, p.location, p.distance, p.age, p.phone_provided,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
-                   c.opener_sent, c.updated_at
+                   c.opener_sent, c.draft, c.updated_at
             FROM people p
             LEFT JOIN chats c ON c.person_id = p.id
             ORDER BY

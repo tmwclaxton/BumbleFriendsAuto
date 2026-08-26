@@ -1,0 +1,14 @@
+#!/bin/sh
+# Reject pushes unless the active gh account is tmwclaxton (repo owner).
+if ! command -v gh >/dev/null 2>&1; then
+  echo "gh is required to push this repo (must be logged in as tmwclaxton)." >&2
+  exit 1
+fi
+login=$(gh api user --jq .login 2>/dev/null) || login=""
+if [ "$login" != "tmwclaxton" ]; then
+  echo "Push blocked: active GitHub user is '${login:-unknown}', not tmwclaxton." >&2
+  echo "Run: gh auth switch --user tmwclaxton" >&2
+  echo "Then push, then: gh auth switch --user tobyclaxton" >&2
+  exit 1
+fi
+exit 0
