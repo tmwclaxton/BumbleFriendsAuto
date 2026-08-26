@@ -6,6 +6,7 @@ import logging
 import time
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from src.config import load_config
 from src.phone_queue import enqueue, ensure_worker, get_job, job_poll_payload, queue_snapshot
@@ -20,6 +21,23 @@ mcp = FastMCP(
         "Phone actions are asynchronous: call start_* tools, then poll get_job "
         "(or wait_for_job) until status is done or error. Never treat queued/running as success. "
         "Full inbox recapture can take up to ~40 minutes."
+    ),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[
+            "127.0.0.1:*",
+            "localhost:*",
+            "[::1]:*",
+            "lgspipeline.grantgunner.org",
+            "lgspipeline.grantgunner.org:*",
+        ],
+        allowed_origins=[
+            "http://127.0.0.1:*",
+            "http://localhost:*",
+            "http://[::1]:*",
+            "https://lgspipeline.grantgunner.org",
+            "https://lgspipeline.grantgunner.org:*",
+        ],
     ),
 )
 
