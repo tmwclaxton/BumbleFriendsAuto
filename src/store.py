@@ -6,7 +6,7 @@ import argparse
 import re
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS chats (
     opener_sent INTEGER NOT NULL DEFAULT 0,
     dismissed_reply_text TEXT,
     draft TEXT,
+    message_until TEXT,
     updated_at TEXT NOT NULL
 );
 
@@ -87,7 +88,75 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE people ADD COLUMN phone_provided INTEGER NOT NULL DEFAULT 0")
     if "draft" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN draft TEXT")
+    if "message_until" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN message_until TEXT")
+    _backfill_message_until(conn)
     conn.commit()
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+_HOURS_LEFT_RE = re.compile(r"(\d+)\s*hours?\s+left to message", re.I)
+_NEW_FRIEND_HINT = re.compile(
+    r"hours?\s+left to message|no messages yet|\bextend\b",
+    re.I,
+)
+
+
+def parse_hours_left(text: str | None) -> int | None:
+    match = _HOURS_LEFT_RE.search(text or "")
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def is_match_chrome(text: str | None) -> bool:
+    return bool(_NEW_FRIEND_HINT.search((text or "").strip()))
+
+
+def message_until_from_hours(hours: int, *, observed_at: datetime | None = None) -> str:
+    base = observed_at or datetime.now(timezone.utc)
+    return (base + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _backfill_message_until(conn: sqlite3.Connection) -> None:
+    for row in conn.execute(
+        "SELECT person_id, last_text, preview, updated_at, message_until FROM chats"
+    ):
+        if row["message_until"]:
+            continue
+        hours = parse_hours_left(row["last_text"]) or parse_hours_left(row["preview"])
+        if hours is None:
+            continue
+        observed = _parse_iso(row["updated_at"]) or datetime.now(timezone.utc)
+        last_text = None if parse_hours_left(row["last_text"]) else row["last_text"]
+        preview = None if parse_hours_left(row["preview"]) else row["preview"]
+        conn.execute(
+            """
+            UPDATE chats
+            SET message_until = ?, last_text = ?, preview = ?
+            WHERE person_id = ?
+            """,
+            (
+                message_until_from_hours(hours, observed_at=observed),
+                last_text,
+                preview,
+                int(row["person_id"]),
+            ),
+        )
 
 
 _PHONE_RE = re.compile(
@@ -214,8 +283,12 @@ def derive_status(
     last_from: str | None = None,
     last_text: str = "",
     dismissed_reply_text: str | None = None,
+    message_until: str | None = None,
 ) -> str:
     blob = f"{badge} {preview} {last_text}".lower()
+    until = _parse_iso(message_until)
+    if until is not None and until <= datetime.now(timezone.utc) and not last_from:
+        return "expired"
     if "expired" in blob:
         return "expired"
     last_norm = " ".join((last_text or "").split()).casefold()
@@ -243,13 +316,14 @@ def upsert_chat(
     last_from: str | None = None,
     last_text: str | None = None,
     opener_sent: bool | None = None,
+    message_until: str | None = None,
     location: str | None = None,
     distance: str | None = None,
     age: int | None = None,
 ) -> int:
     person_id = upsert_person(conn, name, location=location, distance=distance, age=age)
     existing = conn.execute(
-        "SELECT preview, badge, last_from, last_text, opener_sent, dismissed_reply_text FROM chats WHERE person_id = ?",
+        "SELECT preview, badge, last_from, last_text, opener_sent, dismissed_reply_text, message_until FROM chats WHERE person_id = ?",
         (person_id,),
     ).fetchone()
     preview_v = preview if preview is not None else (existing["preview"] if existing else None)
@@ -261,18 +335,35 @@ def upsert_chat(
         if opener_sent is not None
         else (int(existing["opener_sent"]) if existing else 0)
     )
+    hours = parse_hours_left(last_text_v) or parse_hours_left(preview_v)
+    if parse_hours_left(last_text_v):
+        last_text_v = None
+    if parse_hours_left(preview_v):
+        preview_v = None
+    if message_until is not None:
+        until_v = (message_until or "").strip() or None
+    elif hours is not None:
+        until_v = message_until_from_hours(hours)
+    elif sent_v or (last_text_v and not is_match_chrome(last_text_v)):
+        until_v = None
+    else:
+        until_v = existing["message_until"] if existing else None
+    if sent_v:
+        until_v = None
     status = derive_status(
         badge=badge_v or "",
         preview=preview_v or "",
         last_from=last_from_v,
         last_text=last_text_v or "",
         dismissed_reply_text=existing["dismissed_reply_text"] if existing else None,
+        message_until=until_v,
     )
     conn.execute(
         """
         INSERT INTO chats (
-            person_id, preview, badge, status, last_from, last_text, opener_sent, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            person_id, preview, badge, status, last_from, last_text, opener_sent,
+            message_until, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(person_id) DO UPDATE SET
             preview = excluded.preview,
             badge = excluded.badge,
@@ -280,9 +371,10 @@ def upsert_chat(
             last_from = excluded.last_from,
             last_text = excluded.last_text,
             opener_sent = excluded.opener_sent,
+            message_until = excluded.message_until,
             updated_at = excluded.updated_at
         """,
-        (person_id, preview_v, badge_v, status, last_from_v, last_text_v, sent_v, _now()),
+        (person_id, preview_v, badge_v, status, last_from_v, last_text_v, sent_v, until_v, _now()),
     )
     return person_id
 
@@ -402,12 +494,6 @@ def set_draft(conn: sqlite3.Connection, name: str, text: str) -> bool:
     return True
 
 
-_NEW_FRIEND_HINT = re.compile(
-    r"hours?\s+left to message|no messages yet|\bextend\b",
-    re.I,
-)
-
-
 def is_new_friend(row: sqlite3.Row | dict) -> bool:
     """True for empty New-friends matches that have not had the opener yet."""
     getter = row.keys() if hasattr(row, "keys") else None
@@ -424,10 +510,16 @@ def is_new_friend(row: sqlite3.Row | dict) -> bool:
     blob = f"{_get('status') or ''} {_get('last_text') or ''} {_get('preview') or ''}"
     if "expired" in blob.lower():
         return False
-    n = int(_get("message_count") or 0)
+    until = _parse_iso(_get("message_until"))
+    if until is not None and until <= datetime.now(timezone.utc):
+        return False
+    if until is not None:
+        return True
     if _NEW_FRIEND_HINT.search(blob.strip()):
         return True
-    return n == 0
+    n = int(_get("message_count") or 0)
+    last = f"{_get('last_text') or ''} {_get('preview') or ''}".strip()
+    return n == 0 and not last
 
 
 def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -437,7 +529,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             """
             SELECT p.name, p.location, p.distance, p.age, p.phone_provided,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
-                   c.opener_sent, c.draft, c.updated_at,
+                   c.opener_sent, c.draft, c.message_until, c.updated_at,
                    (SELECT COUNT(*) FROM messages m WHERE m.person_id = p.id) AS message_count
             FROM people p
             LEFT JOIN chats c ON c.person_id = p.id

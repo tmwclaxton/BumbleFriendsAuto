@@ -104,8 +104,27 @@
     text-transform: uppercase;
     color: var(--muted);
   }
-  #new-wrap { border-bottom: 1px solid var(--line); }
+  #new-wrap {
+    margin: 8px 10px 4px;
+    background: #16141e;
+    border: 1px solid #3a3350;
+    border-radius: 12px;
+    overflow: hidden;
+  }
   #new-wrap[hidden] { display: none; }
+  #new-wrap .section-head { color: #c9b6ff; }
+  #new-wrap .row { border-bottom-color: #2c2838; }
+  #new-wrap .row:last-child { border-bottom: 0; }
+  #new-hint {
+    margin: 0;
+    padding: 0 14px 10px;
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+  #chats-head { padding-top: 14px; }
   #msg-all {
     text-transform: none;
     letter-spacing: 0;
@@ -117,6 +136,7 @@
     padding: 5px 10px;
     font-weight: 650;
     cursor: pointer;
+    white-space: nowrap;
   }
   #msg-all:hover { filter: brightness(1.08); }
   #msg-all:disabled { opacity: .45; cursor: default; }
@@ -292,10 +312,12 @@
     <div id="new-wrap" hidden>
       <div class="section-head">
         <span id="new-label">New friends</span>
-        <button type="button" id="msg-all">Message all</button>
+        <button type="button" id="msg-all" title="Sends the hiking / board games opener on the phone to every match in this section. Does not message existing chats.">Send opener to all</button>
       </div>
+      <p id="new-hint">Matches waiting for a first message. The button only messages this list, not the chats below.</p>
       <div id="new-list"></div>
     </div>
+    <div id="chats-head" class="section-head">Chats</div>
     <div id="list"></div>
   </div>
 </aside>
@@ -389,17 +411,35 @@ function setChatUrl(name, push) {
   else history.replaceState({chat: name}, "", next);
 }
 
-function rowHtml(p) {
+function remainingLabel(iso) {
+  if (!iso) return "No messages yet";
+  const raw = String(iso);
+  const until = Date.parse(raw.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(raw) ? raw : raw + "Z");
+  if (!Number.isFinite(until)) return "No messages yet";
+  const ms = until - Date.now();
+  if (ms <= 0) return "Match expired";
+  const hours = Math.floor(ms / 3600000);
+  if (hours >= 48) {
+    const days = Math.round(hours / 24);
+    return days + " days left to message";
+  }
+  if (hours >= 1) return hours + " hours left to message";
+  const mins = Math.max(1, Math.round(ms / 60000));
+  return mins + " minutes left to message";
+}
+
+function rowHtml(p, inNew) {
   const on = current === p.name ? " on" : "";
-  const snip = esc(p.last_text || p.preview || "");
+  const snip = esc(inNew ? remainingLabel(p.message_until) : (p.last_text || p.preview || ""));
   const st = p.new_friend ? "new" : (p.status || "unknown");
   const stLabel = p.new_friend ? "new friend" : st.replace("_"," ");
+  const tag = inNew ? "" : `<span class="tag ${st}">${esc(stLabel)}</span>`;
   const href = "?chat=" + encodeURIComponent(p.name);
   const phone = p.phone_provided
     ? '<span class="tag phone">phone provided</span>'
     : "";
   return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
-    <div><span class="name">${esc(p.name)}</span><span class="tag ${st}">${esc(stLabel)}</span>${phone}</div>
+    <div><span class="name">${esc(p.name)}</span>${tag}${phone}</div>
     <div class="snip">${snip}</div>
   </a>`;
 }
@@ -409,17 +449,19 @@ function renderList() {
   const match = p => !q || p.name.toLowerCase().includes(q);
   const fresh = people.filter(p => p.new_friend && match(p));
   const rest = people.filter(p => !p.new_friend && match(p));
+  const chatsHead = document.getElementById("chats-head");
   if (fresh.length) {
     newWrap.hidden = false;
     newLabel.textContent = "New friends · " + fresh.length;
     msgAllBtn.disabled = false;
-    newListEl.innerHTML = fresh.map(rowHtml).join("");
+    newListEl.innerHTML = fresh.map(p => rowHtml(p, true)).join("");
   } else {
     newWrap.hidden = true;
     msgAllBtn.disabled = true;
     newListEl.innerHTML = "";
   }
-  listEl.innerHTML = rest.map(rowHtml).join("");
+  chatsHead.hidden = !rest.length && !q;
+  listEl.innerHTML = rest.map(p => rowHtml(p, false)).join("");
 }
 
 function isDayLabel(body) {
@@ -456,7 +498,13 @@ async function openThread(name, opts) {
   if (switching || !draftEl.value) draftEl.value = data.draft || "";
   const msgs = data.messages || [];
   if (!msgs.length) {
-    msgsEl.innerHTML = '<p class="empty">No transcript stored.</p>';
+    if (known && known.new_friend) {
+      msgsEl.innerHTML = "<p class=\"empty\">No messages yet.<br>" +
+        esc(remainingLabel(data.message_until || known.message_until)) +
+        "<br>Use “Send opener to all” in New friends, or type a first message here.</p>";
+    } else {
+      msgsEl.innerHTML = '<p class="empty">No transcript stored.</p>';
+    }
     return;
   }
   msgsEl.innerHTML = msgs.map(m => {
@@ -539,8 +587,10 @@ msgAllBtn.addEventListener("click", async () => {
   const sample = fresh[0].opener || openerTemplate.replace("{name}", fresh[0].name.split(/\s+/)[0]);
   const names = fresh.map(p => p.name).join(", ");
   if (!confirm(
-    "Send this opener to " + fresh.length + " new friend" + (fresh.length === 1 ? "" : "s") +
-    " on the phone?\n\n" + sample + "\n\n" + names
+    "Send the hiking / board games opener to " + fresh.length +
+    " new friend" + (fresh.length === 1 ? "" : "s") +
+    " on the phone?\n\nThis only messages the New friends section, not existing chats.\n\n" +
+    sample + "\n\n" + names
   )) return;
   msgAllBtn.disabled = true;
   statusEl.textContent = "Queued opener to " + fresh.length + " new friends";
@@ -574,7 +624,7 @@ document.getElementById("composer").addEventListener("submit", async e => {
 function jobLabel(job) {
   if (job.kind === "refresh") return "Refresh " + job.name;
   if (job.kind === "recapture_all") return "Recapture inbox";
-  if (job.kind === "message_new_friends") return "Message new friends";
+  if (job.kind === "message_new_friends") return "Send opener to new friends";
   const snip = String(job.text || "").replace(/\s+/g, " ").slice(0, 42);
   return "Reply to " + job.name + (snip ? " — " + snip : "");
 }
@@ -650,6 +700,9 @@ loadPeople().then(() => {
   if (name) return openThread(name, {push: false});
 });
 setInterval(pollQueue, 1000);
+setInterval(() => {
+  if (people.some(p => p.new_friend && p.message_until)) renderList();
+}, 60000);
 pollQueue();
 </script>
 </body>

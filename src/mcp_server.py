@@ -64,6 +64,7 @@ def list_inbox_people() -> dict:
                     "draft": row["draft"] or "",
                     "opener_sent": bool(row["opener_sent"]),
                     "new_friend": is_new_friend(row),
+                    "message_until": row["message_until"],
                 }
             )
         return {"count": len(people), "people": people}

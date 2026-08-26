@@ -19,9 +19,11 @@ from src.screen import find_tab_point
 from src.store import (
     connect as db_connect,
     db_path_from_config,
+    message_until_from_hours,
     name_aliases,
     names_with_messages,
     next_duplicate_name,
+    parse_hours_left,
     person_message_bodies,
     person_them_bodies,
     replace_thread,
@@ -724,13 +726,13 @@ def _save_name_for_thread(conn, partner: str, thread: list[tuple[str, str]]) -> 
                 return alias
             row = conn.execute(
                 """
-                SELECT c.last_text FROM chats c
+                SELECT c.last_text, c.message_until FROM chats c
                 JOIN people p ON p.id = c.person_id WHERE p.name = ?
                 """,
                 (alias,),
             ).fetchone()
             blob = (row[0] or "").lower() if row else ""
-            if "hours left to message" in blob or "no messages yet" in blob:
+            if (row and row[1]) or "hours left to message" in blob or "no messages yet" in blob:
                 return alias
     if any(a.casefold() == partner.casefold() for a in aliases):
         return next_duplicate_name(conn, partner)
@@ -1308,12 +1310,16 @@ def _new_friend_already_saved(conn, name: str) -> bool:
         return True
     row = conn.execute(
         """
-        SELECT c.last_text FROM chats c
+        SELECT c.last_text, c.message_until FROM chats c
         JOIN people p ON p.id = c.person_id WHERE p.name = ?
         """,
         (name,),
     ).fetchone()
-    blob = (row[0] or "").lower() if row else ""
+    if row is None:
+        return False
+    if row["message_until"]:
+        return True
+    blob = (row["last_text"] or "").lower()
     return bool(
         blob
         and (
@@ -1394,16 +1400,18 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
             thread = capture_thread(device, width, height, expected=partner)
         last_text = thread[-1][1] if thread else None
         last_from = thread[-1][0] if thread else None
-        if not thread and is_empty_outbound_chat(xml):
-            blob = _texts(xml)
-            hours = re.search(r"\d+\s*hours?\s+left to message", blob, re.I)
-            last_text = hours.group(0) if hours else "(no messages yet)"
+        until = None
+        if not thread:
+            hours = parse_hours_left(_texts(xml))
+            if hours is not None:
+                until = message_until_from_hours(hours)
         person_id = upsert_chat(
             conn,
             partner,
             preview=last_text or "",
             last_from=last_from,
             last_text=last_text,
+            message_until=until,
         )
         if thread:
             replace_thread(conn, person_id, thread)
@@ -1494,7 +1502,7 @@ def fill_via_search(device, conn, package: str) -> int:
             continue
         row = conn.execute(
             """
-            SELECT c.last_text, c.preview FROM chats c
+            SELECT c.last_text, c.preview, c.message_until FROM chats c
             JOIN people p ON p.id = c.person_id WHERE p.name = ?
             """,
             (name,),
@@ -1503,7 +1511,7 @@ def fill_via_search(device, conn, package: str) -> int:
         if "expired" in blob:
             log.info("search-fill skip expired %s", name)
             continue
-        if "hours left to message" in blob or "(no messages yet)" in blob:
+        if (row and row["message_until"]) or "hours left to message" in blob or "(no messages yet)" in blob:
             log.info("search-fill skip empty new-friend %s", name)
             continue
         targets.append(name)

@@ -19,7 +19,15 @@ from urllib.parse import parse_qs, urlparse
 
 from src.config import ROOT, load_config
 from src.phone_queue import cancel_job, enqueue, ensure_worker, queue_snapshot
-from src.store import connect as db_connect, db_path_from_config, is_new_friend, list_people, list_thread
+from src.store import (
+    connect as db_connect,
+    db_path_from_config,
+    is_match_chrome,
+    is_new_friend,
+    list_people,
+    list_thread,
+    parse_hours_left,
+)
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +98,7 @@ def _preview_already_in_thread(preview: str, msgs: list[dict]) -> bool:
 def _thread_payload(conn, name: str) -> dict:
     row = conn.execute(
         """
-        SELECT p.name, c.status, c.last_from, c.last_text, c.preview, c.draft
+        SELECT p.name, c.status, c.last_from, c.last_text, c.preview, c.draft, c.message_until
         FROM people p
         LEFT JOIN chats c ON c.person_id = p.id
         WHERE p.name = ?
@@ -100,13 +108,19 @@ def _thread_payload(conn, name: str) -> dict:
     msgs = [
         {"side": r["side"], "body": r["body"], "from_preview": False}
         for r in list_thread(conn, name)
+        if not parse_hours_left(r["body"])
+        and (r["body"] or "").strip().lower() not in {
+            "extend",
+            "no messages yet",
+            "(no messages yet)",
+        }
     ]
     if row is None:
-        return {"name": name, "messages": msgs, "status": "unknown", "draft": ""}
+        return {"name": name, "messages": msgs, "status": "unknown", "draft": "", "message_until": None}
     extras: list[str] = []
     for candidate in (row["last_text"], row["preview"]):
         text = (candidate or "").strip()
-        if not text or _is_day_label(text):
+        if not text or _is_day_label(text) or is_match_chrome(text):
             continue
         if text not in extras:
             extras.append(text)
@@ -123,6 +137,7 @@ def _thread_payload(conn, name: str) -> dict:
         "messages": msgs,
         "status": row["status"] or "unknown",
         "draft": row["draft"] or "",
+        "message_until": row["message_until"],
     }
 
 
@@ -152,6 +167,7 @@ def people_api_payload(conn) -> dict:
             "draft": row["draft"] or "",
             "opener_sent": bool(row["opener_sent"]),
             "new_friend": fresh,
+            "message_until": row["message_until"],
             "opener": format_opener(template, str(row["name"])) if fresh else None,
         }
         people.append(item)
