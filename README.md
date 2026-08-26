@@ -89,7 +89,7 @@ Phone work is **async**: `start_*` returns `job_id` immediately; poll `get_job` 
 
 ### Deploy pipeline
 
-Push to `master` builds `ghcr.io/tmwclaxton/bumblefriendsauto` and SSHs to the host to `docker compose pull && up -d`. Required GitHub secrets: `LGPIPELINE_SSH_KEY`, `GHCR_PULL_TOKEN`, `LGPIPELINE_BASIC_AUTH` (`user:pass`), `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET` (Cloudflare Access SSH).
+Push to `master` builds `ghcr.io/tmwclaxton/bumblefriendsauto` and SSHs to the host (Cloudflare tunnel, SSH key only) to `docker compose pull && up -d`. Required GitHub secrets: `LGPIPELINE_SSH_KEY`, `GHCR_PULL_TOKEN`, `LGPIPELINE_BASIC_AUTH` (`user:pass`).
 
 ## Project layout
 
