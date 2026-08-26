@@ -61,7 +61,13 @@ _SEARCH_ICON_RIDS = (
     "com.bumblebff.app:id/navbar_search",
     "com.bumblebff.app:id/mainAppToolbarNavigation_openSearchIcon",
 )
-SEARCH_FIELD = "com.bumblebff.app:id/navbar_search"
+_SEARCH_FIELD_RIDS = (
+    "com.bumblebff.app:id/navbar_search",
+    "com.bumblebff.app:id/search_src_text",
+    "com.bumblebff.app:id/openSearchBarText",
+)
+SEARCH_FIELD = _SEARCH_FIELD_RIDS[0]
+_ITEM_RID_SUFFIXES = ("connectionItem", "connectionsItem")
 
 
 def _screen_size(device) -> tuple[int, int]:
@@ -109,21 +115,22 @@ def _list_rows(xml: str, *, min_top: int = 0, height: int | None = None, width: 
                 width = max(width or 0, int(match.group(3)))
         height = height or 2400
         width = width or 1080
-    max_y1 = int(height * 0.90)
+    max_y1 = int(height * 0.94)
     mid_x = int(width // 2) if width else 540
-    min_row_h = max(120, int(height * 0.08))
+    min_row_h = max(80, int(height * 0.055))
     for item in root.iter():
-        if item.attrib.get("resource-id") != "com.bumblebff.app:id/connectionItem":
+        rid = item.attrib.get("resource-id") or ""
+        if not any(rid.endswith(suffix) for suffix in _ITEM_RID_SUFFIXES):
             continue
         name = badge = preview = ""
         for node in item.iter():
-            rid = node.attrib.get("resource-id") or ""
+            child_rid = node.attrib.get("resource-id") or ""
             text = (node.attrib.get("text") or "").strip()
-            if rid.endswith("personName"):
+            if child_rid.endswith("personName"):
                 name = text
-            elif rid.endswith("connectionItem_badge") and "Unread" not in rid:
+            elif child_rid.endswith("connectionItem_badge") and "Unread" not in child_rid:
                 badge = text
-            elif rid.endswith("_message"):
+            elif child_rid.endswith("_message"):
                 preview = text
         if not name:
             continue
@@ -141,6 +148,36 @@ def _list_rows(xml: str, *, min_top: int = 0, height: int | None = None, width: 
                 "preview": preview,
                 "x": mid_x,
                 "y": (y1 + y2) // 2,
+                "y1": y1,
+                "y2": y2,
+                "clipped": (y2 - y1) < min_row_h or y2 > int(height * 0.90),
+            }
+        )
+    # Pixel sometimes omits connectionItem; still index personName nodes.
+    for node in root.iter():
+        rid = node.attrib.get("resource-id") or ""
+        if not rid.endswith("personName"):
+            continue
+        name = (node.attrib.get("text") or "").strip()
+        if not name or name in _SKIP_EXACT:
+            continue
+        bounds = node.attrib.get("bounds") or ""
+        match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+        if not match:
+            continue
+        x1, y1, x2, y2 = map(int, match.groups())
+        if y2 < min_top or y1 > max_y1:
+            continue
+        y = (y1 + y2) // 2
+        if any(r["name"] == name and abs(int(r["y"]) - y) < 50 for r in rows):
+            continue
+        rows.append(
+            {
+                "name": name,
+                "badge": "",
+                "preview": "",
+                "x": mid_x,
+                "y": y,
                 "y1": y1,
                 "y2": y2,
                 "clipped": (y2 - y1) < min_row_h,
@@ -170,7 +207,12 @@ def _on_thread(xml: str) -> bool:
 def _on_list(xml: str) -> bool:
     if _on_thread(xml):
         return False
-    return "connectionItem" in xml or "New friends" in xml
+    return (
+        "connectionItem" in xml
+        or "connectionsItem" in xml
+        or "personName" in xml
+        or "New friends" in xml
+    )
 
 
 def _on_profile(xml: str) -> bool:
@@ -198,7 +240,7 @@ def recover_to_list(device, package: str) -> str:
     device.shell("cmd statusbar collapse")
     xml = _dump(device)
     for attempt in range(8):
-        if SEARCH_FIELD in xml:
+        if any(rid in xml for rid in _SEARCH_FIELD_RIDS):
             log.info("leave chats search (%d)", attempt)
             device.press("back")
             wait_idle(device, 0.8)
@@ -231,6 +273,90 @@ def recover_to_list(device, package: str) -> str:
         xml = dump_hierarchy(device)
     log.warning("could not reach Chats list")
     return xml
+
+
+def _search_field(device):
+    for rid in _SEARCH_FIELD_RIDS:
+        node = device(resourceId=rid)
+        if node.exists(timeout=0.4):
+            return node
+    node = device(className="android.widget.EditText")
+    if node.exists(timeout=0.4):
+        return node
+    return None
+
+
+def _ensure_inbox_all(device, xml: str) -> str:
+    """Tap the All filter chip when the inbox is on Your turn / Unread."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return xml
+    all_pt = None
+    need_all = False
+    for node in root.iter():
+        text = (node.attrib.get("text") or "").strip().lower()
+        selected = (node.attrib.get("selected") or "").lower() == "true"
+        clickable = (node.attrib.get("clickable") or "").lower() == "true"
+        if text in {"your turn", "unread", "expired"} and selected:
+            need_all = True
+        if text == "all" and clickable:
+            all_pt = _bounds_center(node.attrib.get("bounds") or "")
+    if all_pt and need_all:
+        log.info("inbox filter → All @ %s", all_pt)
+        tap(device, all_pt[0], all_pt[1])
+        wait_idle(device, 1.0)
+        return dump_hierarchy(device)
+    return xml
+
+
+def discover_via_letter_search(device, package: str) -> list[dict[str, str]]:
+    """Type a–z in Chats search and collect every result row."""
+    width, height = _screen_size(device)
+    seen: dict[str, dict[str, str]] = {}
+    for letter in list("abcdefghijklmnopqrstuvwxyz"):
+        try:
+            _ensure_search(device, package)
+            field = _search_field(device)
+            if field is None:
+                log.warning("search field missing for letter %r", letter)
+                recover_to_list(device, package)
+                continue
+            field.click()
+            wait_idle(device, 0.25)
+            field.set_text(letter)
+            wait_idle(device, 1.1)
+            last_key: tuple[str, ...] | None = None
+            stagnant = 0
+            for _ in range(20):
+                xml = dump_hierarchy(device)
+                rows = _list_rows(xml, min_top=0, height=height, width=width)
+                for row in rows:
+                    name = str(row["name"])
+                    if name not in seen:
+                        seen[name] = {
+                            "name": name,
+                            "badge": str(row.get("badge") or ""),
+                            "preview": str(row.get("preview") or ""),
+                        }
+                        log.info("search-seen %s via %r", name, letter)
+                key = tuple(str(r["name"]) for r in rows)
+                if key == last_key:
+                    stagnant += 1
+                else:
+                    stagnant = 0
+                    last_key = key
+                if stagnant >= 3 or not rows:
+                    break
+                _scroll_inbox(device, width, height, older=True, distance=int(height * 0.16))
+        except Exception as exc:
+            log.warning("letter search %r failed: %s", letter, exc)
+        finally:
+            device.press("back")
+            wait_idle(device, 0.35)
+    recover_to_list(device, package)
+    log.info("letter-search indexed %d people", len(seen))
+    return list(seen.values())
 
 
 def _message_side(x1: int, x2: int, text: str, width: int) -> str:
@@ -386,16 +512,18 @@ def capture_thread(device, width: int, height: int, expected: str | None = None)
 def scan_chat_list(device, package: str) -> list[dict[str, str]]:
     width = int(device.info["displayWidth"])
     height = int(device.info["displayHeight"])
+    xml = _go_top_of_inbox(device, package, width, height)
+    xml = _ensure_inbox_all(device, xml)
     _go_top_of_inbox(device, package, width, height)
 
     seen: dict[str, dict[str, str]] = {}
     stagnant = 0
     last_key: tuple[str, ...] | None = None
-    for _ in range(60):
+    for _ in range(150):
         xml = dump_hierarchy(device)
         if not _on_list(xml):
             xml = recover_to_list(device, package)
-        visible = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
+        visible = _list_rows(xml, min_top=0, height=height, width=width)
         for row in visible:
             name = str(row["name"])
             if name not in seen:
@@ -411,9 +539,9 @@ def scan_chat_list(device, package: str) -> list[dict[str, str]]:
         else:
             stagnant = 0
             last_key = key
-        if stagnant >= 6:
+        if stagnant >= 10:
             break
-        _scroll_inbox(device, width, height, older=True)
+        _scroll_inbox(device, width, height, older=True, distance=int(height * 0.12), duration_ms=220)
     return list(seen.values())
 
 
@@ -528,6 +656,8 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
     width = int(device.info["displayWidth"])
     height = int(device.info["displayHeight"])
     xml = _go_top_of_inbox(device, package, width, height)
+    _ensure_inbox_all(device, xml)
+    xml = _go_top_of_inbox(device, package, width, height)
 
     done = set() if recapture else names_with_messages(conn)
     misses: dict[str, int] = {}
@@ -538,7 +668,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
     stagnant = 0
     captured = 0
     last_inbox_key: tuple[str, ...] | None = None
-    for _step in range(200):
+    for _step in range(400):
         if limit > 0 and captured >= limit:
             break
         try:
@@ -711,7 +841,7 @@ def _tap_search_icon(device, xml: str, width: int, height: int) -> bool:
 def _ensure_search(device, package: str) -> None:
     width, height = _screen_size(device)
     xml = dump_hierarchy(device)
-    if SEARCH_FIELD in xml:
+    if _search_field(device) is not None:
         return
     recover_to_list(device, package)
     xml = dump_hierarchy(device)
@@ -723,14 +853,10 @@ def open_chat_via_search(device, package: str, name: str) -> str | None:
     """Open a named inbox thread via Chats search. Returns toolbar title or None."""
     width, height = _screen_size(device)
     _ensure_search(device, package)
-    field = device(resourceId=SEARCH_FIELD)
-    if not field.exists(timeout=3.0):
-        # Pixel sometimes keeps the search field under a different focus path; try again.
-        xml = dump_hierarchy(device)
-        if SEARCH_FIELD not in xml:
-            log.warning("search field missing")
-            return None
-        field = device(resourceId=SEARCH_FIELD)
+    field = _search_field(device)
+    if field is None:
+        log.warning("search field missing")
+        return None
     field.click()
     wait_idle(device, 0.3)
     field.set_text(name)
@@ -918,24 +1044,32 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
         wait_idle(device, 1.0)
         conn = db_connect(db_path_from_config(cfg))
         try:
+            def _index(rows: list[dict]) -> None:
+                for row in rows:
+                    badge = str(row.get("badge") or "")
+                    upsert_chat(
+                        conn,
+                        str(row["name"]),
+                        preview=str(row.get("preview") or ""),
+                        badge=badge,
+                        last_text=str(row.get("preview") or "") or None,
+                        last_from="them" if badge.strip().lower() == "your turn" else None,
+                    )
+                conn.commit()
+
             indexed = scan_chat_list(device, package)
-            for row in indexed:
-                badge = str(row.get("badge") or "")
-                upsert_chat(
-                    conn,
-                    str(row["name"]),
-                    preview=str(row.get("preview") or ""),
-                    badge=badge,
-                    last_text=str(row.get("preview") or "") or None,
-                    last_from="them" if badge.strip().lower() == "your turn" else None,
-                )
-            conn.commit()
+            _index(indexed)
             log.info("indexed %d inbox rows", len(indexed))
+            extra = discover_via_letter_search(device, package)
+            _index(extra)
+            total_names = conn.execute("SELECT count(*) FROM people").fetchone()[0]
+            log.info("after letter-search: %d people in db (%d new from search)", total_names, max(0, total_names - len(indexed)))
             n = capture_all_chats(device, conn, package, recapture=True)
             n_search = fill_via_search(device, conn, package)
         finally:
             conn.close()
-        msg = f"recaptured {n} chats ({len(indexed)} indexed, {n_search} via search)"
+        people_n = total_names
+        msg = f"recaptured {n} chats ({people_n} people, {n_search} via search)"
         log.info(msg)
         return True, msg
     except Exception as exc:
@@ -955,8 +1089,20 @@ def fill_via_search(device, conn, package: str) -> int:
     names = [str(r[0]) for r in conn.execute("SELECT name FROM people ORDER BY name COLLATE NOCASE")]
     targets: list[str] = []
     for name in names:
-        if name not in have and name not in targets:
-            targets.append(name)
+        if name in have or name in targets:
+            continue
+        row = conn.execute(
+            """
+            SELECT c.last_text, c.preview FROM chats c
+            JOIN people p ON p.id = c.person_id WHERE p.name = ?
+            """,
+            (name,),
+        ).fetchone()
+        blob = f"{row[0] or ''} {row[1] or ''}".lower() if row else ""
+        if "expired" in blob:
+            log.info("search-fill skip expired %s", name)
+            continue
+        targets.append(name)
     log.info("search-fill %d people", len(targets))
     width = int(device.info["displayWidth"])
     height = int(device.info["displayHeight"])
@@ -964,8 +1110,8 @@ def fill_via_search(device, conn, package: str) -> int:
     for name in targets:
         try:
             _ensure_search(device, package)
-            field = device(resourceId=SEARCH_FIELD)
-            if not field.exists(timeout=3.0):
+            field = _search_field(device)
+            if field is None:
                 log.warning("search field missing for %s", name)
                 continue
             field.click()
