@@ -245,12 +245,15 @@ def _message_side(x1: int, x2: int, text: str, width: int) -> str:
     return "them" if left_frac < 0.28 else "you"
 
 
-def extract_messages(xml: str, width: int) -> list[dict]:
+def extract_messages(xml: str, width: int, height: int | None = None) -> list[dict]:
     msgs: list[dict] = []
     try:
         root = ET.fromstring(xml)
     except ET.ParseError:
         return msgs
+    height = height or 2400
+    y_min = int(height * 0.12)
+    y_max = int(height * 0.92)
     for node in root.iter():
         text = (node.attrib.get("text") or "").strip()
         rid = node.attrib.get("resource-id") or ""
@@ -279,7 +282,7 @@ def extract_messages(xml: str, width: int) -> list[dict]:
         if not match:
             continue
         x1, y1, x2, y2 = map(int, match.groups())
-        if y1 < 310 or y1 >= 2540 or len(text) < 2:
+        if y1 < y_min or y1 >= y_max or len(text) < 2:
             continue
         msgs.append(
             {
@@ -317,7 +320,7 @@ def capture_thread(device, width: int, height: int, expected: str | None = None)
             return -1
         if expected and not _same_person(partner, expected):
             return -2
-        chunk = extract_messages(xml, width)
+        chunk = extract_messages(xml, width, height)
         unseen = [(m["side"], m["text"]) for m in chunk if (m["side"], m["text"]) not in seen]
         for item in unseen:
             seen.add(item)
@@ -410,25 +413,52 @@ def scan_chat_list(device, package: str) -> list[dict[str, str]]:
             last_key = key
         if stagnant >= 6:
             break
-        _scroll_inbox(device, width, height, toward_top=False)
+        _scroll_inbox(device, width, height, older=True)
     return list(seen.values())
 
 
-def _pick_row(rows: list[dict], done: set[str], *, height: int) -> dict | None:
-    """Only a middle-of-screen unfinished row. Edge rows are scrolled, not tapped."""
+def _usable_list_band(height: int, tab_top: int | None = None) -> tuple[int, int, int]:
+    """Y range where a chat row can be tapped (below header, above tab bar)."""
+    lo = int(height * 0.20)
+    hi = int((tab_top if tab_top else int(height * 0.90)) - max(16, int(height * 0.02)))
+    aim = int(height * 0.62)
+    return lo, hi, aim
+
+
+def _pick_row(
+    rows: list[dict],
+    done: set[str],
+    *,
+    height: int,
+    tab_top: int | None = None,
+) -> dict | None:
+    """Prefer a mid-screen unfinished row; otherwise any row in the list well.
+
+    Top-of-inbox rows (Pixel ~y=1100 on 2400) can never be scrolled into a
+    Honor-style 0.55–0.82 band, so refusing those left Nollan/Kavya unopened.
+    """
     pending = [r for r in rows if r["name"] not in done and not r.get("clipped")]
-    lo = int(height * 0.55)
-    hi = int(height * 0.82)
-    safe = [r for r in pending if lo <= int(r["y"]) <= hi]
+    if not pending:
+        pending = [r for r in rows if r["name"] not in done]
+    if not pending:
+        return None
+    prefer_lo, prefer_hi, aim = _tap_zone(height)
+    well_lo, well_hi, well_aim = _usable_list_band(height, tab_top)
+    safe = [r for r in pending if prefer_lo <= int(r["y"]) <= prefer_hi]
+    if not safe:
+        safe = [r for r in pending if well_lo <= int(r["y"]) <= well_hi]
+        aim = well_aim
     if not safe:
         return None
-    gap = max(60, int(height * 0.03))
+    gap = max(48, int(height * 0.02))
+    isolated = []
     for row in safe:
         others = [r for r in rows if r["name"] != row["name"]]
         if any(abs(int(r["y"]) - int(row["y"])) < gap for r in others):
             continue
-        return row
-    return safe[0]
+        isolated.append(row)
+    pool = isolated or safe
+    return min(pool, key=lambda r: abs(int(r["y"]) - aim))
 
 
 def _open_named_chat(device, name: str, x: int, y: int) -> None:
@@ -455,11 +485,11 @@ def _scroll_inbox(
     width: int,
     height: int,
     *,
-    toward_top: bool,
+    older: bool,
     distance: int | None = None,
     duration_ms: int = 180,
 ) -> None:
-    """Scroll the Chats list. toward_top flings content toward the newest/top."""
+    """Scroll the Chats list. older=True swipes up (further down the inbox)."""
     x = width // 2
     if distance is None:
         distance = int(height * 0.25)
@@ -467,7 +497,7 @@ def _scroll_inbox(
     # Stay above the tab bar (~0.91h) and below the New-friends strip.
     y_hi = int(height * 0.78)
     y_lo = int(height * 0.52)
-    if toward_top:
+    if older:
         _adb_swipe(device, x, y_hi, x, y_hi - distance, duration_ms)
     else:
         _adb_swipe(device, x, y_lo, x, y_lo + distance, duration_ms)
@@ -489,7 +519,7 @@ def _go_top_of_inbox(device, package: str, width: int, height: int) -> str:
         if key and key == last:
             return xml
         last = key
-        _scroll_inbox(device, width, height, toward_top=True)
+        _scroll_inbox(device, width, height, older=False)
         xml = dump_hierarchy(device)
     return xml
 
@@ -507,6 +537,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
         log.info("resume: skipping %d already-saved chats", len(done))
     stagnant = 0
     captured = 0
+    last_inbox_key: tuple[str, ...] | None = None
     for _step in range(200):
         if limit > 0 and captured >= limit:
             break
@@ -527,16 +558,38 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
                     last_from="them" if badge.strip().lower() == "your turn" else None,
                 )
             conn.commit()
-            row = _pick_row(rows, done, height=height)
+            tab_top = _tab_bar_top(xml, height)
+            key = tuple(str(r["name"]) for r in rows)
+            row = _pick_row(rows, done, height=height, tab_top=tab_top)
             if row is None:
-                stagnant += 1
-                if stagnant >= 14:
-                    break
-                if _on_list(xml):
-                    _scroll_inbox(
-                        device, width, height, toward_top=False, distance=int(height * 0.28), duration_ms=180
-                    )
-                continue
+                if key == last_inbox_key:
+                    stagnant += 1
+                else:
+                    stagnant = 0
+                    last_inbox_key = key
+                pending = [r for r in rows if r["name"] not in done]
+                if stagnant >= 6:
+                    if pending:
+                        row = min(
+                            pending,
+                            key=lambda r: abs(int(r["y"]) - int(height * 0.62)),
+                        )
+                        log.info("fallback tap %s after stagnant scroll", row["name"])
+                    else:
+                        log.info("inbox exhausted (%d captured)", captured)
+                        break
+                if row is None:
+                    if _on_list(xml):
+                        _scroll_inbox(
+                            device,
+                            width,
+                            height,
+                            older=True,
+                            distance=int(height * 0.28),
+                            duration_ms=180,
+                        )
+                    continue
+            last_inbox_key = key
             stagnant = 0
             _open_named_chat(device, str(row["name"]), int(row["x"]), int(row["y"]))
             wait_idle(device, 1.5)
@@ -588,6 +641,9 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             thread = capture_thread(device, width, height, expected=partner)
             if not thread:
                 log.warning("empty/wrong transcript for %s — not saving", partner)
+                misses[str(row["name"])] = misses.get(str(row["name"]), 0) + 1
+                if misses[str(row["name"])] >= 2:
+                    done.add(str(row["name"]))
                 recover_to_list(device, package)
                 continue
             last_from = thread[-1][0]
@@ -739,23 +795,25 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
         rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
         names = [str(r["name"]) for r in rows]
         hit = next((r for r in rows if str(r["name"]).lower() == want), None)
-        if hit is not None and not _row_in_tap_zone(hit, height=height):
+        if hit is not None:
             y = int(hit["y"])
-            delta = y - tap_aim
-            dist = min(int(height * 0.16), max(int(height * 0.06), abs(delta) * 2 // 3))
-            log.info("nudge %s y=%s → %s (%s)", name, y, tap_aim, names)
-            _scroll_inbox(
-                device,
-                width,
-                height,
-                toward_top=delta > 0,
-                distance=dist,
-                duration_ms=260,
-            )
-            xml = dump_hierarchy(device)
-            stagnant = 0
-            last_key = None
-            continue
+            well_lo, well_hi, _ = _usable_list_band(height, _tab_bar_top(xml, height))
+            if not (well_lo <= y <= well_hi):
+                delta = y - tap_aim
+                dist = min(int(height * 0.16), max(int(height * 0.06), abs(delta) * 2 // 3))
+                log.info("nudge %s y=%s → %s (%s)", name, y, tap_aim, names)
+                _scroll_inbox(
+                    device,
+                    width,
+                    height,
+                    older=delta > 0,
+                    distance=dist,
+                    duration_ms=260,
+                )
+                xml = dump_hierarchy(device)
+                stagnant = 0
+                last_key = None
+                continue
         if hit is not None:
             wait_idle(device, 0.7)
             log.info("list-tap %s @ y=%s y1=%s", name, hit["y"], hit["y1"])
@@ -788,7 +846,7 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
         if stagnant >= 6:
             break
         _scroll_inbox(
-            device, width, height, toward_top=False, distance=int(height * 0.14), duration_ms=240
+            device, width, height, older=True, distance=int(height * 0.14), duration_ms=240
         )
         xml = dump_hierarchy(device)
     log.warning("list had no row for %s", name)
@@ -860,10 +918,24 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
         wait_idle(device, 1.0)
         conn = db_connect(db_path_from_config(cfg))
         try:
+            indexed = scan_chat_list(device, package)
+            for row in indexed:
+                badge = str(row.get("badge") or "")
+                upsert_chat(
+                    conn,
+                    str(row["name"]),
+                    preview=str(row.get("preview") or ""),
+                    badge=badge,
+                    last_text=str(row.get("preview") or "") or None,
+                    last_from="them" if badge.strip().lower() == "your turn" else None,
+                )
+            conn.commit()
+            log.info("indexed %d inbox rows", len(indexed))
             n = capture_all_chats(device, conn, package, recapture=True)
+            n_search = fill_via_search(device, conn, package)
         finally:
             conn.close()
-        msg = f"recaptured {n} chats"
+        msg = f"recaptured {n} chats ({len(indexed)} indexed, {n_search} via search)"
         log.info(msg)
         return True, msg
     except Exception as exc:
@@ -882,7 +954,7 @@ def fill_via_search(device, conn, package: str) -> int:
     have = names_with_messages(conn)
     names = [str(r[0]) for r in conn.execute("SELECT name FROM people ORDER BY name COLLATE NOCASE")]
     targets: list[str] = []
-    for name in names + ["Absa", "P", "Rishi", "Zhal"]:
+    for name in names:
         if name not in have and name not in targets:
             targets.append(name)
     log.info("search-fill %d people", len(targets))
