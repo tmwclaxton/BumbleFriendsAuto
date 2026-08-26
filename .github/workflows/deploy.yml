@@ -9,6 +9,11 @@ permissions:
   contents: read
   packages: write
 
+env:
+  DEPLOY_HOST: admin.grantgunner.org
+  DEPLOY_USER: gunnergrant
+  DEPLOY_DIR: lgspipeline
+
 jobs:
   build-push:
     runs-on: ubuntu-latest
@@ -49,19 +54,42 @@ jobs:
     needs: build-push
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: admin.grantgunner.org
-          username: gunnergrant
-          key: ${{ secrets.LGPIPELINE_SSH_KEY }}
-          script_stop: true
-          script: |
-            set -euo pipefail
-            cd "$HOME/lgspipeline"
-            echo "${{ secrets.GHCR_PULL_TOKEN }}" | docker login ghcr.io -u tmwclaxton --password-stdin
-            docker compose pull
-            docker compose up -d
-            sleep 2
-            curl -sf -u "${{ secrets.LGPIPELINE_BASIC_AUTH }}" http://127.0.0.1:8765/api/health
-            echo "deploy ok"
+      - name: Install cloudflared
+        run: |
+          curl -fsSL --output /tmp/cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i /tmp/cloudflared.deb
+
+      - name: Configure SSH via Cloudflare Access
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.LGPIPELINE_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          cat >> ~/.ssh/config << EOF
+          Host ${{ env.DEPLOY_HOST }}
+            User ${{ env.DEPLOY_USER }}
+            IdentityFile ~/.ssh/deploy_key
+            BatchMode yes
+            ConnectTimeout 30
+            ServerAliveInterval 30
+            ServerAliveCountMax 6
+            StrictHostKeyChecking accept-new
+            ProxyCommand cloudflared access ssh --hostname %h
+          EOF
+
+      - name: Pull and restart on host
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          ssh "${{ env.DEPLOY_HOST }}" bash -s <<EOF
+          set -euo pipefail
+          cd "\$HOME/${{ env.DEPLOY_DIR }}"
+          echo "${{ secrets.GHCR_PULL_TOKEN }}" | docker login ghcr.io -u tmwclaxton --password-stdin
+          docker compose pull
+          docker compose up -d
+          sleep 2
+          curl -sf -u "${{ secrets.LGPIPELINE_BASIC_AUTH }}" http://127.0.0.1:8765/api/health
+          echo "deploy ok"
+          EOF
