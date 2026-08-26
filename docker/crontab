@@ -1,0 +1,5 @@
+# Europe/London (TZ set in the container). Recapture full inbox.
+0 10 * * * python -m src.jobs.recapture_cron
+0 13 * * * python -m src.jobs.recapture_cron
+0 17 * * * python -m src.jobs.recapture_cron
+0 23 * * * python -m src.jobs.recapture_cron

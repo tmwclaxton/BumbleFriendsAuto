@@ -56,13 +56,62 @@ _DATE_LABEL = re.compile(
     re.I,
 )
 
+# Layout fractions work on Honor (~1280x2800) and Pixel (~1080x2400).
+_SEARCH_ICON_RIDS = (
+    "com.bumblebff.app:id/navbar_search",
+    "com.bumblebff.app:id/mainAppToolbarNavigation_openSearchIcon",
+)
+SEARCH_FIELD = "com.bumblebff.app:id/navbar_search"
 
-def _list_rows(xml: str, *, min_top: int = 1200) -> list[dict]:
+
+def _screen_size(device) -> tuple[int, int]:
+    info = device.info
+    return int(info["displayWidth"]), int(info["displayHeight"])
+
+
+def _bounds_center(bounds: str) -> tuple[int, int] | None:
+    match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+    if not match:
+        return None
+    x1, y1, x2, y2 = map(int, match.groups())
+    return ((x1 + x2) // 2, (y1 + y2) // 2)
+
+
+def _tab_bar_top(xml: str, height: int) -> int:
+    """Y where the bottom tab bar starts; fallback ~91% of height."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return int(height * 0.91)
+    for node in root.iter():
+        rid = node.attrib.get("resource-id") or ""
+        if rid.endswith("mainApp_navigationTabBar"):
+            bounds = node.attrib.get("bounds") or ""
+            match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+            if match:
+                return int(match.group(2))
+    return int(height * 0.91)
+
+
+def _list_rows(xml: str, *, min_top: int = 0, height: int | None = None, width: int | None = None) -> list[dict]:
     rows: list[dict] = []
     try:
         root = ET.fromstring(xml)
     except ET.ParseError:
         return rows
+    if height is None:
+        # Infer from hierarchy root bounds when caller has no device size.
+        for node in root.iter():
+            bounds = node.attrib.get("bounds") or ""
+            match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+            if match:
+                height = max(height or 0, int(match.group(4)))
+                width = max(width or 0, int(match.group(3)))
+        height = height or 2400
+        width = width or 1080
+    max_y1 = int(height * 0.90)
+    mid_x = int(width // 2) if width else 540
+    min_row_h = max(120, int(height * 0.08))
     for item in root.iter():
         if item.attrib.get("resource-id") != "com.bumblebff.app:id/connectionItem":
             continue
@@ -83,18 +132,18 @@ def _list_rows(xml: str, *, min_top: int = 1200) -> list[dict]:
         if not match:
             continue
         x1, y1, x2, y2 = map(int, match.groups())
-        if y2 < min_top or y1 > 2480:
+        if y2 < min_top or y1 > max_y1:
             continue
         rows.append(
             {
                 "name": name,
                 "badge": badge,
                 "preview": preview,
-                "x": 640,
+                "x": mid_x,
                 "y": (y1 + y2) // 2,
                 "y1": y1,
                 "y2": y2,
-                "clipped": (y2 - y1) < 220,
+                "clipped": (y2 - y1) < min_row_h,
             }
         )
     rows.sort(key=lambda r: r["y"])
@@ -343,7 +392,7 @@ def scan_chat_list(device, package: str) -> list[dict[str, str]]:
         xml = dump_hierarchy(device)
         if not _on_list(xml):
             xml = recover_to_list(device, package)
-        visible = _list_rows(xml, min_top=200)
+        visible = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
         for row in visible:
             name = str(row["name"])
             if name not in seen:
@@ -365,15 +414,18 @@ def scan_chat_list(device, package: str) -> list[dict[str, str]]:
     return list(seen.values())
 
 
-def _pick_row(rows: list[dict], done: set[str]) -> dict | None:
+def _pick_row(rows: list[dict], done: set[str], *, height: int) -> dict | None:
     """Only a middle-of-screen unfinished row. Edge rows are scrolled, not tapped."""
     pending = [r for r in rows if r["name"] not in done and not r.get("clipped")]
-    safe = [r for r in pending if 1450 <= int(r["y"]) <= 2200]
+    lo = int(height * 0.55)
+    hi = int(height * 0.82)
+    safe = [r for r in pending if lo <= int(r["y"]) <= hi]
     if not safe:
         return None
+    gap = max(60, int(height * 0.03))
     for row in safe:
         others = [r for r in rows if r["name"] != row["name"]]
-        if any(abs(int(r["y"]) - int(row["y"])) < 90 for r in others):
+        if any(abs(int(r["y"]) - int(row["y"])) < gap for r in others):
             continue
         return row
     return safe[0]
@@ -404,21 +456,26 @@ def _scroll_inbox(
     height: int,
     *,
     toward_top: bool,
-    distance: int = 650,
+    distance: int | None = None,
     duration_ms: int = 180,
 ) -> None:
-    """Scroll the Chats list. toward_top is finger-up, toward Jorge / newest."""
+    """Scroll the Chats list. toward_top flings content toward the newest/top."""
     x = width // 2
-    distance = max(80, min(int(distance), 700))
+    if distance is None:
+        distance = int(height * 0.25)
+    distance = max(80, min(int(distance), int(height * 0.35)))
+    # Stay above the tab bar (~0.91h) and below the New-friends strip.
+    y_hi = int(height * 0.78)
+    y_lo = int(height * 0.52)
     if toward_top:
-        _adb_swipe(device, x, 2000, x, 2000 - distance, duration_ms)
+        _adb_swipe(device, x, y_hi, x, y_hi - distance, duration_ms)
     else:
-        _adb_swipe(device, x, 1700, x, 1700 + distance, duration_ms)
+        _adb_swipe(device, x, y_lo, x, y_lo + distance, duration_ms)
     wait_idle(device, 0.55)
 
 
-def _inbox_key(xml: str) -> tuple[str, ...]:
-    return tuple(str(r["name"]) for r in _list_rows(xml))
+def _inbox_key(xml: str, *, height: int | None = None, width: int | None = None) -> tuple[str, ...]:
+    return tuple(str(r["name"]) for r in _list_rows(xml, height=height, width=width))
 
 
 def _go_top_of_inbox(device, package: str, width: int, height: int) -> str:
@@ -427,7 +484,7 @@ def _go_top_of_inbox(device, package: str, width: int, height: int) -> str:
     for _ in range(12):
         if not _on_list(xml):
             xml = recover_to_list(device, package)
-        key = _inbox_key(xml)
+        key = _inbox_key(xml, height=height, width=width)
         log.info("scroll-top inbox: %s", ", ".join(key) or "(none)")
         if key and key == last:
             return xml
@@ -457,7 +514,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             xml = dump_hierarchy(device)
             if not _on_list(xml):
                 xml = recover_to_list(device, package)
-            rows = _list_rows(xml, min_top=200)
+            rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
             log.info("inbox: %s", ", ".join(f"{r['name']}@{r['y']}" for r in rows) or "(none)")
             for seen in rows:
                 badge = str(seen["badge"] or "")
@@ -470,14 +527,14 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
                     last_from="them" if badge.strip().lower() == "your turn" else None,
                 )
             conn.commit()
-            row = _pick_row(rows, done)
+            row = _pick_row(rows, done, height=height)
             if row is None:
                 stagnant += 1
                 if stagnant >= 14:
                     break
                 if _on_list(xml):
                     _scroll_inbox(
-                        device, width, height, toward_top=False, distance=700, duration_ms=180
+                        device, width, height, toward_top=False, distance=int(height * 0.28), duration_ms=180
                     )
                 continue
             stagnant = 0
@@ -571,25 +628,53 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
     return captured
 
 
-SEARCH_FIELD = "com.bumblebff.app:id/navbar_search"
+def _tap_search_icon(device, xml: str, width: int, height: int) -> bool:
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        root = None
+    if root is not None:
+        for node in root.iter():
+            rid = node.attrib.get("resource-id") or ""
+            desc = (node.attrib.get("content-desc") or "").strip().lower()
+            if rid in _SEARCH_ICON_RIDS or (desc == "search" and "toolbar" in rid.lower()):
+                center = _bounds_center(node.attrib.get("bounds") or "")
+                if center:
+                    tap(device, center[0], center[1])
+                    return True
+            if desc == "search" and (node.attrib.get("clickable") or "").lower() == "true":
+                center = _bounds_center(node.attrib.get("bounds") or "")
+                if center and center[1] < int(height * 0.2):
+                    tap(device, center[0], center[1])
+                    return True
+    # Fallback: top-right toolbar
+    tap(device, int(width * 0.92), int(height * 0.085))
+    return True
 
 
 def _ensure_search(device, package: str) -> None:
+    width, height = _screen_size(device)
     xml = dump_hierarchy(device)
     if SEARCH_FIELD in xml:
         return
     recover_to_list(device, package)
-    tap(device, 1168, 239)
+    xml = dump_hierarchy(device)
+    _tap_search_icon(device, xml, width, height)
     wait_idle(device, 1.4)
 
 
 def open_chat_via_search(device, package: str, name: str) -> str | None:
     """Open a named inbox thread via Chats search. Returns toolbar title or None."""
+    width, height = _screen_size(device)
     _ensure_search(device, package)
     field = device(resourceId=SEARCH_FIELD)
     if not field.exists(timeout=3.0):
-        log.warning("search field missing")
-        return None
+        # Pixel sometimes keeps the search field under a different focus path; try again.
+        xml = dump_hierarchy(device)
+        if SEARCH_FIELD not in xml:
+            log.warning("search field missing")
+            return None
+        field = device(resourceId=SEARCH_FIELD)
     field.click()
     wait_idle(device, 0.3)
     field.set_text(name)
@@ -601,18 +686,18 @@ def open_chat_via_search(device, package: str, name: str) -> str | None:
         device.press("back")
         wait_idle(device, 0.4)
         return None
-    rows = _list_rows(xml, min_top=200)
+    rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
     match = next((r for r in rows if str(r["name"]).lower() == name.strip().lower()), None)
     if match is None:
         device.press("back")
         wait_idle(device, 0.5)
         xml = dump_hierarchy(device)
-        rows = _list_rows(xml, min_top=300)
+        rows = _list_rows(xml, min_top=int(height * 0.12), height=height, width=width)
         match = next((r for r in rows if str(r["name"]).lower() == name.strip().lower()), None)
     if match is None:
         log.warning("search had no row for %s (got %s)", name, [r["name"] for r in rows])
         return None
-    tap(device, 640, int(match["y"]))
+    tap(device, int(match["x"]), int(match["y"]))
     wait_idle(device, 1.6)
     xml = _wait_thread(device)
     partner = chat_partner_name(xml)
@@ -622,22 +707,28 @@ def open_chat_via_search(device, package: str, name: str) -> str | None:
     return partner
 
 
-_TAP_Y_LO = 1550
-_TAP_Y_HI = 2150
-_TAP_Y_AIM = 1850
+def _tap_zone(height: int) -> tuple[int, int, int]:
+    lo = int(height * 0.55)
+    hi = int(height * 0.82)
+    aim = int(height * 0.68)
+    return lo, hi, aim
 
 
-def _row_in_tap_zone(row: dict) -> bool:
-    return _TAP_Y_LO <= int(row["y"]) <= _TAP_Y_HI
+def _row_in_tap_zone(row: dict, *, height: int) -> bool:
+    lo, hi, _ = _tap_zone(height)
+    return lo <= int(row["y"]) <= hi
 
 
 def open_chat_from_list(device, package: str, name: str) -> str | None:
     """Scroll the Chats inbox and tap an exact name. Used when search misses."""
-    width = int(device.info["displayWidth"])
-    height = int(device.info["displayHeight"])
+    width, height = _screen_size(device)
+    tap_lo, tap_hi, tap_aim = _tap_zone(height)
     xml = recover_to_list(device, package)
     want = name.strip().lower()
-    if not any(str(r["name"]).lower() == want for r in _list_rows(xml, min_top=200)):
+    if not any(
+        str(r["name"]).lower() == want
+        for r in _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
+    ):
         xml = _go_top_of_inbox(device, package, width, height)
     last_key: tuple[str, ...] | None = None
     stagnant = 0
@@ -645,14 +736,14 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
     for _ in range(60):
         if not _on_list(xml):
             xml = recover_to_list(device, package)
-        rows = _list_rows(xml, min_top=200)
+        rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
         names = [str(r["name"]) for r in rows]
         hit = next((r for r in rows if str(r["name"]).lower() == want), None)
-        if hit is not None and not _row_in_tap_zone(hit):
+        if hit is not None and not _row_in_tap_zone(hit, height=height):
             y = int(hit["y"])
-            delta = y - _TAP_Y_AIM
-            dist = min(380, max(140, abs(delta) * 2 // 3))
-            log.info("nudge %s y=%s → %s (%s)", name, y, _TAP_Y_AIM, names)
+            delta = y - tap_aim
+            dist = min(int(height * 0.16), max(int(height * 0.06), abs(delta) * 2 // 3))
+            log.info("nudge %s y=%s → %s (%s)", name, y, tap_aim, names)
             _scroll_inbox(
                 device,
                 width,
@@ -669,10 +760,12 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
             wait_idle(device, 0.7)
             log.info("list-tap %s @ y=%s y1=%s", name, hit["y"], hit["y1"])
             name_node = device(resourceId="com.bumblebff.app:id/personName", text=name)
-            if name_node.exists(timeout=1.2):
+            if not name_node.exists(timeout=0.4):
+                name_node = device(resourceId="com.bumblebff.app:id/connectionsItem_personName", text=name)
+            if name_node.exists(timeout=1.0):
                 name_node.click()
             else:
-                tap(device, 480, int(hit["y1"]) + 70)
+                tap(device, int(width * 0.38), int(hit["y1"]) + max(40, int(height * 0.025)))
             wait_idle(device, 1.6)
             partner = chat_partner_name(_wait_thread(device))
             if partner and _same_person(partner, name):
@@ -694,7 +787,9 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
             last_key = key
         if stagnant >= 6:
             break
-        _scroll_inbox(device, width, height, toward_top=False, distance=320, duration_ms=240)
+        _scroll_inbox(
+            device, width, height, toward_top=False, distance=int(height * 0.14), duration_ms=240
+        )
         xml = dump_hierarchy(device)
     log.warning("list had no row for %s", name)
     return None
@@ -752,6 +847,36 @@ def refresh_named_chat(name: str, *, serial: str | None = None) -> tuple[bool, s
     return False, f"could not recapture {name} — keep the phone unlocked on Chats"
 
 
+def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+    """Unlock (if PIN set), open every Chats row, save transcripts, optionally sleep."""
+    from src.unlock import sleep_screen, wake_and_unlock
+
+    cfg = load_config()
+    package = str(cfg["package"])
+    device = connect(serial)
+    try:
+        wake_and_unlock(device, serial=serial)
+        bring_app_foreground(device, package)
+        wait_idle(device, 1.0)
+        conn = db_connect(db_path_from_config(cfg))
+        try:
+            n = capture_all_chats(device, conn, package, recapture=True)
+        finally:
+            conn.close()
+        msg = f"recaptured {n} chats"
+        log.info(msg)
+        return True, msg
+    except Exception as exc:
+        log.exception("recapture_inbox failed")
+        return False, str(exc)
+    finally:
+        if sleep_after:
+            try:
+                sleep_screen(device, serial=serial)
+            except Exception:
+                log.warning("could not sleep screen after recapture")
+
+
 def fill_via_search(device, conn, package: str) -> int:
     """Open Chats search and capture every indexed person still missing a transcript."""
     have = names_with_messages(conn)
@@ -778,7 +903,7 @@ def fill_via_search(device, conn, package: str) -> int:
             device.press("back")
             wait_idle(device, 0.5)
             xml = dump_hierarchy(device)
-            rows = _list_rows(xml, min_top=300)
+            rows = _list_rows(xml, min_top=int(height * 0.12), height=height, width=width)
             for row in rows:
                 upsert_chat(
                     conn,
@@ -793,7 +918,7 @@ def fill_via_search(device, conn, package: str) -> int:
                 log.warning("search had no row for %s (got %s)", name, [r["name"] for r in rows])
                 continue
             log.info("search-open %s @ %s", name, match["y"])
-            tap(device, 640, int(match["y"]))
+            tap(device, int(match["x"]), int(match["y"]))
             wait_idle(device, 1.6)
             xml = _wait_thread(device)
             partner = chat_partner_name(xml)

@@ -1,20 +1,17 @@
-# Bumble Friends ADB auto-swiper
+# Bumble Friends ADB auto-swiper + LGS inbox pipeline
 
-Mac-side Python loop that drives your Android phone over ADB and swipes Bumble Friends cards with human-like delays.
+Mac-side (or server) Python that drives an Android phone over ADB for Bumble For Friends: swipe, message New friends, sync chats into SQLite, and a password-protected inbox UI.
 
 **Warning:** Automating Bumble violates their terms of service and can get your account banned. Use only on a phone and account you own. This project does **not** solve verification, paywalls, or anti-bot checks — it stops when those appear.
 
 ## Requirements
 
-- macOS (or Linux) with Python 3.10+
+- macOS/Linux with Python 3.10+
 - Android phone with **USB debugging** enabled
-  - On Xiaomi / HyperOS also enable **USB debugging (Security settings)**
 - [`adb`](https://developer.android.com/tools/adb): `brew install android-platform-tools`
-- Bumble installed, logged in, **Friends / BFF** tab showing a profile card
-- Phone unlocked, screen on (stay-awake while charging recommended)
+- Bumble **Friends / BFF** (`com.bumblebff.app`)
 
-> This project targets the separate **Bumble For Friends** package `com.bumblebff.app`
-> (not the dating app `com.bumble.app`). If you start on Chats, the swiper taps **People** first.
+Layout math is **screen-size relative** (Honor ~1280×2800 and Pixel ~1080×2400).
 
 ## Setup
 
@@ -26,114 +23,92 @@ pip install -r requirements.txt
 cp config.example.yaml config.yaml   # optional local overrides
 ```
 
-Plug in the phone and accept the debugging prompt:
-
 ```bash
 adb devices
 ```
 
-You should see your device listed as `device` (not `unauthorized`).
-
-## Workflow
-
-1. Open Bumble → Friends and leave a swipeable card on screen.
-2. Dump the UI once so you can tune swipe coordinates if needed:
+## Local workflow
 
 ```bash
 python -m src.dump_ui
-```
-
-Artifacts land in `dumps/` (XML hierarchy + screenshot).
-
-3. Run a short session:
-
-```bash
 python -m src.swiper
-python -m src.swiper --like-ratio 0.8 --max-swipes 25
+python -m src.messenger --dry-run
+python -m src.sync_chats --full --recapture
+python -m src.dashboard --foreground   # http://127.0.0.1:8765
 ```
 
-Ctrl+C stops immediately.
+Send/Refresh go on a phone queue. Status: `needs_reply` / `waiting` / `expired` / `unknown`.
 
-### Message New friends
+## Production (admin.grantgunner.org)
 
-Opens only the **New friends** circles on the Chats tab (people who haven’t started a chat). Skips if the chat isn’t empty. Sends:
+Docker image talks to the **host ADB server** and the USB **Pixel 7** (`29081FDH200GZ8`).
 
-> Hi {name}, I'm putting together a wee group for hiking / board games / sports. Does that sound like something you would be interested in?
+- Inbox: https://lgspipeline.grantgunner.org (HTTP basic auth)
+- MCP: https://lgspipeline.grantgunner.org/mcp (same auth)
+- Recapture cron (Europe/London): 10:00, 13:00, 17:00, 23:00
+
+On the server:
 
 ```bash
-python -m src.messenger --dry-run    # list only — does not send
-python -m src.messenger              # actually send
-python -m src.messenger --max-messages 5
+mkdir -p /opt/lgspipeline
+cd /opt/lgspipeline
+# Place docker-compose.yml, .env, config.yaml, cloudflared/ from deploy
+docker compose pull && docker compose up -d
 ```
 
-### Chat inbox (SQLite)
+`.env` (not in git) must set `SERIAL`, `DASHBOARD_BASIC_USER`, `DASHBOARD_BASIC_PASSWORD`, `PHONE_UNLOCK_PIN`.
 
-People and where each chat is up to live in `data/friends.db` (gitignored). Sync from the Chats list, then query:
+Host ADB must show the Pixel:
 
 ```bash
-python -m src.sync_chats --full   # open every chat, save full transcripts
-python -m src.store               # everyone + status
-python -m src.store needs-reply   # Your turn / last message from them
+export PATH="$HOME/.local/opt/platform-tools:$PATH"
+adb devices -l
+# keep adb server up: adb start-server
 ```
 
-Status is `needs_reply`, `waiting`, `expired`, or `unknown`. Sending an opener with `src.messenger` also records that person as waiting.
+### MCP (agents)
 
-### Inbox dashboard
+Add a Cursor MCP server (Streamable HTTP):
 
-Local browser UI over `friends.db`. Pick a chat, read the thread, type a reply. **Send** opens that chat on the phone and actually sends.
-
-```bash
-python -m src.dashboard
-# http://127.0.0.1:8765
-python -m src.dashboard --stop
+```json
+{
+  "mcpServers": {
+    "lgspipeline": {
+      "url": "https://lgspipeline.grantgunner.org/mcp",
+      "headers": {
+        "Authorization": "Basic <base64 of admin:password>"
+      }
+    }
+  }
+}
 ```
 
-It detaches from the terminal, restarts if it crashes, and reloads Python after `src/` changes. HTML/JS updates apply on refresh without a restart. Logs: `data/dashboard.log`.
+Tools: `list_inbox_people`, `list_needs_reply_people`, `get_thread`, `list_jobs`, `start_refresh_chat`, `start_send_reply`, `start_recapture_inbox`, `get_job`, `wait_for_job`.
 
-Keep the phone unlocked and on USB. Send and Refresh go on a queue so you can stack several replies (same person or others) while the phone works through them one at a time.
+Phone work is **async**: `start_*` returns `job_id` immediately; poll `get_job` until `done`/`error` (full recapture can take ~40 minutes). Do not treat `queued`/`running` as success.
 
-### Useful flags
+### Deploy pipeline
 
-| Flag | Meaning |
-|------|---------|
-| `--max-swipes N` | Session cap (default 30) |
-| `--like-ratio 0.0–1.0` | Chance of liking each card (default 1.0 = always like) |
-| `--delay-min` / `--delay-max` | Seconds between swipes |
-| `--serial` | ADB serial if multiple devices |
-| `--no-foreground` | Do not launch/resume Bumble at start |
-| `--config path` | Custom YAML config |
-| `--dry-run` | Messenger only: list targets, send nothing |
-| `--max-messages N` | Messenger only: cap openers |
-
-## Behavior
-
-- Default: always **like** (swipe right), with jittered path and 2.5–7s delays
-- **Before each decision:** looks at the main photo, taps through gallery photos, scrolls the bio/prompts with reading pauses, then swipes
-- Match popup: try to dismiss and continue; stop if it cannot
-- **Hard stop** on: paywall / out of likes, photo verification, empty stack, permission dialog, not Bumble, or unknown UI
-- Messenger: New friends circles only; skips non-empty chats; no overnight unattended runs
+Push to `master` builds `ghcr.io/tmwclaxton/bumblefriendsauto` and SSHs to the host to `docker compose pull && up -d`. Required GitHub secrets: `LGPIPELINE_SSH_KEY`, `GHCR_PULL_TOKEN`, `LGPIPELINE_BASIC_AUTH` (`user:pass`).
 
 ## Project layout
 
 ```
-src/config.py      # YAML + defaults
-src/device.py      # ADB / uiautomator2 connect + dump
-src/screen.py      # Screen classification from hierarchy text
-src/browse.py      # Look through photos + scroll bio before deciding
-src/gestures.py    # Jittered like/pass swipes
-src/swiper.py      # Main swipe loop
-src/chats.py       # New friends parsing + empty-chat checks
-src/messenger.py   # Send template openers to New friends
-src/store.py       # SQLite people + chat progress
-src/sync_chats.py  # Scan Chats list into the db
-src/dashboard.py   # Local web inbox + send-on-phone
-src/dump_ui.py     # One-shot UI dump
-config.example.yaml
+src/config.py       # YAML + env overrides (SERIAL, DB_PATH)
+src/device.py       # ADB / uiautomator2
+src/sync_chats.py   # Layout-relative inbox sync / recapture
+src/phone_queue.py  # Serialized phone jobs
+src/dashboard.py    # Inbox UI entry + basic auth
+src/server.py       # Combined ASGI (UI + /mcp)
+src/mcp_server.py   # MCP tools (start + poll)
+src/unlock.py       # Wake / PIN / sleep for cron
+src/jobs/           # Cron entrypoints
+docker-compose.yml
+Dockerfile
 ```
 
 ## Troubleshooting
 
 - **`unauthorized` in `adb devices`**: unlock phone and re-accept the RSA prompt.
-- **Swipes miss the card**: edit `swipe:` fractions in `config.yaml` (they are relative to screen size). Use `dump_ui` screenshots to eyeball the card center.
-- **Always `stop:unknown`**: Bumble’s copy may differ by locale; dump the XML and extend the patterns in `src/screen.py`, or keep a Friends card fully visible before starting.
-- **uiautomator2 first run**: it may install a helper APK on the phone; keep the screen unlocked until that finishes.
+- **Wrong taps on a new phone**: dumps in `dumps/`; row/search targeting uses resource-ids and height fractions.
+- **Container cannot see the phone**: `network_mode: host` + host `adb start-server`; check `ADB_SERVER_SOCKET=tcp:127.0.0.1:5037`.

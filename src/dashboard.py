@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -11,13 +12,13 @@ import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from src.config import ROOT, load_config
+from src.phone_queue import cancel_job, enqueue, ensure_worker, queue_snapshot
 from src.store import connect as db_connect, db_path_from_config, list_people, list_thread
 
 log = logging.getLogger(__name__)
@@ -25,169 +26,44 @@ log = logging.getLogger(__name__)
 _HTML_PATH = Path(__file__).with_name("dashboard.html")
 _PID_PATH = ROOT / "data" / "dashboard.pid"
 _LOG_PATH = ROOT / "data" / "dashboard.log"
-_QUEUE_PATH = ROOT / "data" / "action_queue.json"
 _ENV_SUPERVISOR = "BFF_DASHBOARD_SUPERVISOR"
 _ENV_WORKER = "BFF_DASHBOARD_WORKER"
 
-_jobs: list[dict] = []
-_jobs_lock = threading.Lock()
-_jobs_wake = threading.Event()
-_job_seq = 0
 
-
-def _queue_snapshot() -> list[dict]:
-    with _jobs_lock:
-        return [dict(j) for j in _jobs]
-
-
-def _persist_queue() -> None:
-    pending = [j for j in _jobs if j.get("status") in {"queued", "running"}]
-    _QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _QUEUE_PATH.write_text(json.dumps(pending, indent=2), encoding="utf-8")
-
-
-def _load_queue() -> None:
-    global _job_seq
-    if not _QUEUE_PATH.exists():
-        return
-    try:
-        raw = json.loads(_QUEUE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
-    restored: list[dict] = []
-    for item in raw if isinstance(raw, list) else []:
-        job = dict(item)
-        if job.get("status") == "running":
-            job["status"] = "queued"
-            job["error"] = None
-        if job.get("status") != "queued":
-            continue
-        restored.append(job)
-    with _jobs_lock:
-        _jobs[:] = restored
-        _job_seq = max([int(j.get("id") or 0) for j in _jobs] + [_job_seq])
-    if restored:
-        log.info("restored %d queued phone action(s)", len(restored))
-        _jobs_wake.set()
-
-
-def _enqueue(kind: str, name: str, text: str = "") -> dict:
-    global _job_seq
-    with _jobs_lock:
-        _job_seq += 1
-        job = {
-            "id": _job_seq,
-            "kind": kind,
-            "name": name,
-            "text": text,
-            "status": "queued",
-            "error": None,
-            "message": None,
-        }
-        _jobs.append(job)
-        _persist_queue()
-        snap = dict(job)
-    _jobs_wake.set()
-    return snap
-
-
-def _cancel_job(job_id: int) -> bool:
-    with _jobs_lock:
-        for job in _jobs:
-            if int(job["id"]) == job_id and job["status"] == "queued":
-                job["status"] = "cancelled"
-                snap = dict(job)
-                _persist_queue()
-                break
-        else:
-            return False
-    if snap.get("kind") == "reply":
-        from src.store import set_draft
-
-        conn = db_connect(db_path_from_config(load_config()))
-        try:
-            set_draft(conn, str(snap.get("name") or ""), str(snap.get("text") or ""))
-        finally:
-            conn.close()
-    return True
-
-
-def _update_job(job_id: int, **fields: object) -> None:
-    with _jobs_lock:
-        for job in _jobs:
-            if int(job["id"]) == job_id:
-                job.update(fields)
-                done = [j for j in _jobs if j["status"] in {"done", "error", "cancelled"}]
-                if len(done) > 40:
-                    keep_done = done[-20:]
-                    keep_ids = {id(j) for j in keep_done}
-                    _jobs[:] = [
-                        j
-                        for j in _jobs
-                        if j["status"] in {"queued", "running"} or id(j) in keep_ids
-                    ]
-                _persist_queue()
-                return
-
-
-def _next_queued() -> dict | None:
-    with _jobs_lock:
-        for job in _jobs:
-            if job["status"] == "queued":
-                return dict(job)
+def _basic_auth_configured() -> tuple[str, str] | None:
+    user = (os.environ.get("DASHBOARD_BASIC_USER") or "").strip()
+    password = os.environ.get("DASHBOARD_BASIC_PASSWORD") or ""
+    if user and password:
+        return user, password
     return None
 
 
-def _run_job(job: dict) -> tuple[bool, str]:
-    kind = job["kind"]
-    name = job["name"]
-    if kind == "reply":
-        from src.messenger import send_named_message
+def _check_basic_auth(handler: BaseHTTPRequestHandler) -> bool:
+    creds = _basic_auth_configured()
+    if creds is None:
+        return True
+    user, password = creds
+    header = handler.headers.get("Authorization") or ""
+    if not header.startswith("Basic "):
+        return False
+    try:
+        raw = base64.b64decode(header[6:].strip()).decode("utf-8")
+    except Exception:
+        return False
+    if ":" not in raw:
+        return False
+    got_user, got_pass = raw.split(":", 1)
+    return got_user == user and got_pass == password
 
-        return send_named_message(name, str(job.get("text") or ""))
-    if kind == "refresh":
-        from src.sync_chats import refresh_named_chat
 
-        return refresh_named_chat(name)
-    return False, f"unknown action {kind}"
-
-
-def _queue_worker() -> None:
-    log.info("phone action queue ready")
-    while True:
-        job = _next_queued()
-        if job is None:
-            _jobs_wake.wait(timeout=1.0)
-            _jobs_wake.clear()
-            continue
-        _update_job(job["id"], status="running")
-        log.info("queue run #%s %s %s", job["id"], job["kind"], job["name"])
-        try:
-            ok, message = _run_job(job)
-        except Exception as exc:
-            log.exception("queue job failed")
-            ok, message = False, str(exc)
-        _update_job(
-            job["id"],
-            status="done" if ok else "error",
-            message=message,
-            error=None if ok else message,
-        )
-        if job.get("kind") == "reply":
-            from src.store import set_draft
-
-            conn = db_connect(db_path_from_config(load_config()))
-            try:
-                person = str(job.get("name") or "")
-                if ok:
-                    set_draft(conn, person, "")
-                else:
-                    set_draft(conn, person, str(job.get("text") or ""))
-            except Exception:
-                log.exception("could not save draft after reply job")
-            finally:
-                conn.close()
-        log.info("queue #%s %s — %s", job["id"], "ok" if ok else "fail", message)
+def _unauthorized(handler: BaseHTTPRequestHandler) -> None:
+    body = b"Authentication required"
+    handler.send_response(401)
+    handler.send_header("WWW-Authenticate", 'Basic realm="lgspipeline"')
+    handler.send_header("Content-Type", "text/plain; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
 
 
 def _norm_body(text: str) -> str:
@@ -234,17 +110,14 @@ def _thread_payload(conn, name: str) -> dict:
             continue
         if text not in extras:
             extras.append(text)
-    have = {_norm_body(m["body"]) for m in msgs}
     for text in extras:
         if _preview_already_in_thread(text, msgs):
             continue
         side = row["last_from"] or "them"
         real = [m for m in msgs if not _is_day_label(m["body"])]
-        # Inbox preview is often newer than the last captured bubble.
         if real and real[-1]["side"] == "you" and side == "you":
             side = "them"
         msgs.append({"side": side, "body": text, "from_preview": True})
-        have.add(_norm_body(text))
     return {
         "name": row["name"] or name,
         "messages": msgs,
@@ -346,7 +219,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _require_auth(self) -> bool:
+        if _check_basic_auth(self):
+            return True
+        _unauthorized(self)
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/index.html"}:
             self._html()
@@ -381,7 +262,10 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
             return
         if parsed.path == "/api/queue":
-            self._json({"jobs": _queue_snapshot()})
+            self._json({"jobs": queue_snapshot()})
+            return
+        if parsed.path == "/api/health":
+            self._json({"ok": True})
             return
         self.send_error(404)
 
@@ -399,6 +283,8 @@ class Handler(BaseHTTPRequestHandler):
         return data
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._require_auth():
+            return
         if self.path == "/api/dismiss":
             data = self._read_json()
             if data is None:
@@ -427,8 +313,19 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._json({"ok": False, "error": "name required"}, 400)
                 return
-            job = _enqueue("refresh", name)
+            job = enqueue("refresh", name)
             self._json({"ok": True, "queued": True, "job": job, "message": f"queued refresh of {name}"})
+            return
+        if self.path == "/api/recapture":
+            job = enqueue("recapture_all", "")
+            self._json(
+                {
+                    "ok": True,
+                    "queued": True,
+                    "job": job,
+                    "message": "queued full inbox recapture",
+                }
+            )
             return
         if self.path == "/api/draft":
             data = self._read_json()
@@ -460,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 self._json({"ok": False, "error": "id required"}, 400)
                 return
-            ok = _cancel_job(job_id)
+            ok = cancel_job(job_id)
             self._json({"ok": ok, "error": None if ok else "cannot cancel"})
             return
         if self.path != "/api/reply":
@@ -474,7 +371,7 @@ class Handler(BaseHTTPRequestHandler):
         if not name or not text:
             self._json({"ok": False, "error": "name and text required"}, 400)
             return
-        job = _enqueue("reply", name, text)
+        job = enqueue("reply", name, text)
         self._json({"ok": True, "queued": True, "job": job, "message": f"queued reply to {name}"})
 
 
@@ -484,8 +381,15 @@ class InboxServer(ThreadingHTTPServer):
 
 
 def _serve_worker(host: str, port: int, db_path: Path) -> int:
-    _load_queue()
-    threading.Thread(target=_queue_worker, name="phone-queue", daemon=True).start()
+    ensure_worker()
+    # Combined ASGI app (dashboard + MCP) when available; else classic HTTP only.
+    if os.environ.get("BFF_COMBINED_SERVER", "1") == "1":
+        try:
+            from src.server import serve_combined
+
+            return serve_combined(host, port, db_path)
+        except Exception:
+            log.exception("combined server failed; falling back to classic dashboard")
     httpd = InboxServer((host, port), Handler)
     httpd.db_path = db_path  # type: ignore[attr-defined]
     log.info("Inbox at http://%s:%s/  (db %s)", host, port, db_path)

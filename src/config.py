@@ -79,6 +79,8 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 def load_config(path: Path | None = None) -> dict[str, Any]:
     """Load config from YAML, falling back to example then built-in defaults."""
+    import os
+
     cfg = dict(DEFAULTS)
     candidates = []
     if path is not None:
@@ -92,5 +94,14 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
                 data = yaml.safe_load(f) or {}
             if not isinstance(data, dict):
                 raise ValueError(f"Config at {candidate} must be a mapping")
-            return _deep_merge(cfg, data)
+            cfg = _deep_merge(cfg, data)
+            break
+
+    # Environment overrides for container / server deploys.
+    serial = (os.environ.get("SERIAL") or os.environ.get("PIXEL_SERIAL") or "").strip()
+    if serial:
+        cfg["serial"] = serial
+    db_path = (os.environ.get("DB_PATH") or "").strip()
+    if db_path:
+        cfg["db_path"] = db_path
     return cfg

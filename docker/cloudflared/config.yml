@@ -1,0 +1,10 @@
+tunnel: b6d7db29-0404-4530-8dac-800907cc1872
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - hostname: lgspipeline.grantgunner.org
+    service: http://127.0.0.1:8765
+    originRequest:
+      connectTimeout: 30s
+      keepAliveTimeout: 90s
+  - service: http_status:404

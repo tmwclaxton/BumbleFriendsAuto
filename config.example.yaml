@@ -1,4 +1,5 @@
-# Copy to config.yaml and tweak for your phone / session.
+# Optional ADB serial (Honor Pro or Pixel). Env SERIAL / PIXEL_SERIAL overrides.
+# serial: 29081FDH200GZ8
 
 # Bumble Friends / BFF package (main Bumble dating app is com.bumble.app)
 package: com.bumblebff.app

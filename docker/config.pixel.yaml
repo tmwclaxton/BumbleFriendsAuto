@@ -1,0 +1,14 @@
+# Local production config for the Pixel on admin.grantgunner.org
+serial: 29081FDH200GZ8
+package: com.bumblebff.app
+bring_to_foreground: true
+db_path: data/friends.db
+
+messenger:
+  template: >-
+    Hi {name}, I'm putting together a wee group for hiking / board games / sports.
+    Does that sound like something you would be interested in?
+  max_messages: 20
+  delay_min: 2.5
+  delay_max: 5.0
+  type_pause: 0.8

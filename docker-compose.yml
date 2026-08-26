@@ -1,0 +1,30 @@
+services:
+  dashboard:
+    image: ghcr.io/tmwclaxton/bumblefriendsauto:latest
+    container_name: lgspipeline
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ADB_SERVER_SOCKET: tcp:127.0.0.1:5037
+      TZ: Europe/London
+      BFF_COMBINED_SERVER: "1"
+      PORT: "8765"
+      ENABLE_CRON: "1"
+      DB_PATH: /app/data/friends.db
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+
+  tunnel:
+    image: cloudflare/cloudflared:2026.5.1
+    container_name: lgspipeline-tunnel
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+    depends_on:
+      - dashboard
