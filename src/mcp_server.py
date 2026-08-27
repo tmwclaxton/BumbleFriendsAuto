@@ -10,7 +10,16 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from src.config import load_config
 from src.phone_queue import enqueue, ensure_worker, get_job, job_poll_payload, queue_snapshot
-from src.store import connect as db_connect, db_path_from_config, is_new_friend, list_needs_reply, list_people, list_thread
+from src.store import (
+    connect as db_connect,
+    db_path_from_config,
+    is_new_friend,
+    list_drafts as fetch_drafts,
+    list_needs_reply,
+    list_people,
+    list_thread,
+    set_draft,
+)
 
 log = logging.getLogger(__name__)
 
@@ -18,9 +27,11 @@ mcp = FastMCP(
     "lgspipeline",
     instructions=(
         "Bumble Friends (LGS) inbox on admin.grantgunner.org. "
-        "Phone actions are asynchronous: call start_* tools, then poll get_job "
-        "(or wait_for_job) until status is done or error. Never treat queued/running as success. "
-        "Full inbox recapture can take up to ~40 minutes."
+        "You cannot send Bumble messages. Draft with save_draft, revise with tweak_draft; "
+        "Toby sends from the inbox UI. There is no send-reply or message-new-friends tool. "
+        "Read tools (list_*, get_thread) are instant. Phone capture tools (start_refresh_chat, "
+        "start_recapture_inbox) are asynchronous: poll get_job until done or error. "
+        "Never treat queued/running as success. Full inbox recapture can take up to ~40 minutes."
     ),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
@@ -44,6 +55,18 @@ mcp = FastMCP(
 
 def _db():
     return db_connect(db_path_from_config(load_config()))
+
+
+def _read_draft(conn, name: str) -> str:
+    row = conn.execute(
+        """
+        SELECT c.draft FROM people p
+        LEFT JOIN chats c ON c.person_id = p.id
+        WHERE p.name = ?
+        """,
+        (name,),
+    ).fetchone()
+    return (row["draft"] or "") if row else ""
 
 
 @mcp.tool()
@@ -86,6 +109,7 @@ def list_needs_reply_people() -> dict:
                     "last_from": row["last_from"],
                     "last_text": row["last_text"],
                     "preview": row["preview"],
+                    "draft": row["draft"] or "",
                 }
             )
         return {"count": len(rows), "people": rows}
@@ -102,7 +126,14 @@ def get_thread(name: str) -> dict:
     conn = _db()
     try:
         msgs = [{"side": r["side"], "body": r["body"]} for r in list_thread(conn, name)]
-        return {"ok": True, "name": name, "messages": msgs, "count": len(msgs)}
+        draft = _read_draft(conn, name)
+        return {
+            "ok": True,
+            "name": name,
+            "messages": msgs,
+            "count": len(msgs),
+            "draft": draft,
+        }
     finally:
         conn.close()
 
@@ -116,7 +147,7 @@ def list_jobs() -> dict:
 
 @mcp.tool()
 def start_refresh_chat(name: str) -> dict:
-    """Enqueue opening one chat on the phone and refreshing its transcript. Returns immediately with job_id — poll get_job."""
+    """Wake/unlock the phone, open one chat, and refresh its transcript. Returns immediately with job_id — poll get_job."""
     name = (name or "").strip()
     if not name:
         return {"ok": False, "error": "name required"}
@@ -132,21 +163,108 @@ def start_refresh_chat(name: str) -> dict:
 
 
 @mcp.tool()
-def start_send_reply(name: str, text: str) -> dict:
-    """Enqueue sending a reply on the phone. Returns immediately with job_id — poll get_job. Only use when the user clearly asked to send."""
+def save_draft(name: str, text: str) -> dict:
+    """Save a reply draft for Toby to send later from the inbox UI. Does not send, does not touch the phone."""
     name = (name or "").strip()
     text = (text or "").strip()
     if not name or not text:
         return {"ok": False, "error": "name and text required"}
-    ensure_worker()
-    job = enqueue("reply", name, text)
+    conn = _db()
+    try:
+        ok = set_draft(conn, name, text)
+    finally:
+        conn.close()
+    if not ok:
+        return {"ok": False, "error": "could not save draft"}
     return {
         "ok": True,
-        "job_id": job["id"],
-        "status": job["status"],
-        "suggested_wait_seconds": 8,
-        "hint": "Poll get_job until status is done or error.",
+        "name": name,
+        "draft": text,
+        "sent": False,
+        "hint": "Draft saved. It is not on Bumble until Toby sends it from the inbox UI.",
     }
+
+
+@mcp.tool()
+def tweak_draft(name: str, text: str) -> dict:
+    """Revise an existing unsent draft. Fails if there is no draft yet — use save_draft to create one. Does not send."""
+    name = (name or "").strip()
+    text = (text or "").strip()
+    if not name or not text:
+        return {"ok": False, "error": "name and text required"}
+    conn = _db()
+    try:
+        previous = _read_draft(conn, name)
+        if not previous:
+            return {
+                "ok": False,
+                "error": f"no draft for {name} — use save_draft to create one first",
+                "name": name,
+                "draft": "",
+                "sent": False,
+            }
+        if previous == text:
+            return {
+                "ok": True,
+                "name": name,
+                "previous": previous,
+                "draft": text,
+                "changed": False,
+                "sent": False,
+                "hint": "Draft already matches that text. Nothing changed.",
+            }
+        ok = set_draft(conn, name, text)
+    finally:
+        conn.close()
+    if not ok:
+        return {"ok": False, "error": "could not update draft"}
+    return {
+        "ok": True,
+        "name": name,
+        "previous": previous,
+        "draft": text,
+        "changed": True,
+        "sent": False,
+        "hint": "Draft updated. It is not on Bumble until Toby sends it from the inbox UI.",
+    }
+
+
+@mcp.tool()
+def clear_draft(name: str) -> dict:
+    """Clear the saved inbox draft for a person. Does not send, does not touch the phone."""
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    conn = _db()
+    try:
+        ok = set_draft(conn, name, "")
+    finally:
+        conn.close()
+    if not ok:
+        return {"ok": False, "error": "could not clear draft"}
+    return {"ok": True, "name": name, "draft": "", "sent": False}
+
+
+@mcp.tool()
+def list_drafts() -> dict:
+    """People who currently have an unsent inbox draft. Fast — no phone."""
+    conn = _db()
+    try:
+        rows = []
+        for row in fetch_drafts(conn):
+            rows.append(
+                {
+                    "name": row["name"],
+                    "draft": row["draft"] or "",
+                    "status": row["status"] or "unknown",
+                    "last_from": row["last_from"],
+                    "last_text": row["last_text"],
+                    "preview": row["preview"],
+                }
+            )
+        return {"count": len(rows), "people": rows}
+    finally:
+        conn.close()
 
 
 @mcp.tool()
@@ -160,20 +278,6 @@ def start_recapture_inbox() -> dict:
         "status": job["status"],
         "suggested_wait_seconds": 15,
         "hint": "Poll get_job every 10–15s until done/error. Do not treat queued/running as success.",
-    }
-
-
-@mcp.tool()
-def start_message_new_friends() -> dict:
-    """Enqueue sending the template opener to every empty New-friends match on the phone. Returns job_id — poll get_job. Only use when the user clearly asked to message all new friends."""
-    ensure_worker()
-    job = enqueue("message_new_friends", "")
-    return {
-        "ok": True,
-        "job_id": job["id"],
-        "status": job["status"],
-        "suggested_wait_seconds": 15,
-        "hint": "Poll get_job until status is done or error. Do not treat queued/running as success.",
     }
 
 

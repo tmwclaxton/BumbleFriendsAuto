@@ -190,6 +190,13 @@ def _queue_worker() -> None:
             finally:
                 conn.close()
         log.info("queue #%s %s — %s", job["id"], "ok" if ok else "fail", message)
+        if _next_queued() is None:
+            try:
+                from src.unlock import sleep_screen
+
+                sleep_screen()
+            except Exception:
+                log.warning("could not sleep screen after phone queue went idle")
 
 
 def ensure_worker() -> None:

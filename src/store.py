@@ -565,10 +565,24 @@ def list_needs_reply(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(
         conn.execute(
             """
-            SELECT p.name, c.badge, c.last_from, c.last_text, c.preview, c.updated_at
+            SELECT p.name, c.badge, c.last_from, c.last_text, c.preview, c.draft, c.updated_at
             FROM chats c
             JOIN people p ON p.id = c.person_id
             WHERE c.status = 'needs_reply'
+            ORDER BY p.name COLLATE NOCASE
+            """
+        )
+    )
+
+
+def list_drafts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            """
+            SELECT p.name, c.draft, c.status, c.last_from, c.last_text, c.preview
+            FROM chats c
+            JOIN people p ON p.id = c.person_id
+            WHERE c.draft IS NOT NULL AND trim(c.draft) != ''
             ORDER BY p.name COLLATE NOCASE
             """
         )

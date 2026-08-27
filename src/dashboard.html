@@ -93,6 +93,7 @@
   .expired { background: #2a272c; color: var(--exp); }
   .new { background: #2a2438; color: #c9b6ff; }
   .phone { background: #1d2a3a; color: #8ec8ff; }
+  .draft { background: #3a3214; color: var(--you); }
   .section-head {
     display: flex;
     align-items: center;
@@ -393,7 +394,8 @@ async function loadPeople() {
   const n = people.filter(p => p.status === "needs_reply").length;
   const phones = people.filter(p => p.phone_provided).length;
   const fresh = people.filter(p => p.new_friend).length;
-  metaEl.textContent = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + phones + " phone provided";
+  const drafts = people.filter(p => (p.draft || "").trim()).length;
+  metaEl.textContent = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + drafts + " drafts · " + phones + " phone provided";
   renderList();
 }
 
@@ -438,8 +440,11 @@ function rowHtml(p, inNew) {
   const phone = p.phone_provided
     ? '<span class="tag phone">phone provided</span>'
     : "";
+  const draft = (p.draft || "").trim()
+    ? '<span class="tag draft">draft</span>'
+    : "";
   return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
-    <div><span class="name">${esc(p.name)}</span>${tag}${phone}</div>
+    <div><span class="name">${esc(p.name)}</span>${tag}${draft}${phone}</div>
     <div class="snip">${snip}</div>
   </a>`;
 }
@@ -700,6 +705,18 @@ loadPeople().then(() => {
   if (name) return openThread(name, {push: false});
 });
 setInterval(pollQueue, 1000);
+setInterval(async () => {
+  const openName = current;
+  const before = people.find(p => p.name === openName);
+  const beforeDraft = before ? (before.draft || "") : "";
+  await loadPeople();
+  if (!openName || draftEl.disabled) return;
+  const after = people.find(p => p.name === openName);
+  const afterDraft = after ? (after.draft || "") : "";
+  if (afterDraft !== beforeDraft && draftEl.value === beforeDraft) {
+    draftEl.value = afterDraft;
+  }
+}, 10000);
 setInterval(() => {
   if (people.some(p => p.new_friend && p.message_until)) renderList();
 }, 60000);

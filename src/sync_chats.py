@@ -1214,9 +1214,12 @@ def refresh_named_chat(name: str, *, serial: str | None = None) -> tuple[bool, s
     name = name.strip()
     if not name:
         return False, "name required"
+    from src.unlock import wake_and_unlock
+
     cfg = load_config()
     package = str(cfg["package"])
     device = connect(serial)
+    wake_and_unlock(device, serial=serial)
     bring_app_foreground(device, package)
     wait_idle(device, 0.6)
     conn = db_connect(db_path_from_config(cfg))
@@ -1226,7 +1229,7 @@ def refresh_named_chat(name: str, *, serial: str | None = None) -> tuple[bool, s
         conn.close()
     if ok:
         return True, f"refreshed {name} from the phone"
-    return False, f"could not recapture {name} — keep the phone unlocked on Chats"
+    return False, f"could not recapture {name}"
 
 
 def _strip_gutter_y(xml: str, height: int) -> int:

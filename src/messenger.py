@@ -161,9 +161,12 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
     from src.store import add_message, connect as db_connect, db_path_from_config, upsert_chat
     from src.sync_chats import open_chat_from_list, open_chat_via_search, recover_to_list
 
+    from src.unlock import wake_and_unlock
+
     cfg = load_config()
     package = str(cfg["package"])
     device = connect(serial)
+    wake_and_unlock(device, serial=serial)
     bring_app_foreground(device, package)
     wait_idle(device, 0.8)
     partner = open_chat_via_search(device, package, name)

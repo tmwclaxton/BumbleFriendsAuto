@@ -83,9 +83,9 @@ Add a Cursor MCP server (Streamable HTTP):
 }
 ```
 
-Tools: `list_inbox_people`, `list_needs_reply_people`, `get_thread`, `list_jobs`, `start_refresh_chat`, `start_send_reply`, `start_recapture_inbox`, `get_job`, `wait_for_job`.
+Tools: `list_inbox_people`, `list_needs_reply_people`, `get_thread`, `save_draft`, `tweak_draft`, `clear_draft`, `list_drafts`, `list_jobs`, `start_refresh_chat`, `start_recapture_inbox`, `get_job`, `wait_for_job`.
 
-Phone work is **async**: `start_*` returns `job_id` immediately; poll `get_job` until `done`/`error` (full recapture can take ~40 minutes). Do not treat `queued`/`running` as success.
+Agents **cannot send** Bumble messages. `save_draft` writes the inbox composer, `tweak_draft` revises an existing draft; you send from the UI. Phone capture (`start_refresh_chat`, `start_recapture_inbox`) is **async**: `start_*` returns `job_id` immediately; poll `get_job` until `done`/`error` (full recapture can take ~40 minutes). Do not treat `queued`/`running` as success.
 
 ### Deploy pipeline
 
