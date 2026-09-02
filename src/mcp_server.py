@@ -15,6 +15,7 @@ from src.store import (
     db_path_from_config,
     is_new_friend,
     list_drafts as fetch_drafts,
+    namesake_meta,
     list_needs_reply,
     list_people,
     list_thread,
@@ -75,10 +76,16 @@ def list_inbox_people() -> dict:
     conn = _db()
     try:
         people = []
+        labels = namesake_meta(conn)
         for row in list_people(conn):
+            extra = labels.get(str(row["name"])) or {}
             people.append(
                 {
                     "name": row["name"],
+                    "display_name": extra.get("display_name") or row["name"],
+                    "base_name": extra.get("base_name") or row["name"],
+                    "distinguish": extra.get("distinguish") or "",
+                    "same_name_count": int(extra.get("same_name_count") or 1),
                     "status": row["status"] or "unknown",
                     "last_from": row["last_from"],
                     "last_text": row["last_text"],
@@ -101,10 +108,15 @@ def list_needs_reply_people() -> dict:
     conn = _db()
     try:
         rows = []
+        labels = namesake_meta(conn)
         for row in list_needs_reply(conn):
+            extra = labels.get(str(row["name"])) or {}
             rows.append(
                 {
                     "name": row["name"],
+                    "display_name": extra.get("display_name") or row["name"],
+                    "distinguish": extra.get("distinguish") or "",
+                    "same_name_count": int(extra.get("same_name_count") or 1),
                     "badge": row["badge"],
                     "last_from": row["last_from"],
                     "last_text": row["last_text"],
@@ -113,6 +125,37 @@ def list_needs_reply_people() -> dict:
                 }
             )
         return {"count": len(rows), "people": rows}
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def list_same_name_people() -> dict:
+    """People who share a Bumble first name. distinguish is location or their words so you can tell them apart. Numbered Name 2 rows that are only recapture clones should already have been merged."""
+    conn = _db()
+    try:
+        labels = namesake_meta(conn)
+        groups: dict[str, list[dict]] = {}
+        for row in list_people(conn):
+            extra = labels.get(str(row["name"])) or {}
+            count = int(extra.get("same_name_count") or 1)
+            if count < 2:
+                continue
+            base = str(extra.get("base_name") or row["name"])
+            groups.setdefault(base, []).append(
+                {
+                    "name": row["name"],
+                    "display_name": extra.get("display_name") or row["name"],
+                    "distinguish": extra.get("distinguish") or "",
+                    "status": row["status"] or "unknown",
+                    "last_text": row["last_text"],
+                    "same_name_count": count,
+                }
+            )
+        return {
+            "group_count": len(groups),
+            "groups": [{"base_name": k, "people": v} for k, v in sorted(groups.items())],
+        }
     finally:
         conn.close()
 

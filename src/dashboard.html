@@ -94,6 +94,7 @@
   .new { background: #2a2438; color: #c9b6ff; }
   .phone { background: #1d2a3a; color: #8ec8ff; }
   .draft { background: #3a3214; color: var(--you); }
+  .same-name { background: #2a2430; color: #e0b4d4; }
   .section-head {
     display: flex;
     align-items: center;
@@ -443,8 +444,12 @@ function rowHtml(p, inNew) {
   const draft = (p.draft || "").trim()
     ? '<span class="tag draft">draft</span>'
     : "";
+  const same = (p.same_name_count || 1) > 1
+    ? `<span class="tag same-name">${p.same_name_count} named ${esc(p.base_name || p.name)}</span>`
+    : "";
+  const shown = p.display_name || p.name;
   return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
-    <div><span class="name">${esc(p.name)}</span>${tag}${draft}${phone}</div>
+    <div><span class="name">${esc(shown)}</span>${tag}${same}${draft}${phone}</div>
     <div class="snip">${snip}</div>
   </a>`;
 }
@@ -478,7 +483,12 @@ function renderHead(name, status, phoneProvided) {
     ? '<button type="button" id="dismiss-reply">Dismiss needs reply</button>'
     : "";
   const phone = phoneProvided ? '<span class="tag phone">phone provided</span>' : "";
-  headEl.innerHTML = `<h2>${esc(name)} ${phone}</h2><div class="actions">
+  const known = people.find(p => p.name === name);
+  const title = (known && known.display_name) || name;
+  const same = known && known.same_name_count > 1
+    ? `<span class="tag same-name">${known.same_name_count} named ${esc(known.base_name || name)}</span>`
+    : "";
+  headEl.innerHTML = `<h2>${esc(title)} ${same} ${phone}</h2><div class="actions">
     <button type="button" id="refresh-chat">Refresh</button>${dismiss}
   </div>`;
 }

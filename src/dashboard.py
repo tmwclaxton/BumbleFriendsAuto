@@ -154,10 +154,18 @@ def people_api_payload(conn) -> dict:
     )
     people = []
     new_friends: list[str] = []
+    from src.store import namesake_meta
+
+    labels = namesake_meta(conn)
     for row in list_people(conn):
         fresh = is_new_friend(row)
+        extra = labels.get(str(row["name"])) or {}
         item = {
             "name": row["name"],
+            "display_name": extra.get("display_name") or row["name"],
+            "base_name": extra.get("base_name") or row["name"],
+            "distinguish": extra.get("distinguish") or "",
+            "same_name_count": int(extra.get("same_name_count") or 1),
             "status": row["status"] or "unknown",
             "last_from": row["last_from"],
             "last_text": row["last_text"],

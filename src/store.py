@@ -229,9 +229,18 @@ def upsert_person(
     return int(row["id"])
 
 
+def base_person_name(name: str) -> str:
+    """'David 2' → 'David'; 'Lauren Mizaela' stays intact."""
+    name = (name or "").strip()
+    parts = name.rsplit(" ", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[0]
+    return name
+
+
 def next_duplicate_name(conn: sqlite3.Connection, base: str) -> str:
     """Return 'Ada 2', 'Ada 3', … for a second person with the same first name."""
-    base = base.strip()
+    base = base_person_name(base)
     n = 2
     while True:
         candidate = f"{base} {n}"
@@ -241,11 +250,233 @@ def next_duplicate_name(conn: sqlite3.Connection, base: str) -> str:
 
 
 def name_aliases(conn: sqlite3.Connection, name: str) -> list[str]:
+    base = base_person_name(name)
     rows = conn.execute(
         "SELECT name FROM people WHERE name = ? COLLATE NOCASE OR name GLOB ?",
-        (name, f"{name} [0-9]*"),
+        (base, f"{base} [0-9]*"),
     ).fetchall()
     return [str(r[0]) for r in rows]
+
+
+def _norm_msg(text: str) -> str:
+    return " ".join((text or "").split()).casefold()
+
+
+def _is_thread_chrome(text: str) -> bool:
+    blob = (text or "").strip()
+    if not blob:
+        return True
+    if is_match_chrome(blob):
+        return True
+    if "expired" in blob.lower():
+        return True
+    if re.match(r"^[A-Za-z][A-Za-z'’\-]+,\s*\d{2}$", blob):
+        return True
+    return blob.lower() in {"extend", "seen", "delivered"}
+
+
+def _them_bodies(conn: sqlite3.Connection, name: str) -> set[str]:
+    return {
+        _norm_msg(str(r[0]))
+        for r in conn.execute(
+            """
+            SELECT m.body FROM messages m
+            JOIN people p ON p.id = m.person_id
+            WHERE p.name = ? AND m.side = 'them'
+            """,
+            (name,),
+        )
+        if not _is_thread_chrome(str(r[0]))
+    }
+
+
+def _person_id(conn: sqlite3.Connection, name: str) -> int | None:
+    row = conn.execute("SELECT id FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+    return int(row["id"]) if row else None
+
+
+def _thread_score(conn: sqlite3.Connection, name: str) -> tuple[int, int]:
+    them = 0
+    total = 0
+    for row in list_thread(conn, name):
+        if _is_thread_chrome(row["body"]):
+            continue
+        total += 1
+        if row["side"] == "them":
+            them += 1
+    return them, total
+
+
+def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> None:
+    """Merge drop into keep, preferring the richer transcript."""
+    keep_id = _person_id(conn, keep_name)
+    drop_id = _person_id(conn, drop_name)
+    if keep_id is None or drop_id is None or keep_id == drop_id:
+        return
+    keep_score = _thread_score(conn, keep_name)
+    drop_score = _thread_score(conn, drop_name)
+    if drop_score > keep_score:
+        richer = [(str(r["side"]), str(r["body"])) for r in list_thread(conn, drop_name)]
+        replace_thread(conn, keep_id, richer)
+        drop_chat = conn.execute("SELECT * FROM chats WHERE person_id = ?", (drop_id,)).fetchone()
+        if drop_chat:
+            conn.execute(
+                """
+                UPDATE chats SET last_from = ?, last_text = ?, preview = ?, badge = ?,
+                    status = ?, opener_sent = MAX(opener_sent, ?),
+                    message_until = COALESCE(message_until, ?), draft = COALESCE(draft, ?)
+                WHERE person_id = ?
+                """,
+                (
+                    drop_chat["last_from"],
+                    drop_chat["last_text"],
+                    drop_chat["preview"],
+                    drop_chat["badge"],
+                    drop_chat["status"],
+                    int(drop_chat["opener_sent"] or 0),
+                    drop_chat["message_until"],
+                    drop_chat["draft"],
+                    keep_id,
+                ),
+            )
+    else:
+        drop_chat = conn.execute("SELECT draft FROM chats WHERE person_id = ?", (drop_id,)).fetchone()
+        if drop_chat and drop_chat["draft"]:
+            keep_chat = conn.execute("SELECT draft FROM chats WHERE person_id = ?", (keep_id,)).fetchone()
+            if keep_chat is None or not keep_chat["draft"]:
+                conn.execute("UPDATE chats SET draft = ? WHERE person_id = ?", (drop_chat["draft"], keep_id))
+    drop_person = conn.execute("SELECT location, distance, age, phone_provided FROM people WHERE id = ?", (drop_id,)).fetchone()
+    keep_person = conn.execute("SELECT location, distance, age, phone_provided FROM people WHERE id = ?", (keep_id,)).fetchone()
+    if drop_person and keep_person:
+        conn.execute(
+            """
+            UPDATE people SET
+                location = COALESCE(NULLIF(location, ''), ?),
+                distance = COALESCE(NULLIF(distance, ''), ?),
+                age = COALESCE(age, ?),
+                phone_provided = MAX(phone_provided, ?)
+            WHERE id = ?
+            """,
+            (
+                drop_person["location"],
+                drop_person["distance"],
+                drop_person["age"],
+                int(drop_person["phone_provided"] or 0),
+                keep_id,
+            ),
+        )
+    conn.execute("DELETE FROM messages WHERE person_id = ?", (drop_id,))
+    conn.execute("DELETE FROM chats WHERE person_id = ?", (drop_id,))
+    conn.execute("DELETE FROM people WHERE id = ?", (drop_id,))
+
+
+def collapse_cloned_namesakes(conn: sqlite3.Connection) -> list[str]:
+    """Merge ghost clones (same person stored as Name 2 / Name 3) but keep real namesakes."""
+    groups: dict[str, list[str]] = {}
+    for row in conn.execute("SELECT name FROM people"):
+        name = str(row["name"])
+        groups.setdefault(base_person_name(name), []).append(name)
+    log = []
+    for base, names in groups.items():
+        if len(names) < 2:
+            continue
+        names.sort(key=lambda n: (0 if n.casefold() == base.casefold() else 1, n))
+        them_map = {n: _them_bodies(conn, n) for n in names}
+        keep = names[0]
+        for other in names[1:]:
+            them_k = them_map[keep]
+            them_o = them_map[other]
+            same = False
+            if them_k and them_o:
+                same = bool(them_k & them_o)
+            elif not them_k or not them_o:
+                # Opener-only stub next to a real thread, or two opener-only copies.
+                same = True
+            if not same:
+                continue
+            absorb_person(conn, keep, other)
+            them_map[keep] = _them_bodies(conn, keep)
+            log.append(f"{other} → {keep}")
+    if log:
+        _resync_chat_heads(conn)
+        conn.commit()
+    return log
+
+
+def _resync_chat_heads(conn: sqlite3.Connection) -> None:
+    """Point last_from / last_text / status at the real last stored bubble."""
+    for row in conn.execute(
+        """
+        SELECT p.name, p.id, c.badge, c.dismissed_reply_text, c.message_until
+        FROM people p
+        LEFT JOIN chats c ON c.person_id = p.id
+        """
+    ):
+        msgs = [m for m in list_thread(conn, str(row["name"])) if (m["body"] or "").strip()]
+        if not msgs:
+            continue
+        last = msgs[-1]
+        status = derive_status(
+            badge=row["badge"] or "",
+            last_from=last["side"],
+            last_text=last["body"],
+            dismissed_reply_text=row["dismissed_reply_text"],
+            message_until=row["message_until"],
+        )
+        conn.execute(
+            "UPDATE chats SET last_from = ?, last_text = ?, status = ? WHERE person_id = ?",
+            (last["side"], last["body"], status, row["id"]),
+        )
+
+
+def namesake_meta(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
+    """How to tell same-name people apart in the inbox / MCP."""
+    groups: dict[str, list[str]] = {}
+    for row in conn.execute("SELECT name FROM people"):
+        name = str(row["name"])
+        groups.setdefault(base_person_name(name), []).append(name)
+    out: dict[str, dict[str, object]] = {}
+    for base, names in groups.items():
+        count = len(names)
+        for name in names:
+            loc = conn.execute("SELECT location FROM people WHERE name = ?", (name,)).fetchone()
+            location = (loc["location"] or "").strip() if loc else ""
+            them = [
+                str(r[0]).strip()
+                for r in conn.execute(
+                    """
+                    SELECT m.body FROM messages m
+                    JOIN people p ON p.id = m.person_id
+                    WHERE p.name = ? AND m.side = 'them'
+                    ORDER BY m.id
+                    """,
+                    (name,),
+                )
+                if not _is_thread_chrome(str(r[0])) and len(str(r[0]).strip()) > 2
+            ]
+            hint = location
+            if not hint and them:
+                hint = max(them, key=len)
+            if not hint:
+                chat = conn.execute(
+                    """
+                    SELECT c.last_text, c.preview FROM chats c
+                    JOIN people p ON p.id = c.person_id WHERE p.name = ?
+                    """,
+                    (name,),
+                ).fetchone()
+                hint = ((chat["last_text"] or chat["preview"] or "") if chat else "").strip()
+            hint = " ".join(hint.split())
+            if len(hint) > 42:
+                hint = hint[:41].rstrip() + "…"
+            display = name if count == 1 else (f"{base} · {hint}" if hint else name)
+            out[name] = {
+                "base_name": base,
+                "display_name": display,
+                "distinguish": hint,
+                "same_name_count": count,
+            }
+    return out
 
 
 def person_them_bodies(conn: sqlite3.Connection, name: str) -> set[str]:
@@ -597,13 +828,22 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="?",
         default="list",
-        choices=["list", "needs-reply", "thread"],
+        choices=["list", "needs-reply", "thread", "collapse-clones"],
     )
     parser.add_argument("name", nargs="?", help="Person name for the thread command")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
     path = args.db or db_path_from_config(cfg)
     conn = connect(path)
+    if args.command == "collapse-clones":
+        merged = collapse_cloned_namesakes(conn)
+        if not merged:
+            print("(no cloned namesakes)")
+            return 0
+        for line in merged:
+            print(line)
+        print(f"{len(merged)} merged")
+        return 0
     if args.command == "thread":
         if not args.name:
             parser.error("thread requires a name")

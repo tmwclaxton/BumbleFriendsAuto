@@ -17,6 +17,10 @@ from src.gestures import _adb_swipe, tap
 from src.messenger import leave_chat
 from src.screen import find_tab_point
 from src.store import (
+    _is_thread_chrome,
+    _norm_msg,
+    _them_bodies,
+    collapse_cloned_namesakes,
     connect as db_connect,
     db_path_from_config,
     message_until_from_hours,
@@ -25,7 +29,6 @@ from src.store import (
     next_duplicate_name,
     parse_hours_left,
     person_message_bodies,
-    person_them_bodies,
     replace_thread,
     upsert_chat,
 )
@@ -707,33 +710,41 @@ def _row_already_saved(conn, row: dict) -> bool:
 
 
 def _save_name_for_thread(conn, partner: str, thread: list[tuple[str, str]]) -> str:
-    """Keep 'David' if their bubbles match; otherwise store as 'David 2'.
+    """Keep 'David' if their bubbles match; mint 'David 2' only for a real other David.
 
-    Ignore the shared opener template — every namesake starts with the same Hi {name} line.
+    Shared openers do not count. An opener-only recapture must not spawn Cesar 2/3/4.
     """
     aliases = name_aliases(conn, partner)
     if not aliases:
         return partner
-    them_new = {body for side, body in thread if side == "them"}
-    you_new = {body for side, body in thread if side == "you" and not _OPENER.search(body)}
+    them_new = {
+        _norm_msg(body)
+        for side, body in thread
+        if side == "them" and not _is_thread_chrome(body)
+    }
+    stubs = [a for a in aliases if not _them_bodies(conn, a)]
+    # Distinct them-text already stored for this namesake → same person.
     for alias in aliases:
-        them_old = person_them_bodies(conn, alias)
+        them_old = _them_bodies(conn, alias)
         if them_new and them_old and them_new & them_old:
             return alias
-        if not them_new and not them_old:
-            you_old = {b for b in person_message_bodies(conn, alias) if not _OPENER.search(b)}
-            if you_new and you_old and you_new & you_old:
+    # No reply captured this time: attach to an opener-only stub, else the primary name.
+    if not them_new:
+        for alias in stubs:
+            if alias.casefold() == partner.casefold():
                 return alias
-            row = conn.execute(
-                """
-                SELECT c.last_text, c.message_until FROM chats c
-                JOIN people p ON p.id = c.person_id WHERE p.name = ?
-                """,
-                (alias,),
-            ).fetchone()
-            blob = (row[0] or "").lower() if row else ""
-            if (row and row[1]) or "hours left to message" in blob or "no messages yet" in blob:
+        if stubs:
+            return stubs[0]
+        for alias in aliases:
+            if alias.casefold() == partner.casefold():
                 return alias
+        return aliases[0]
+    # New them-text, existing row is still a stub → fill that row rather than clone.
+    for alias in stubs:
+        if alias.casefold() == partner.casefold():
+            return alias
+    if stubs:
+        return stubs[0]
     if any(a.casefold() == partner.casefold() for a in aliases):
         return next_duplicate_name(conn, partner)
     return partner
@@ -1196,9 +1207,12 @@ def recapture_person(device, conn, package: str, name: str) -> bool:
     if not thread:
         log.warning("empty recapture for %s", partner)
         return False
+    save_as = _save_name_for_thread(conn, partner, thread)
+    if save_as != partner:
+        log.info("namesake %s stored as %s", partner, save_as)
     person_id = upsert_chat(
         conn,
-        partner,
+        save_as,
         last_from=thread[-1][0],
         last_text=thread[-1][1],
         opener_sent=any(_OPENER.search(body) for _side, body in thread),
@@ -1445,6 +1459,9 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
         bring_app_foreground(device, package)
         wait_idle(device, 1.0)
         conn = db_connect(db_path_from_config(cfg))
+        merged = collapse_cloned_namesakes(conn)
+        if merged:
+            log.info("collapsed %d cloned namesake(s): %s", len(merged), ", ".join(merged))
         try:
             def _index(rows: list[dict]) -> None:
                 for row in rows:
@@ -1565,9 +1582,12 @@ def fill_via_search(device, conn, package: str) -> int:
                 log.warning("empty search transcript %s", partner)
                 leave_chat(device)
                 continue
+            save_as = _save_name_for_thread(conn, partner, thread)
+            if save_as != partner:
+                log.info("namesake %s stored as %s", partner, save_as)
             person_id = upsert_chat(
                 conn,
-                partner,
+                save_as,
                 preview=str(match["preview"]),
                 badge=str(match["badge"]),
                 last_from=thread[-1][0],
