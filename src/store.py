@@ -330,7 +330,12 @@ def name_aliases(conn: sqlite3.Connection, name: str) -> list[str]:
 
 
 def _norm_msg(text: str) -> str:
-    return " ".join((text or "").split()).casefold()
+    t = (text or "").replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
+    return " ".join(t.split()).casefold()
+
+
+def _generic_opener(text: str) -> bool:
+    return "putting together a wee group" in _norm_msg(text)
 
 
 def _reply_stub(text: str) -> str:
@@ -395,6 +400,79 @@ def _is_thread_chrome(text: str) -> bool:
     if re.match(r"^[A-Za-z][A-Za-z'’\-]+,\s*\d{2}$", blob):
         return True
     return blob.lower() in {"extend", "seen", "delivered"}
+
+
+def _chat_head(conn: sqlite3.Connection, name: str) -> dict[str, str]:
+    row = conn.execute(
+        """
+        SELECT c.last_from, c.last_text, c.preview FROM chats c
+        JOIN people p ON p.id = c.person_id WHERE p.name = ?
+        """,
+        (name,),
+    ).fetchone()
+    if row is None:
+        return {"last_from": "", "last_text": "", "preview": ""}
+    return {
+        "last_from": str(row["last_from"] or ""),
+        "last_text": str(row["last_text"] or ""),
+        "preview": str(row["preview"] or ""),
+    }
+
+
+def them_matches_person(conn: sqlite3.Connection, name: str, them_new: set[str]) -> bool:
+    """True when newly captured them-text already belongs to this namesake."""
+    them_new = {_norm_msg(t) for t in them_new if _norm_msg(t) and not _is_thread_chrome(t)}
+    if not them_new:
+        return False
+    old = _them_bodies(conn, name)
+    if them_new & old:
+        return True
+    for a in them_new:
+        for b in old:
+            if same_reply_text(a, b):
+                return True
+    head = _chat_head(conn, name)
+    for field in (head["last_text"], head["preview"]):
+        if not field or _generic_opener(field):
+            continue
+        if any(same_reply_text(a, field) for a in them_new):
+            return True
+    return False
+
+
+def namesake_same_person(conn: sqlite3.Connection, keep: str, other: str) -> bool:
+    """True when two same-first-name rows are the same human, not a real namesake.
+
+    Shared incoming text wins over photos (list crop vs profile crop of the same
+    face often looks 'different'). Opener-only stubs stay split when the faces
+    clearly differ.
+    """
+    them_k = _them_bodies(conn, keep)
+    them_o = _them_bodies(conn, other)
+    if them_k and them_o and them_k & them_o:
+        return True
+    for a in them_k:
+        for b in them_o:
+            if same_reply_text(a, b):
+                return True
+    if them_matches_person(conn, keep, them_o) or them_matches_person(conn, other, them_k):
+        return True
+    head_k, head_o = _chat_head(conn, keep), _chat_head(conn, other)
+    texts_k = [t for t in (head_k["last_text"], head_k["preview"]) if t]
+    texts_o = [t for t in (head_o["last_text"], head_o["preview"]) if t]
+    if head_k["last_from"] == "them" and head_o["last_from"] == "them":
+        for a in texts_k:
+            for b in texts_o:
+                if same_reply_text(a, b) and not _generic_opener(a):
+                    return True
+    stub_k, stub_o = not them_k, not them_o
+    if stub_k or stub_o:
+        from src.photos import photos_conflict
+
+        if photos_conflict(keep, other):
+            return False
+        return True
+    return False
 
 
 def _them_bodies(conn: sqlite3.Connection, name: str) -> set[str]:
@@ -523,26 +601,14 @@ def collapse_cloned_namesakes(conn: sqlite3.Connection) -> list[str]:
         if len(names) < 2:
             continue
         names.sort(key=lambda n: (0 if n.casefold() == base.casefold() else 1, n))
-        them_map = {n: _them_bodies(conn, n) for n in names}
         keep = names[0]
         for other in names[1:]:
-            them_k = them_map[keep]
-            them_o = them_map[other]
-            same = False
-            if them_k and them_o:
-                same = bool(them_k & them_o)
-            elif not them_k or not them_o:
-                # Opener-only stub next to a real thread, or two opener-only copies.
-                same = True
-            if not same:
+            if not namesake_same_person(conn, keep, other):
                 continue
-            from src.photos import adopt_photo, photos_conflict
+            from src.photos import adopt_photo
 
-            if photos_conflict(keep, other):
-                continue
             absorb_person(conn, keep, other)
             adopt_photo(other, keep)
-            them_map[keep] = _them_bodies(conn, keep)
             log.append(f"{other} → {keep}")
     if log:
         _resync_chat_heads(conn)

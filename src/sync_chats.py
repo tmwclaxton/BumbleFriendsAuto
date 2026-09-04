@@ -28,6 +28,7 @@ from src.store import (
     names_with_messages,
     base_person_name,
     next_duplicate_name,
+    them_matches_person,
     parse_hours_left,
     person_message_bodies,
     replace_thread,
@@ -799,15 +800,13 @@ def _save_name_for_thread(
     stubs = [a for a in aliases if not _them_bodies(conn, a)]
     # Distinct them-text already stored for this namesake → same person.
     for alias in aliases:
-        them_old = _them_bodies(conn, alias)
-        if them_new and them_old and them_new & them_old:
+        if them_matches_person(conn, alias, them_new):
             _remember_face(alias, face)
             return alias
     from src.photos import (
         faces_differ,
         load_photo,
         match_face_to_namesakes,
-        next_photo_slot,
         save_face_image,
     )
 
@@ -816,7 +815,10 @@ def _save_name_for_thread(
         log.info("namesake %s identified as %s by photo", partner, matched)
         _remember_face(matched, face)
         return matched
-    if face is not None:
+    # Only mint a new slot when we have incoming text that matches nobody
+    # and the face is clearly not any stored namesake. List-crop vs profile
+    # of the same person must not create Gianluca 5.
+    if them_new and face is not None:
         known_faces = [a for a in aliases if load_photo(a) is not None]
         if known_faces and all(
             (stored := load_photo(a)) is not None and faces_differ(face, stored) for a in known_faces
@@ -1721,6 +1723,9 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
             _set_inbox_filter(device, "Recent")
             n = capture_all_chats(device, conn, package, recapture=True)
             n_search = fill_via_search(device, conn, package)
+            merged_after = collapse_cloned_namesakes(conn)
+            if merged_after:
+                log.info("collapsed %d cloned namesake(s) after capture: %s", len(merged_after), ", ".join(merged_after))
             total_names = conn.execute("SELECT count(*) FROM people").fetchone()[0]
         finally:
             conn.close()
