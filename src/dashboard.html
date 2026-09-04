@@ -65,7 +65,9 @@
   }
   #list { overflow: visible; }
   .row {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 10px;
     width: 100%;
     text-align: left;
     padding: 10px 14px;
@@ -77,8 +79,35 @@
     cursor: pointer;
   }
   .row:hover, .row.on { background: #24242c; }
+  .row .meta { min-width: 0; flex: 1; }
   .row .name { font-weight: 600; }
   .row .snip { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .face-wrap {
+    position: relative;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+  }
+  .face {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: #2a2a32;
+    display: block;
+  }
+  .face.placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 650;
+    color: #c9c4b8;
+    background: #2a2a32;
+  }
+  .face-wrap .placeholder { position: absolute; inset: 0; }
+  .face-wrap img.face { position: relative; z-index: 1; }
+  #thread-head .face-wrap, #thread-head .face { width: 40px; height: 40px; }
   .tag {
     display: inline-block;
     font-size: 10px;
@@ -431,6 +460,19 @@ function remainingLabel(iso) {
   return mins + " minutes left to message";
 }
 
+function faceHtml(p, name) {
+  const shown = (p && (p.display_name || p.name)) || name || "?";
+  const initial = esc((shown.trim().charAt(0) || "?").toUpperCase());
+  const key = (p && p.name) || name || "";
+  if (!p || !p.photo || !key) {
+    return `<span class="face placeholder" aria-hidden="true">${initial}</span>`;
+  }
+  return `<span class="face-wrap">
+    <span class="face placeholder" aria-hidden="true">${initial}</span>
+    <img class="face" src="/api/photo?name=${encodeURIComponent(key)}" alt="" width="36" height="36" onerror="this.remove()"/>
+  </span>`;
+}
+
 function rowHtml(p, inNew) {
   const on = current === p.name ? " on" : "";
   const snip = esc(inNew ? remainingLabel(p.message_until) : (p.last_text || p.preview || ""));
@@ -449,8 +491,11 @@ function rowHtml(p, inNew) {
     : "";
   const shown = p.display_name || p.name;
   return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
-    <div><span class="name">${esc(shown)}</span>${tag}${same}${draft}${phone}</div>
-    <div class="snip">${snip}</div>
+    ${faceHtml(p, p.name)}
+    <div class="meta">
+      <div><span class="name">${esc(shown)}</span>${tag}${same}${draft}${phone}</div>
+      <div class="snip">${snip}</div>
+    </div>
   </a>`;
 }
 
@@ -488,7 +533,7 @@ function renderHead(name, status, phoneProvided) {
   const same = known && known.same_name_count > 1
     ? `<span class="tag same-name">${known.same_name_count} named ${esc(known.base_name || name)}</span>`
     : "";
-  headEl.innerHTML = `<h2>${esc(title)} ${same} ${phone}</h2><div class="actions">
+  headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${same} ${phone}</h2><div class="actions">
     <button type="button" id="refresh-chat">Refresh</button>${dismiss}
   </div>`;
 }

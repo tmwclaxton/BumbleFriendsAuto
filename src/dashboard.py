@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from src.config import ROOT, load_config
 from src.phone_queue import cancel_job, enqueue, ensure_worker, queue_snapshot
+from src.photos import photo_exists, photo_file
 from src.store import (
     connect as db_connect,
     db_path_from_config,
@@ -177,6 +178,7 @@ def people_api_payload(conn) -> dict:
             "new_friend": fresh,
             "message_until": row["message_until"],
             "opener": format_opener(template, str(row["name"])) if fresh else None,
+            "photo": photo_exists(str(row["name"])),
         }
         people.append(item)
         if fresh:
@@ -301,6 +303,20 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 conn.close()
             return
+        if parsed.path == "/api/photo":
+            name = (parse_qs(parsed.query).get("name") or [""])[0]
+            path = photo_file(name)
+            if not name or not photo_exists(name):
+                self.send_error(404)
+                return
+            data = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if parsed.path == "/api/thread":
             name = (parse_qs(parsed.query).get("name") or [""])[0]
             conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
@@ -372,6 +388,17 @@ class Handler(BaseHTTPRequestHandler):
                     "queued": True,
                     "job": job,
                     "message": "queued full inbox recapture",
+                }
+            )
+            return
+        if self.path == "/api/photos":
+            job = enqueue("grab_photos", "")
+            self._json(
+                {
+                    "ok": True,
+                    "queued": True,
+                    "job": job,
+                    "message": "queued inbox thumbnail grab",
                 }
             )
             return

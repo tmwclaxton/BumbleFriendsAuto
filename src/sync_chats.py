@@ -35,6 +35,26 @@ from src.store import (
 
 log = logging.getLogger(__name__)
 
+
+def _maybe_grab_profile_photo(device, name: str) -> None:
+    from src.photos import capture_profile_photo, photo_exists
+
+    if not name or photo_exists(name):
+        return
+    try:
+        capture_profile_photo(device, name)
+    except Exception:
+        log.debug("profile photo skip %s", name, exc_info=True)
+
+
+def _grab_list_avatars(device, xml: str | None = None) -> None:
+    from src.photos import grab_visible_list_avatars
+
+    try:
+        grab_visible_list_avatars(device, xml)
+    except Exception:
+        log.debug("list avatars skip", exc_info=True)
+
 _CHROME = re.compile(
     r"(your turn to message|their turn to message|hours to reply|"
     r"match has expired|conversation expired|delivered|^seen$|"
@@ -246,8 +266,17 @@ def _tap_chats_tab(device) -> bool:
 
 def recover_to_list(device, package: str) -> str:
     """Leave threads/profiles and land on the Chats inbox. Never tap the composer."""
+    from src.unlock import hierarchy_looks_locked, screen_lock_state, wake_and_unlock
+
     device.shell("cmd statusbar collapse")
     xml = _dump(device)
+    if hierarchy_looks_locked(xml) or screen_lock_state(device) != "unlocked":
+        log.warning("lockscreen during recover — unlocking")
+        if not wake_and_unlock(device):
+            return xml
+        bring_app_foreground(device, package)
+        wait_idle(device, 0.8)
+        xml = dump_hierarchy(device)
     for attempt in range(8):
         if any(rid in xml for rid in _SEARCH_FIELD_RIDS):
             log.info("leave chats search (%d)", attempt)
@@ -272,6 +301,14 @@ def recover_to_list(device, package: str) -> str:
             continue
         if find_tab_point(xml, "Chats"):
             _tap_chats_tab(device)
+            xml = dump_hierarchy(device)
+            continue
+        if hierarchy_looks_locked(xml) or screen_lock_state(device) != "unlocked":
+            log.warning("lockscreen mid-recover (%d) — unlocking", attempt)
+            if not wake_and_unlock(device):
+                return xml
+            bring_app_foreground(device, package)
+            wait_idle(device, 0.8)
             xml = dump_hierarchy(device)
             continue
         log.info("unknown screen — system back (%d)", attempt)
@@ -662,6 +699,7 @@ def scan_chat_list(device, package: str) -> list[dict[str, str]]:
                     "preview": str(row["preview"]),
                 }
                 log.info("seen %s badge=%r", name, row["badge"])
+        _grab_list_avatars(device, xml)
         key = tuple(str(r["name"]) for r in visible)
         if key == last_key:
             stagnant += 1
@@ -889,6 +927,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
                 xml = recover_to_list(device, package)
             rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
             log.info("inbox: %s", ", ".join(f"{r['name']}@{r['y']}" for r in rows) or "(none)")
+            _grab_list_avatars(device, xml)
             for seen in rows:
                 if name_aliases(conn, str(seen["name"])) and not _row_already_saved(conn, seen):
                     continue
@@ -941,6 +980,12 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             xml = _wait_thread(device)
             device.shell("cmd statusbar collapse")
             if _on_profile(xml):
+                from src.photos import capture_open_profile_photo
+
+                try:
+                    capture_open_profile_photo(device, str(row["name"]))
+                except Exception:
+                    log.debug("profile photo skip %s", row["name"], exc_info=True)
                 log.info("profile for %s — back to list", row["name"])
                 device.press("back")
                 wait_idle(device, 1.0)
@@ -1006,6 +1051,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             opened.add(row_key)
             captured += 1
             log.info("saved %s msgs=%d last=%s", save_as, len(thread), last_from)
+            _maybe_grab_profile_photo(device, save_as)
             recover_to_list(device, package)
             xml = dump_hierarchy(device)
             if not _on_list(xml):
@@ -1200,6 +1246,7 @@ def recapture_person(device, conn, package: str, name: str) -> bool:
     width = int(device.info["displayWidth"])
     height = int(device.info["displayHeight"])
     thread = capture_thread(device, width, height, expected=partner)
+    _maybe_grab_profile_photo(device, name)
     try:
         leave_chat(device)
     except Exception:
@@ -1233,7 +1280,8 @@ def refresh_named_chat(name: str, *, serial: str | None = None) -> tuple[bool, s
     cfg = load_config()
     package = str(cfg["package"])
     device = connect(serial)
-    wake_and_unlock(device, serial=serial)
+    if not wake_and_unlock(device, serial=serial):
+        return False, "phone still locked — unlock failed"
     bring_app_foreground(device, package)
     wait_idle(device, 0.6)
     conn = db_connect(db_path_from_config(cfg))
@@ -1305,6 +1353,7 @@ def collect_new_friend_names(device, package: str) -> list[str]:
             if friend.name not in seen:
                 seen[friend.name] = None
                 log.info("strip seen %s @%s", friend.name, friend.x)
+        _grab_list_avatars(device, xml)
         key = tuple(f.name for f in friends)
         if key == last_key:
             stagnant += 1
@@ -1373,6 +1422,7 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
             wait_idle(device, 2.2)
             xml = recover_to_list(device, package)
         visible = list_new_friends(xml)
+        _grab_list_avatars(device, xml)
         friends = [
             f
             for f in visible
@@ -1442,6 +1492,7 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
             len(thread),
             last_from,
         )
+        _maybe_grab_profile_photo(device, partner)
         recover_to_list(device, package)
     log.info("new-friend chats captured=%d attempted=%d", captured, len(attempted))
     return captured
@@ -1455,7 +1506,8 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
     package = str(cfg["package"])
     device = connect(serial)
     try:
-        wake_and_unlock(device, serial=serial)
+        if not wake_and_unlock(device, serial=serial):
+            return False, "phone still locked — unlock failed"
         bring_app_foreground(device, package)
         wait_idle(device, 1.0)
         conn = db_connect(db_path_from_config(cfg))
@@ -1510,6 +1562,38 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
                 sleep_screen(device, serial=serial)
             except Exception:
                 log.warning("could not sleep screen after recapture")
+
+
+def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+    """Scroll Chats + New friends and crop visible faces. Does not open threads."""
+    from src.photos import avatars_dir
+    from src.unlock import sleep_screen, wake_and_unlock
+
+    cfg = load_config()
+    package = str(cfg["package"])
+    device = connect(serial)
+    try:
+        if not wake_and_unlock(device, serial=serial):
+            return False, "phone still locked — unlock failed"
+        bring_app_foreground(device, package)
+        wait_idle(device, 1.0)
+        for filt in _INBOX_FILTERS:
+            _set_inbox_filter(device, filt)
+            scan_chat_list(device, package)
+        collect_new_friend_names(device, package)
+        n = len([p for p in avatars_dir().glob("*.jpg") if p.stat().st_size > 80])
+        msg = f"grabbed inbox thumbnails ({n} on disk)"
+        log.info(msg)
+        return True, msg
+    except Exception as exc:
+        log.exception("grab_inbox_photos failed")
+        return False, str(exc)
+    finally:
+        if sleep_after:
+            try:
+                sleep_screen(device, serial=serial)
+            except Exception:
+                log.warning("could not sleep screen after photo grab")
 
 
 def fill_via_search(device, conn, package: str) -> int:
@@ -1599,6 +1683,7 @@ def fill_via_search(device, conn, package: str) -> int:
             have.add(partner)
             captured += 1
             log.info("saved %s msgs=%d last=%s", partner, len(thread), thread[-1][0])
+            _maybe_grab_profile_photo(device, save_as)
             leave_chat(device)
             wait_idle(device, 0.6)
         except Exception as exc:

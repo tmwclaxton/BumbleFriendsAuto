@@ -12,7 +12,7 @@ from urllib.parse import parse_qs
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from src.config import load_config
@@ -74,6 +74,19 @@ async def api_people(_: Request) -> JSONResponse:
         return JSONResponse(people_api_payload(conn))
     finally:
         conn.close()
+
+
+async def api_photo(request: Request) -> Response:
+    from src.photos import photo_exists, photo_file
+
+    name = (parse_qs(request.url.query).get("name") or [""])[0]
+    if not name or not photo_exists(name):
+        return Response(status_code=404)
+    return FileResponse(
+        photo_file(name),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 async def api_thread(request: Request) -> JSONResponse:
@@ -138,6 +151,13 @@ async def api_recapture(_: Request) -> JSONResponse:
     )
 
 
+async def api_photos(_: Request) -> JSONResponse:
+    job = enqueue("grab_photos", "")
+    return JSONResponse(
+        {"ok": True, "queued": True, "job": job, "message": "queued inbox thumbnail grab"}
+    )
+
+
 async def api_message_new_friends(_: Request) -> JSONResponse:
     job = enqueue("message_new_friends", "")
     return JSONResponse(
@@ -198,11 +218,13 @@ def build_app() -> Starlette:
         Route("/index.html", homepage),
         Route("/api/health", api_health),
         Route("/api/people", api_people),
+        Route("/api/photo", api_photo),
         Route("/api/thread", api_thread),
         Route("/api/queue", api_queue),
         Route("/api/dismiss", api_dismiss, methods=["POST"]),
         Route("/api/refresh", api_refresh, methods=["POST"]),
         Route("/api/recapture", api_recapture, methods=["POST"]),
+        Route("/api/photos", api_photos, methods=["POST"]),
         Route("/api/message-new-friends", api_message_new_friends, methods=["POST"]),
         Route("/api/draft", api_draft, methods=["POST"]),
         Route("/api/queue/cancel", api_cancel, methods=["POST"]),
