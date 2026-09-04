@@ -39,7 +39,11 @@ mcp = FastMCP(
         "Bumble Friends (LGS) inbox on admin.grantgunner.org. "
         "You cannot send Bumble messages. Draft with save_draft, revise with tweak_draft; "
         "Toby sends from the inbox UI. There is no send-reply or message-new-friends tool. "
-        "Read tools (list_*, get_thread) are instant. Phone capture tools (start_refresh_chat, "
+        "Read tools (list_*, get_thread, prepare_contact) are instant. "
+        "To save someone to the Pixel Contacts app: prepare_contact, decide the real name and "
+        "number from the thread (do not invent a number), then start_add_to_contacts and poll "
+        "get_job. There is no inbox button for this. "
+        "Phone capture tools (start_refresh_chat, "
         "start_recapture_inbox) are asynchronous: poll get_job until done, error, or cancelled. "
         "Use cancel_job to drop a queued action or stop a running one at the next checkpoint. "
         "Never treat queued/running as success. Full inbox recapture can take up to ~40 minutes."
@@ -108,6 +112,7 @@ def list_inbox_people() -> dict:
                     "in_group": bool(row["in_group"]),
                     "ethnicity": row["ethnicity"] or "",
                     "ethnicity_source": row["ethnicity_source"] or "",
+                    "in_contacts": bool(row["in_contacts"]),
                 }
             )
         return {"count": len(people), "people": people}
@@ -261,6 +266,57 @@ def list_jobs() -> dict:
     """List recent phone-queue jobs (queued, running, done, error, cancelled)."""
     ensure_worker()
     return {"jobs": queue_snapshot()}
+
+
+@mcp.tool()
+def prepare_contact(name: str) -> dict:
+    """Gather name / location / phone / Insta candidates from the stored thread so you can decide what to save on the Pixel. Fast — no phone. Then call start_add_to_contacts with the fields you chose."""
+    from src.contacts import contact_preview
+
+    return contact_preview(name)
+
+
+@mcp.tool()
+def start_add_to_contacts(
+    inbox_name: str,
+    contact_name: str,
+    phone: str = "",
+    notes: str = "",
+) -> dict:
+    """Queue writing a contact onto the Pixel Contacts app. You must pick contact_name and phone from the thread (prepare_contact / get_thread) — do not invent a number. Returns job_id; poll get_job. Does not send a Bumble message."""
+    import json
+
+    inbox_name = (inbox_name or "").strip()
+    contact_name = (contact_name or "").strip()
+    phone = (phone or "").strip()
+    notes = (notes or "").strip()
+    if not inbox_name:
+        return {"ok": False, "error": "inbox_name required"}
+    if not contact_name:
+        return {"ok": False, "error": "contact_name required — decide the name first via prepare_contact"}
+    conn = _db()
+    try:
+        row = conn.execute("SELECT name FROM people WHERE name = ?", (inbox_name,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return {"ok": False, "error": "person not in inbox"}
+    ensure_worker()
+    job = enqueue(
+        "add_contact",
+        inbox_name,
+        json.dumps({"contact_name": contact_name, "phone": phone, "notes": notes}),
+    )
+    return {
+        "ok": True,
+        "job_id": job["id"],
+        "status": job["status"],
+        "inbox_name": inbox_name,
+        "contact_name": contact_name,
+        "phone": phone or None,
+        "suggested_wait_seconds": 8,
+        "hint": "Poll get_job until done/error/cancelled. This writes the Pixel address book only.",
+    }
 
 
 @mcp.tool()

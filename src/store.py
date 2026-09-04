@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS people (
     phone_provided INTEGER NOT NULL DEFAULT 0,
     ethnicity TEXT,
     ethnicity_source TEXT,
+    in_contacts INTEGER NOT NULL DEFAULT 0,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
@@ -93,6 +94,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE people ADD COLUMN ethnicity TEXT")
     if "ethnicity_source" not in people_cols:
         conn.execute("ALTER TABLE people ADD COLUMN ethnicity_source TEXT")
+    if "in_contacts" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN in_contacts INTEGER NOT NULL DEFAULT 0")
     if "draft" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN draft TEXT")
     if "message_until" not in chat_cols:
@@ -206,6 +209,38 @@ _PHONE_RE = re.compile(
 
 def message_has_phone(text: str) -> bool:
     return bool(_PHONE_RE.search(text or ""))
+
+
+def extract_phones(text: str) -> list[str]:
+    """UK-ish numbers from a message, digits normalised, order preserved."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in _PHONE_RE.finditer(text or ""):
+        digits = re.sub(r"\D+", "", match.group(0))
+        if digits.startswith("00"):
+            digits = digits[2:]
+        if digits.startswith("44") and len(digits) >= 12:
+            digits = "0" + digits[2:]
+        if len(digits) < 10:
+            continue
+        if digits not in seen:
+            seen.add(digits)
+            out.append(digits)
+    return out
+
+
+def set_in_contacts(conn: sqlite3.Connection, name: str, in_contacts: bool = True) -> bool:
+    name = (name or "").strip()
+    if not name:
+        return False
+    if conn.execute("SELECT id FROM people WHERE name = ?", (name,)).fetchone() is None:
+        return False
+    conn.execute(
+        "UPDATE people SET in_contacts = ? WHERE name = ?",
+        (1 if in_contacts else 0, name),
+    )
+    conn.commit()
+    return True
 
 
 def refresh_phone_flags(conn: sqlite3.Connection) -> int:
@@ -932,7 +967,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         conn.execute(
             """
             SELECT p.name, p.location, p.distance, p.age, p.phone_provided, p.ethnicity,
-                   p.ethnicity_source,
+                   p.ethnicity_source, p.in_contacts,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
                    c.dismissed_reply_text, c.opener_sent, c.draft, c.message_until,
                    c.in_group,

@@ -196,6 +196,24 @@ def _run_job(job: dict) -> tuple[bool, str]:
         from src.sync_chats import grab_inbox_photos
 
         return grab_inbox_photos()
+    if kind == "add_contact":
+        from src.contacts import add_pixel_contact
+
+        payload = {}
+        raw = str(job.get("text") or "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                payload = parsed
+        return add_pixel_contact(
+            inbox_name=name,
+            contact_name=str(payload.get("contact_name") or name),
+            phone=str(payload.get("phone") or ""),
+            notes=str(payload.get("notes") or ""),
+        )
     return False, f"unknown action {kind}"
 
 

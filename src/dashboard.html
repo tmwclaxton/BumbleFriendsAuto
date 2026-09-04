@@ -1039,6 +1039,7 @@ function jobLabel(job) {
   if (job.kind === "recapture_all") return "Recapture inbox";
   if (job.kind === "message_new_friends") return "Send opener to new friends";
   if (job.kind === "grab_photos") return "Grab photos";
+  if (job.kind === "add_contact") return "Add Pixel contact " + job.name;
   const snip = String(job.text || "").replace(/\s+/g, " ").slice(0, 42);
   return "Reply to " + job.name + (snip ? " — " + snip : "");
 }
