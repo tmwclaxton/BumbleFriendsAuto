@@ -196,6 +196,10 @@ def _run_job(job: dict) -> tuple[bool, str]:
         from src.sync_chats import grab_inbox_photos
 
         return grab_inbox_photos()
+    if kind == "refresh_new_friends":
+        from src.sync_chats import refresh_new_friends_strip
+
+        return refresh_new_friends_strip()
     if kind == "add_contact":
         from src.contacts import add_pixel_contact
 
@@ -298,7 +302,7 @@ def job_poll_payload(job: dict | None) -> dict:
         wait = 8
     elif status == "running":
         kind = str(job.get("kind") or "")
-        wait = 20 if kind in {"recapture_all", "message_new_friends", "grab_photos"} else 6
+        wait = 20 if kind in {"recapture_all", "message_new_friends", "grab_photos", "refresh_new_friends"} else 6
     return {
         "ok": True,
         "job_id": job.get("id"),

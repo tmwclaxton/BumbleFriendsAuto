@@ -508,6 +508,17 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if self.path == "/api/new-friends":
+            job = enqueue("refresh_new_friends", "")
+            self._json(
+                {
+                    "ok": True,
+                    "queued": True,
+                    "job": job,
+                    "message": "queued New friends strip refresh",
+                }
+            )
+            return
         if self.path == "/api/draft":
             data = self._read_json()
             if data is None:

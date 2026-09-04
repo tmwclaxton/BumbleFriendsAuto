@@ -240,6 +240,13 @@ async def api_message_new_friends(_: Request) -> JSONResponse:
     )
 
 
+async def api_new_friends(_: Request) -> JSONResponse:
+    job = enqueue("refresh_new_friends", "")
+    return JSONResponse(
+        {"ok": True, "queued": True, "job": job, "message": "queued New friends strip refresh"}
+    )
+
+
 async def api_draft(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
@@ -310,6 +317,7 @@ def build_app() -> Starlette:
         Route("/api/recapture", api_recapture, methods=["POST"]),
         Route("/api/photos", api_photos, methods=["POST"]),
         Route("/api/message-new-friends", api_message_new_friends, methods=["POST"]),
+        Route("/api/new-friends", api_new_friends, methods=["POST"]),
         Route("/api/draft", api_draft, methods=["POST"]),
         Route("/api/queue/cancel", api_cancel, methods=["POST"]),
         Route("/api/queue/cancel-all", api_cancel_all, methods=["POST"]),

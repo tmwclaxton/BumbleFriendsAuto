@@ -1632,6 +1632,45 @@ def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True) ->
                 log.warning("could not sleep screen after photo grab")
 
 
+def refresh_new_friends_strip(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+    """Unlock, scan the New friends circles, open any not already stored, then sleep."""
+    from src.unlock import sleep_screen, wake_and_unlock
+
+    cfg = load_config()
+    package = str(cfg["package"])
+    device = connect(serial)
+    try:
+        if not wake_and_unlock(device, serial=serial):
+            return False, "phone still locked — unlock failed"
+        bring_app_foreground(device, package)
+        wait_idle(device, 1.0)
+        _set_inbox_filter(device, "Recent")
+        names = collect_new_friend_names(device, package)
+        conn = db_connect(db_path_from_config(cfg))
+        try:
+            n = capture_new_friend_chats(device, conn, package)
+        finally:
+            conn.close()
+        listed = ", ".join(names) if names else "none"
+        msg = f"new-friend strip: {len(names)} circles, captured {n} chats ({listed})"
+        log.info(msg)
+        return True, msg
+    except Exception as exc:
+        from src.phone_queue import QueueCancelled
+
+        if isinstance(exc, QueueCancelled):
+            log.info("refresh_new_friends_strip cancelled")
+            return False, "cancelled"
+        log.exception("refresh_new_friends_strip failed")
+        return False, str(exc)
+    finally:
+        if sleep_after:
+            try:
+                sleep_screen(device, serial=serial)
+            except Exception:
+                log.warning("could not sleep screen after new-friend strip")
+
+
 def fill_via_search(device, conn, package: str) -> int:
     """Open Chats search and capture every indexed person still missing a transcript."""
     have = names_with_messages(conn)

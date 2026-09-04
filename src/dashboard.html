@@ -194,7 +194,38 @@
     overflow: hidden;
   }
   #new-wrap[hidden] { display: none; }
-  #new-wrap .section-head { color: #c9b6ff; }
+  #new-wrap .section-head { color: #c9b6ff; flex-wrap: wrap; }
+  .section-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  #refresh-new {
+    text-transform: none;
+    letter-spacing: 0;
+    font: 12px/1.2 inherit;
+    background: transparent;
+    color: #c9b6ff;
+    border: 1px solid #5a4f78;
+    border-radius: 8px;
+    padding: 5px 10px;
+    font-weight: 650;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #refresh-new:hover { background: #221e30; }
+  #refresh-new:disabled { opacity: .45; cursor: default; }
+  .empty-new {
+    margin: 0;
+    padding: 4px 14px 12px;
+    font-size: 13px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--muted);
+    line-height: 1.4;
+  }
   #new-wrap .row { border-bottom-color: #2c2838; }
   #new-wrap .row:last-child { border-bottom: 0; }
   #new-hint {
@@ -449,12 +480,15 @@
     <button type="button" id="eth-guess">Guess from photos</button>
   </div>
   <div id="sidebar-scroll">
-    <div id="new-wrap" hidden>
+    <div id="new-wrap">
       <div class="section-head">
         <span id="new-label">New friends</span>
-        <button type="button" id="msg-all" title="Sends the hiking / board games opener on the phone to every match in this section. Does not message existing chats.">Send opener to all</button>
+        <span class="section-actions">
+          <button type="button" id="refresh-new" title="Look at the New friends circles on the phone and store anyone waiting for a first message. Does not recapture every chat.">Refresh strip</button>
+          <button type="button" id="msg-all" title="Sends the hiking / board games opener on the phone to every match in this section. Does not message existing chats.">Send opener to all</button>
+        </span>
       </div>
-      <p id="new-hint">Matches waiting for a first message. The button only messages this list, not the chats below.</p>
+      <p id="new-hint">Matches waiting for a first message. Refresh strip looks at the phone. Send opener only messages this list, not the chats below.</p>
       <div id="new-list"></div>
     </div>
     <div id="chats-head" class="section-head">Chats</div>
@@ -495,6 +529,8 @@ const newWrap = document.getElementById("new-wrap");
 const newListEl = document.getElementById("new-list");
 const newLabel = document.getElementById("new-label");
 const msgAllBtn = document.getElementById("msg-all");
+const refreshNewBtn = document.getElementById("refresh-new");
+const newHint = document.getElementById("new-hint");
 const groupWrap = document.getElementById("group-wrap");
 const groupListEl = document.getElementById("group-list");
 const groupLabel = document.getElementById("group-label");
@@ -696,20 +732,29 @@ function renderEthFilter() {
 function renderList() {
   const q = document.getElementById("filter").value.trim().toLowerCase();
   const match = p => (!q || p.name.toLowerCase().includes(q)) && matchEthnicity(p);
-  const fresh = people.filter(p => p.new_friend && !isDismissed(p) && !isInGroup(p) && match(p));
+  const allFresh = people.filter(p => p.new_friend && !isDismissed(p) && !isInGroup(p));
+  const fresh = allFresh.filter(match);
+  const hiddenByFilter = allFresh.length - fresh.length;
   const grouped = people.filter(p => isInGroup(p) && match(p));
   const hidden = people.filter(p => isDismissed(p) && !isInGroup(p) && match(p));
   const rest = people.filter(p => !p.new_friend && !isDismissed(p) && !isInGroup(p) && match(p));
   const chatsHead = document.getElementById("chats-head");
+  newWrap.hidden = false;
+  msgAllBtn.disabled = !fresh.length;
   if (fresh.length) {
-    newWrap.hidden = false;
     newLabel.textContent = "New friends · " + fresh.length;
-    msgAllBtn.disabled = false;
+    newHint.textContent = hiddenByFilter
+      ? "Matches waiting for a first message. " + hiddenByFilter + " hidden by the name or ethnicity filter."
+      : "Matches waiting for a first message. Refresh strip looks at the phone. Send opener only messages this list, not the chats below.";
     newListEl.innerHTML = fresh.map(p => rowHtml(p, true)).join("");
+  } else if (allFresh.length) {
+    newLabel.textContent = "New friends · " + allFresh.length + " stored";
+    newHint.textContent = allFresh.length + " waiting, hidden by the name or ethnicity filter. Clear the filter to see them, or refresh the strip.";
+    newListEl.innerHTML = '<p class="empty-new">Hidden by the current filter.</p>';
   } else {
-    newWrap.hidden = true;
-    msgAllBtn.disabled = true;
-    newListEl.innerHTML = "";
+    newLabel.textContent = "New friends";
+    newHint.textContent = "None stored. The last inbox recapture saw no circles. Refresh strip looks at the phone without opening every chat.";
+    newListEl.innerHTML = '<p class="empty-new">No matches waiting for a first message.</p>';
   }
   if (grouped.length) {
     groupWrap.hidden = false;
@@ -991,6 +1036,15 @@ document.querySelector("aside").addEventListener("click", e => {
   e.preventDefault();
   openThread(link.dataset.name);
 });
+refreshNewBtn.addEventListener("click", async () => {
+  refreshNewBtn.disabled = true;
+  statusEl.textContent = "Queued New friends strip refresh";
+  const res = await fetch("/api/new-friends", {method: "POST"});
+  const data = await res.json();
+  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+  if (data.ok) pollQueue();
+  else refreshNewBtn.disabled = false;
+});
 msgAllBtn.addEventListener("click", async () => {
   const fresh = people.filter(p => p.new_friend);
   if (!fresh.length) return;
@@ -1039,6 +1093,7 @@ function jobLabel(job) {
   if (job.kind === "recapture_all") return "Recapture inbox";
   if (job.kind === "message_new_friends") return "Send opener to new friends";
   if (job.kind === "grab_photos") return "Grab photos";
+  if (job.kind === "refresh_new_friends") return "Refresh New friends strip";
   if (job.kind === "add_contact") return "Add Pixel contact " + job.name;
   const snip = String(job.text || "").replace(/\s+/g, " ").slice(0, 42);
   return "Reply to " + job.name + (snip ? " — " + snip : "");
@@ -1054,8 +1109,10 @@ function jobState(job) {
 function renderQueue(jobs) {
   const active = jobs.filter(j => j.status === "running" || j.status === "queued");
   const messaging = active.some(j => j.kind === "message_new_friends");
+  const refreshing = active.some(j => j.kind === "refresh_new_friends");
   if (messaging) msgAllBtn.disabled = true;
   else if (people.some(p => p.new_friend)) msgAllBtn.disabled = false;
+  refreshNewBtn.disabled = refreshing;
   if (!active.length) {
     queueEl.innerHTML = "";
     return;
@@ -1119,7 +1176,7 @@ async function pollQueue() {
           draftEl.value = (job.status === "error" || job.status === "cancelled") ? job.text : "";
         }
       }
-      if ((job.status === "done" || job.status === "cancelled") && (job.name === current || job.kind === "message_new_friends" || job.kind === "recapture_all" || job.kind === "grab_photos")) {
+      if ((job.status === "done" || job.status === "cancelled") && (job.name === current || job.kind === "message_new_friends" || job.kind === "recapture_all" || job.kind === "grab_photos" || job.kind === "refresh_new_friends")) {
         await loadPeople();
         if (current) await openThread(current, {push: false});
       }

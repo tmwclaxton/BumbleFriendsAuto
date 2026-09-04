@@ -43,7 +43,7 @@ mcp = FastMCP(
         "To save someone to the Pixel Contacts app: prepare_contact, decide the real name and "
         "number from the thread (do not invent a number), then start_add_to_contacts and poll "
         "get_job. There is no inbox button for this. "
-        "Phone capture tools (start_refresh_chat, "
+        "Phone capture tools (start_refresh_chat, start_refresh_new_friends, "
         "start_recapture_inbox) are asynchronous: poll get_job until done, error, or cancelled. "
         "Use cancel_job to drop a queued action or stop a running one at the next checkpoint. "
         "Never treat queued/running as success. Full inbox recapture can take up to ~40 minutes."
@@ -439,6 +439,20 @@ def list_drafts() -> dict:
         return {"count": len(rows), "people": rows}
     finally:
         conn.close()
+
+
+@mcp.tool()
+def start_refresh_new_friends() -> dict:
+    """Enqueue a New friends strip scan (unlock phone, swipe the circles, open anyone not already stored). Lighter than a full inbox recapture. Returns job_id immediately — poll get_job."""
+    ensure_worker()
+    job = enqueue("refresh_new_friends", "")
+    return {
+        "ok": True,
+        "job_id": job["id"],
+        "status": job["status"],
+        "suggested_wait_seconds": 15,
+        "hint": "Poll get_job every 10–15s until done/error/cancelled. Do not treat queued/running as success.",
+    }
 
 
 @mcp.tool()
