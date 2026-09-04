@@ -27,6 +27,7 @@ from src.store import (
     list_people,
     list_thread,
     set_draft,
+    set_ethnicity,
     set_in_group,
 )
 
@@ -105,6 +106,7 @@ def list_inbox_people() -> dict:
                     "new_friend": is_new_friend(row),
                     "message_until": row["message_until"],
                     "in_group": bool(row["in_group"]),
+                    "ethnicity": row["ethnicity"] or "",
                 }
             )
         return {"count": len(people), "people": people}
@@ -158,6 +160,22 @@ def mark_in_group(name: str, in_group: bool = True) -> dict:
         "in_group": bool(in_group),
         "hint": "Filed under In group in the inbox." if in_group else "Back in the main inbox list.",
     }
+
+
+@mcp.tool()
+def set_person_ethnicity(name: str, ethnicity: str = "") -> dict:
+    """Tag a person with a Hinge-style ethnicity (white, black, south asian, …) or clear with empty. Inbox filter only — does not touch the phone."""
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    conn = _db()
+    try:
+        ok = set_ethnicity(conn, name, ethnicity)
+    finally:
+        conn.close()
+    if not ok:
+        return {"ok": False, "error": "person or ethnicity not valid"}
+    return {"ok": True, "name": name, "ethnicity": (ethnicity or "").strip() or None}
 
 
 @mcp.tool()

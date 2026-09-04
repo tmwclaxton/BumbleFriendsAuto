@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS people (
     age INTEGER,
     notes TEXT,
     phone_provided INTEGER NOT NULL DEFAULT 0,
+    ethnicity TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
@@ -87,6 +88,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     people_cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(people)")}
     if "phone_provided" not in people_cols:
         conn.execute("ALTER TABLE people ADD COLUMN phone_provided INTEGER NOT NULL DEFAULT 0")
+    if "ethnicity" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN ethnicity TEXT")
     if "draft" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN draft TEXT")
     if "message_until" not in chat_cols:
@@ -433,8 +436,14 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                 conn.execute("UPDATE chats SET draft = ? WHERE person_id = ?", (drop_chat["draft"], keep_id))
         if drop_chat and int(drop_chat["in_group"] or 0):
             conn.execute("UPDATE chats SET in_group = 1 WHERE person_id = ?", (keep_id,))
-    drop_person = conn.execute("SELECT location, distance, age, phone_provided FROM people WHERE id = ?", (drop_id,)).fetchone()
-    keep_person = conn.execute("SELECT location, distance, age, phone_provided FROM people WHERE id = ?", (keep_id,)).fetchone()
+    drop_person = conn.execute(
+        "SELECT location, distance, age, phone_provided, ethnicity FROM people WHERE id = ?",
+        (drop_id,),
+    ).fetchone()
+    keep_person = conn.execute(
+        "SELECT location, distance, age, phone_provided, ethnicity FROM people WHERE id = ?",
+        (keep_id,),
+    ).fetchone()
     if drop_person and keep_person:
         conn.execute(
             """
@@ -442,7 +451,8 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                 location = COALESCE(NULLIF(location, ''), ?),
                 distance = COALESCE(NULLIF(distance, ''), ?),
                 age = COALESCE(age, ?),
-                phone_provided = MAX(phone_provided, ?)
+                phone_provided = MAX(phone_provided, ?),
+                ethnicity = COALESCE(NULLIF(ethnicity, ''), ?)
             WHERE id = ?
             """,
             (
@@ -450,6 +460,7 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                 drop_person["distance"],
                 drop_person["age"],
                 int(drop_person["phone_provided"] or 0),
+                drop_person["ethnicity"],
                 keep_id,
             ),
         )
@@ -757,6 +768,28 @@ def set_in_group(conn: sqlite3.Connection, name: str, in_group: bool) -> bool:
     return True
 
 
+def set_ethnicity(conn: sqlite3.Connection, name: str, ethnicity: str | None) -> bool:
+    """Save a Hinge-style ethnicity tag, or clear it with empty/unknown."""
+    name = name.strip()
+    if not name:
+        return False
+    if conn.execute("SELECT id FROM people WHERE name = ?", (name,)).fetchone() is None:
+        return False
+    from src.profile_filters import canonicalize
+
+    raw = (ethnicity or "").strip()
+    if not raw or raw.lower() in {"unknown", "none", "clear"}:
+        value = None
+    else:
+        value = canonicalize(raw)
+        if value is None:
+            return False
+    upsert_chat(conn, name)
+    conn.execute("UPDATE people SET ethnicity = ? WHERE name = ?", (value, name))
+    conn.commit()
+    return True
+
+
 def replace_thread(
     conn: sqlite3.Connection,
     person_id: int,
@@ -874,7 +907,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(
         conn.execute(
             """
-            SELECT p.name, p.location, p.distance, p.age, p.phone_provided,
+            SELECT p.name, p.location, p.distance, p.age, p.phone_provided, p.ethnicity,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
                    c.dismissed_reply_text, c.opener_sent, c.draft, c.message_until,
                    c.in_group,

@@ -189,14 +189,18 @@ def people_api_payload(conn) -> dict:
             "photo": photo_exists(str(row["name"])),
             "dismissed": (row["status"] or "") == "dismissed",
             "in_group": bool(row["in_group"]),
+            "ethnicity": row["ethnicity"] or "",
         }
         people.append(item)
         if fresh:
             new_friends.append(str(row["name"]))
+    from src.profile_filters import ETHNICITY_CHOICES
+
     return {
         "people": people,
         "new_friends": new_friends,
         "opener_template": template,
+        "ethnicity_choices": [{"id": cid, "label": label} for cid, label in ETHNICITY_CHOICES],
     }
 
 
@@ -408,6 +412,26 @@ class Handler(BaseHTTPRequestHandler):
                     "message": f"{name} {'added to group' if filed else 'removed from group'}",
                 }
             )
+            return
+        if self.path == "/api/ethnicity":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            if not name:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            from src.store import set_ethnicity
+
+            conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
+            try:
+                ok = set_ethnicity(conn, name, str(data.get("ethnicity") or ""))
+            finally:
+                conn.close()
+            if not ok:
+                self._json({"ok": False, "error": "person or ethnicity not valid"}, 400)
+                return
+            self._json({"ok": True})
             return
         if self.path == "/api/refresh":
             data = self._read_json()

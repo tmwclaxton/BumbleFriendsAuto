@@ -74,6 +74,30 @@ _CHIP_TO_CANON: dict[str, str] = {
 
 _LABEL_RE = re.compile(r"^(ethnicity|ethnicities|heritage|ethnic background)$", re.I)
 
+# Sidebar / thread picker — same buckets as Hinge, plus Unknown for untagged.
+ETHNICITY_CHOICES: list[tuple[str, str]] = [
+    ("white", "White"),
+    ("black", "Black"),
+    ("east_asian", "East Asian"),
+    ("south_asian", "South Asian"),
+    ("southeast_asian", "Southeast Asian"),
+    ("asian", "Asian"),
+    ("hispanic", "Hispanic/Latino"),
+    ("middle_eastern", "Middle Eastern"),
+    ("native_american", "Native American"),
+    ("pacific_islander", "Pacific Islander"),
+    ("mixed", "Mixed"),
+    ("other", "Other"),
+]
+
+
+def ethnicity_label(canon: str | None) -> str:
+    key = (canon or "").strip()
+    for cid, label in ETHNICITY_CHOICES:
+        if cid == key:
+            return label
+    return key.replace("_", " ").title() if key else ""
+
 
 def _norm(text: str) -> str:
     t = (text or "").replace("–", "/").replace("—", "/")
