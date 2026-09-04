@@ -235,7 +235,7 @@ def send_new_friend_openers(cfg: dict, *, dry_run: bool = False, serial: str | N
     log.info("new friends visible: %d — %s", len(friends), ", ".join(f.name for f in friends) or "-")
 
     if dry_run:
-        shown = [f for f in list_new_friends(xml) if f.name.lower() not in already][:max_messages]
+        shown = _tappable_friends(xml, device)[:max_messages]
         for friend in shown:
             body = format_opener(template, friend.name)
             log.info("dry-run would message %s: %s", friend.name, body)
@@ -244,17 +244,18 @@ def send_new_friend_openers(cfg: dict, *, dry_run: bool = False, serial: str | N
 
     sent = 0
     skipped = 0
-    attempted: set[str] = set(already)
+    attempted: set[str] = set()
     empty_rounds = 0
+
+    def _token(friend) -> str:
+        return f"{friend.name.lower()}@{int(friend.x) // 40}"
 
     while sent < max_messages:
         from src.phone_queue import check_cancel
 
         check_cancel()
         xml = ensure_chats_list(device, package)
-        friends = [
-            f for f in _tappable_friends(xml, device) if f.name.lower() not in attempted
-        ]
+        friends = [f for f in _tappable_friends(xml, device) if _token(f) not in attempted]
         if not friends:
             empty_rounds += 1
             if empty_rounds >= 6:
@@ -265,8 +266,23 @@ def send_new_friend_openers(cfg: dict, *, dry_run: bool = False, serial: str | N
         empty_rounds = 0
 
         friend = friends[0]
-        attempted.add(friend.name.lower())
-        log.info("open new friend: %s", friend.name)
+        attempted.add(_token(friend))
+        face = None
+        try:
+            from src.photos import crop_list_face, match_face_to_namesakes
+
+            face = crop_list_face(
+                device, xml, friend.name, x=int(friend.x), y=int(friend.y)
+            )
+            matched = match_face_to_namesakes(face, friend.name) if face is not None else None
+            if matched and matched.lower() in already:
+                log.info("skip %s — face already messaged as %s", friend.name, matched)
+                skipped += 1
+                continue
+        except Exception:
+            log.debug("strip face match failed", exc_info=True)
+            matched = None
+        log.info("open new friend: %s @%s", friend.name, friend.x)
         tap(device, friend.x, friend.y)
         wait_idle(device, 2.2)
 
@@ -301,9 +317,18 @@ def send_new_friend_openers(cfg: dict, *, dry_run: bool = False, serial: str | N
         sent += 1
         log.info("sent %d/%d → %s", sent, max_messages, partner)
         try:
-            from src.store import connect as db_connect, mark_opener_sent
+            from src.store import connect as db_connect, db_path_from_config, mark_opener_sent
+            from src.sync_chats import _save_name_for_thread
 
-            mark_opener_sent(db_connect(), partner, body)
+            conn = db_connect(db_path_from_config(cfg))
+            try:
+                save_as = _save_name_for_thread(conn, partner, [], face=face)
+                mark_opener_sent(conn, save_as, body)
+                already.add(save_as.lower())
+                if save_as != partner:
+                    log.info("recorded opener for %s as %s", partner, save_as)
+            finally:
+                conn.close()
         except Exception as exc:
             log.warning("could not record opener in db: %s", exc)
         leave_chat(device)
