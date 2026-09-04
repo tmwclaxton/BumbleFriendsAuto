@@ -190,10 +190,12 @@ def people_api_payload(conn) -> dict:
             "dismissed": (row["status"] or "") == "dismissed",
             "in_group": bool(row["in_group"]),
             "ethnicity": row["ethnicity"] or "",
+            "ethnicity_source": row["ethnicity_source"] or "",
         }
         people.append(item)
         if fresh:
             new_friends.append(str(row["name"]))
+    from src.ethnicity_vision import guess_status
     from src.profile_filters import ETHNICITY_CHOICES
 
     return {
@@ -201,6 +203,7 @@ def people_api_payload(conn) -> dict:
         "new_friends": new_friends,
         "opener_template": template,
         "ethnicity_choices": [{"id": cid, "label": label} for cid, label in ETHNICITY_CHOICES],
+        "ethnicity_guess": guess_status(),
     }
 
 
@@ -342,6 +345,11 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/queue":
             self._json({"jobs": queue_snapshot()})
             return
+        if parsed.path == "/api/ethnicity/guess":
+            from src.ethnicity_vision import guess_status
+
+            self._json(guess_status())
+            return
         if parsed.path == "/api/health":
             self._json({"ok": True})
             return
@@ -425,13 +433,36 @@ class Handler(BaseHTTPRequestHandler):
 
             conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
             try:
-                ok = set_ethnicity(conn, name, str(data.get("ethnicity") or ""))
+                ok = set_ethnicity(conn, name, str(data.get("ethnicity") or ""), source="manual")
             finally:
                 conn.close()
             if not ok:
                 self._json({"ok": False, "error": "person or ethnicity not valid"}, 400)
                 return
             self._json({"ok": True})
+            return
+        if self.path == "/api/ethnicity/guess":
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                data = self._read_json()
+                if data is None:
+                    return
+            else:
+                data = {}
+            from src.ethnicity_vision import start_guess
+
+            self._json(
+                start_guess(
+                    name=str(data.get("name") or ""),
+                    force=bool(data.get("force")),
+                )
+            )
+            return
+        if self.path == "/api/ethnicity/guess/cancel":
+            from src.ethnicity_vision import cancel_guess, guess_status
+
+            cancel_guess()
+            self._json({"ok": True, **guess_status()})
             return
         if self.path == "/api/refresh":
             data = self._read_json()

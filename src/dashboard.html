@@ -79,6 +79,23 @@
     color: #e0b4d4;
     border-color: #6a4a62;
   }
+  #eth-guess-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px 10px;
+  }
+  #eth-guess, #guess-eth {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font: 11px/1.3 inherit;
+    cursor: pointer;
+  }
+  #eth-guess:hover, #guess-eth:hover { color: var(--text); }
+  #eth-guess:disabled, #guess-eth:disabled { opacity: 0.55; cursor: default; }
   #ethnicity-set {
     flex-shrink: 0;
     background: var(--panel);
@@ -428,6 +445,9 @@
   </header>
   <input id="filter" placeholder="Filter names" autocomplete="off"/>
   <div id="eth-filter"></div>
+  <div id="eth-guess-row">
+    <button type="button" id="eth-guess">Guess from photos</button>
+  </div>
   <div id="sidebar-scroll">
     <div id="new-wrap" hidden>
       <div class="section-head">
@@ -493,6 +513,8 @@ const queueEl = document.getElementById("queue");
 let people = [];
 let ethnicityChoices = [];
 let ethnicityFilter = new Set();
+let ethnicityGuess = {};
+let guessTimer = 0;
 let openerTemplate = "";
 let current = null;
 let lastFinished = 0;
@@ -533,7 +555,9 @@ async function loadPeople() {
   people = data.people || [];
   openerTemplate = data.opener_template || "";
   ethnicityChoices = data.ethnicity_choices || ethnicityChoices;
+  ethnicityGuess = data.ethnicity_guess || ethnicityGuess;
   renderEthFilter();
+  renderEthGuess(ethnicityGuess);
   const n = people.filter(p => p.status === "needs_reply" && !p.dismissed && !p.in_group).length;
   const phones = people.filter(p => p.phone_provided).length;
   const fresh = people.filter(p => p.new_friend && !p.in_group).length;
@@ -708,8 +732,11 @@ function renderHead(name, status, phoneProvided) {
       return `<option value="${esc(c.id)}"${sel}>${esc(c.label)}</option>`;
     }))
     .join("");
+  const guessOne = known && known.photo
+    ? '<button type="button" id="guess-eth">Guess photo</button>'
+    : "";
   headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${same} ${phone} ${grp} ${hid}</h2><div class="actions">
-    <select id="ethnicity-set" aria-label="Ethnicity">${ethOpts}</select>
+    <select id="ethnicity-set" aria-label="Ethnicity">${ethOpts}</select>${guessOne}
     <button type="button" id="refresh-chat">Refresh</button>${groupBtn}${dismiss}
   </div>`;
 }
@@ -776,12 +803,83 @@ headEl.addEventListener("change", async e => {
     return;
   }
   const person = people.find(p => p.name === current);
-  if (person) person.ethnicity = sel.value;
+  if (person) {
+    person.ethnicity = sel.value;
+    person.ethnicity_source = sel.value ? "manual" : "";
+  }
   renderList();
   renderHead(current, person && person.status, person && person.phone_provided);
 });
 
+function renderEthGuess(state) {
+  const btn = document.getElementById("eth-guess");
+  if (!btn) return;
+  ethnicityGuess = state || {};
+  if (ethnicityGuess.running) {
+    btn.disabled = false;
+    btn.dataset.stop = "1";
+    btn.textContent = "Stop guess " + (ethnicityGuess.done || 0) + "/" + (ethnicityGuess.total || 0);
+    if (ethnicityGuess.last_name) {
+      statusEl.textContent = "Guessing ethnicity from photo: " + ethnicityGuess.last_name;
+    }
+    scheduleGuessPoll();
+    return;
+  }
+  btn.disabled = false;
+  btn.dataset.stop = "";
+  btn.textContent = "Guess from photos";
+}
+
+function scheduleGuessPoll() {
+  clearTimeout(guessTimer);
+  guessTimer = setTimeout(pollEthnicityGuess, 1500);
+}
+
+async function pollEthnicityGuess() {
+  const res = await fetch("/api/ethnicity/guess");
+  const data = await res.json();
+  const wasRunning = !!ethnicityGuess.running;
+  renderEthGuess(data);
+  if (wasRunning && !data.running) {
+    statusEl.textContent = data.message || (data.error || "Guess from photos finished");
+    await loadPeople();
+    if (current) {
+      const person = people.find(p => p.name === current);
+      renderHead(current, person && person.status, person && person.phone_provided);
+    }
+  }
+}
+
+async function startEthnicityGuess(name) {
+  const res = await fetch("/api/ethnicity/guess", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(name ? {name, force: true} : {}),
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    statusEl.textContent = "Failed: " + (data.error || res.status);
+    return;
+  }
+  statusEl.textContent = data.message || "Guessing ethnicity from photos";
+  renderEthGuess(data);
+}
+
+document.getElementById("eth-guess").addEventListener("click", async () => {
+  if (document.getElementById("eth-guess").dataset.stop === "1") {
+    await fetch("/api/ethnicity/guess/cancel", {method: "POST"});
+    return;
+  }
+  startEthnicityGuess("");
+});
+
 headEl.addEventListener("click", async e => {
+  const guessBtn = e.target.closest("#guess-eth");
+  if (guessBtn && current) {
+    guessBtn.disabled = true;
+    await startEthnicityGuess(current);
+    return;
+  }
   const refreshBtn = e.target.closest("#refresh-chat");
   if (refreshBtn && current) {
     statusEl.textContent = "Queued refresh of " + current;

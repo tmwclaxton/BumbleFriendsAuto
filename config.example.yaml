@@ -19,6 +19,12 @@ filters:
     include: []
     if_missing: allow
 
+# NanoGPT vision for inbox ethnicity tags (Guess from photos).
+# Prefer NANOGPT_API_KEY in the environment — do not commit a real key.
+nanogpt:
+  api_key: ""
+  vision_model: google/gemini-2.5-flash
+
 # Delay between profiles after a decision (seconds), sampled uniformly
 delay_min: 2.5
 delay_max: 7.0

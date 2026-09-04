@@ -60,6 +60,10 @@ DEFAULTS: dict[str, Any] = {
             "if_missing": "allow",
         },
     },
+    "nanogpt": {
+        "api_key": "",
+        "vision_model": "google/gemini-2.5-flash",
+    },
     "messenger": {
         "template": (
             "Hi {name}, I'm putting together a wee group for hiking / board games / sports. "
@@ -110,4 +114,14 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     db_path = (os.environ.get("DB_PATH") or "").strip()
     if db_path:
         cfg["db_path"] = db_path
+    nano = dict(cfg.get("nanogpt") or {})
+    nano_key = (
+        os.environ.get("NANOGPT_API_KEY") or os.environ.get("NANO_GPT_API_KEY") or ""
+    ).strip()
+    if nano_key:
+        nano["api_key"] = nano_key
+    nano_model = (os.environ.get("NANOGPT_VISION_MODEL") or "").strip()
+    if nano_model:
+        nano["vision_model"] = nano_model
+    cfg["nanogpt"] = nano
     return cfg

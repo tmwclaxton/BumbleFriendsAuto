@@ -107,6 +107,7 @@ def list_inbox_people() -> dict:
                     "message_until": row["message_until"],
                     "in_group": bool(row["in_group"]),
                     "ethnicity": row["ethnicity"] or "",
+                    "ethnicity_source": row["ethnicity_source"] or "",
                 }
             )
         return {"count": len(people), "people": people}
@@ -170,12 +171,37 @@ def set_person_ethnicity(name: str, ethnicity: str = "") -> dict:
         return {"ok": False, "error": "name required"}
     conn = _db()
     try:
-        ok = set_ethnicity(conn, name, ethnicity)
+        ok = set_ethnicity(conn, name, ethnicity, source="manual")
     finally:
         conn.close()
     if not ok:
         return {"ok": False, "error": "person or ethnicity not valid"}
     return {"ok": True, "name": name, "ethnicity": (ethnicity or "").strip() or None}
+
+
+@mcp.tool()
+def guess_ethnicity_from_photos(name: str = "", force: bool = False) -> dict:
+    """Start NanoGPT vision tagging from stored avatars. Empty name = everyone still untagged. Never overwrites tags you set by hand. Poll get_ethnicity_guess. Does not touch the phone."""
+    from src.ethnicity_vision import start_guess
+
+    return start_guess(name=(name or "").strip(), force=bool(force))
+
+
+@mcp.tool()
+def get_ethnicity_guess() -> dict:
+    """Status of the photo ethnicity guess job (running, tagged count, last name). Fast — no phone."""
+    from src.ethnicity_vision import guess_status
+
+    return guess_status()
+
+
+@mcp.tool()
+def cancel_ethnicity_guess() -> dict:
+    """Stop a running photo ethnicity guess after the current face. Does not touch the phone."""
+    from src.ethnicity_vision import cancel_guess, guess_status
+
+    cancel_guess()
+    return {"ok": True, **guess_status()}
 
 
 @mcp.tool()

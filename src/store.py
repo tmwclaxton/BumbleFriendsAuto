@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS people (
     notes TEXT,
     phone_provided INTEGER NOT NULL DEFAULT 0,
     ethnicity TEXT,
+    ethnicity_source TEXT,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL
 );
@@ -90,6 +91,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE people ADD COLUMN phone_provided INTEGER NOT NULL DEFAULT 0")
     if "ethnicity" not in people_cols:
         conn.execute("ALTER TABLE people ADD COLUMN ethnicity TEXT")
+    if "ethnicity_source" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN ethnicity_source TEXT")
     if "draft" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN draft TEXT")
     if "message_until" not in chat_cols:
@@ -437,11 +440,11 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
         if drop_chat and int(drop_chat["in_group"] or 0):
             conn.execute("UPDATE chats SET in_group = 1 WHERE person_id = ?", (keep_id,))
     drop_person = conn.execute(
-        "SELECT location, distance, age, phone_provided, ethnicity FROM people WHERE id = ?",
+        "SELECT location, distance, age, phone_provided, ethnicity, ethnicity_source FROM people WHERE id = ?",
         (drop_id,),
     ).fetchone()
     keep_person = conn.execute(
-        "SELECT location, distance, age, phone_provided, ethnicity FROM people WHERE id = ?",
+        "SELECT location, distance, age, phone_provided, ethnicity, ethnicity_source FROM people WHERE id = ?",
         (keep_id,),
     ).fetchone()
     if drop_person and keep_person:
@@ -452,7 +455,11 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                 distance = COALESCE(NULLIF(distance, ''), ?),
                 age = COALESCE(age, ?),
                 phone_provided = MAX(phone_provided, ?),
-                ethnicity = COALESCE(NULLIF(ethnicity, ''), ?)
+                ethnicity = COALESCE(NULLIF(ethnicity, ''), ?),
+                ethnicity_source = CASE
+                    WHEN NULLIF(ethnicity, '') IS NOT NULL THEN ethnicity_source
+                    ELSE ?
+                END
             WHERE id = ?
             """,
             (
@@ -461,6 +468,7 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                 drop_person["age"],
                 int(drop_person["phone_provided"] or 0),
                 drop_person["ethnicity"],
+                drop_person["ethnicity_source"],
                 keep_id,
             ),
         )
@@ -768,7 +776,13 @@ def set_in_group(conn: sqlite3.Connection, name: str, in_group: bool) -> bool:
     return True
 
 
-def set_ethnicity(conn: sqlite3.Connection, name: str, ethnicity: str | None) -> bool:
+def set_ethnicity(
+    conn: sqlite3.Connection,
+    name: str,
+    ethnicity: str | None,
+    *,
+    source: str | None = "manual",
+) -> bool:
     """Save a Hinge-style ethnicity tag, or clear it with empty/unknown."""
     name = name.strip()
     if not name:
@@ -778,14 +792,24 @@ def set_ethnicity(conn: sqlite3.Connection, name: str, ethnicity: str | None) ->
     from src.profile_filters import canonicalize
 
     raw = (ethnicity or "").strip()
+    src = (source or "").strip() or None
+    if src not in {None, "manual", "vision"}:
+        return False
     if not raw or raw.lower() in {"unknown", "none", "clear"}:
         value = None
+        if src != "vision":
+            src = None
     else:
         value = canonicalize(raw)
         if value is None:
             return False
+        if src is None:
+            src = "manual"
     upsert_chat(conn, name)
-    conn.execute("UPDATE people SET ethnicity = ? WHERE name = ?", (value, name))
+    conn.execute(
+        "UPDATE people SET ethnicity = ?, ethnicity_source = ? WHERE name = ?",
+        (value, src, name),
+    )
     conn.commit()
     return True
 
@@ -908,6 +932,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         conn.execute(
             """
             SELECT p.name, p.location, p.distance, p.age, p.phone_provided, p.ethnicity,
+                   p.ethnicity_source,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
                    c.dismissed_reply_text, c.opener_sent, c.draft, c.message_until,
                    c.in_group,

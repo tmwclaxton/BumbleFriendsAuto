@@ -174,12 +174,38 @@ async def api_ethnicity(request: Request) -> JSONResponse:
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
-        ok = set_ethnicity(conn, name, str(data.get("ethnicity") or ""))
+        ok = set_ethnicity(conn, name, str(data.get("ethnicity") or ""), source="manual")
     finally:
         conn.close()
     if not ok:
         return JSONResponse({"ok": False, "error": "person or ethnicity not valid"}, status_code=400)
     return JSONResponse({"ok": True})
+
+
+async def api_ethnicity_guess(request: Request) -> JSONResponse:
+    from src.ethnicity_vision import guess_status, start_guess
+
+    if request.method == "GET":
+        return JSONResponse(guess_status())
+    data: dict = {}
+    if request.headers.get("content-length") not in {None, "0"}:
+        parsed = await _read_json(request)
+        if isinstance(parsed, JSONResponse):
+            return parsed
+        data = parsed
+    return JSONResponse(
+        start_guess(
+            name=str(data.get("name") or ""),
+            force=bool(data.get("force")),
+        )
+    )
+
+
+async def api_ethnicity_guess_cancel(_: Request) -> JSONResponse:
+    from src.ethnicity_vision import cancel_guess, guess_status
+
+    cancel_guess()
+    return JSONResponse({"ok": True, **guess_status()})
 
 
 async def api_refresh(request: Request) -> JSONResponse:
@@ -278,6 +304,8 @@ def build_app() -> Starlette:
         Route("/api/dismiss", api_dismiss, methods=["POST"]),
         Route("/api/in-group", api_in_group, methods=["POST"]),
         Route("/api/ethnicity", api_ethnicity, methods=["POST"]),
+        Route("/api/ethnicity/guess", api_ethnicity_guess, methods=["GET", "POST"]),
+        Route("/api/ethnicity/guess/cancel", api_ethnicity_guess_cancel, methods=["POST"]),
         Route("/api/refresh", api_refresh, methods=["POST"]),
         Route("/api/recapture", api_recapture, methods=["POST"]),
         Route("/api/photos", api_photos, methods=["POST"]),
