@@ -91,7 +91,34 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "message_until" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN message_until TEXT")
     _backfill_message_until(conn)
+    _reapply_dismissals(conn)
     conn.commit()
+
+
+def _reapply_dismissals(conn: sqlite3.Connection) -> None:
+    """Re-derive status so a stored dismiss survives after a refresh / Your-turn badge."""
+    rows = conn.execute(
+        """
+        SELECT person_id, badge, preview, last_from, last_text, status,
+               dismissed_reply_text, message_until
+        FROM chats
+        WHERE dismissed_reply_text IS NOT NULL AND trim(dismissed_reply_text) != ''
+          AND IFNULL(status, '') != 'dismissed'
+        """
+    ).fetchall()
+    for row in rows:
+        status = derive_status(
+            badge=row["badge"] or "",
+            preview=row["preview"] or "",
+            last_from=row["last_from"],
+            last_text=row["last_text"] or "",
+            dismissed_reply_text=row["dismissed_reply_text"],
+            message_until=row["message_until"],
+        )
+        conn.execute(
+            "UPDATE chats SET status = ? WHERE person_id = ?",
+            (status, row["person_id"]),
+        )
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -260,6 +287,57 @@ def name_aliases(conn: sqlite3.Connection, name: str) -> list[str]:
 
 def _norm_msg(text: str) -> str:
     return " ".join((text or "").split()).casefold()
+
+
+def _reply_stub(text: str) -> str:
+    norm = _norm_msg(text)
+    if norm.endswith("..."):
+        return norm[:-3].rstrip(". ").strip()
+    if norm.endswith("…"):
+        return norm[:-1].rstrip(". ").strip()
+    return norm
+
+
+def same_reply_text(left: str | None, right: str | None) -> bool:
+    """True when two last-bubbles are the same message (inbox preview vs full capture)."""
+    a, b = _norm_msg(left or ""), _norm_msg(right or "")
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    sa, sb = _reply_stub(left or ""), _reply_stub(right or "")
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+    a_cut = a.endswith("...") or (left or "").rstrip().endswith("…")
+    b_cut = b.endswith("...") or (right or "").rstrip().endswith("…")
+    if a_cut and b.startswith(sa):
+        return True
+    if b_cut and a.startswith(sb):
+        return True
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    return len(shorter) >= 12 and longer.startswith(shorter)
+
+
+def still_dismissed(
+    *,
+    last_from: str | None = None,
+    last_text: str = "",
+    preview: str = "",
+    dismissed_reply_text: str | None = None,
+) -> bool:
+    """Keep a dismiss until they send a different last message — not merely a refresh."""
+    dismissed = (dismissed_reply_text or "").strip()
+    if not dismissed:
+        return False
+    if last_from == "you":
+        return False
+    if (last_text or "").strip():
+        return same_reply_text(last_text, dismissed)
+    if (preview or "").strip():
+        return same_reply_text(preview, dismissed)
+    return True
 
 
 def _is_thread_chrome(text: str) -> bool:
@@ -522,10 +600,13 @@ def derive_status(
         return "expired"
     if "expired" in blob:
         return "expired"
-    last_norm = " ".join((last_text or "").split()).casefold()
-    dismissed_norm = " ".join((dismissed_reply_text or "").split()).casefold()
-    if dismissed_norm and last_norm == dismissed_norm:
-        return "waiting"
+    if still_dismissed(
+        last_from=last_from,
+        last_text=last_text or "",
+        preview=preview or "",
+        dismissed_reply_text=dismissed_reply_text,
+    ):
+        return "dismissed"
     # Phone "Your turn" wins over a stale last_from=you from an older opener.
     if badge.strip().lower() == "your turn" or "your turn" in blob:
         return "needs_reply"
@@ -611,7 +692,7 @@ def upsert_chat(
 
 
 def dismiss_needs_reply(conn: sqlite3.Connection, name: str) -> bool:
-    """Clear needs_reply until they send a different last message."""
+    """Hide needs_reply until they send a different last message (refresh does not undo this)."""
     name = name.strip()
     row = conn.execute(
         """
@@ -624,7 +705,12 @@ def dismiss_needs_reply(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone()
     if row is None:
         return False
-    last_text = (row["last_text"] or row["preview"] or "").strip()
+    them = [
+        str(m["body"]).strip()
+        for m in list_thread(conn, name)
+        if (m["body"] or "").strip() and m["side"] == "them" and not _is_thread_chrome(str(m["body"]))
+    ]
+    last_text = (them[-1] if them else "") or (row["last_text"] or row["preview"] or "").strip()
     person_id = upsert_chat(
         conn,
         name,
@@ -636,7 +722,7 @@ def dismiss_needs_reply(conn: sqlite3.Connection, name: str) -> bool:
     conn.execute(
         """
         UPDATE chats
-        SET dismissed_reply_text = ?, status = 'waiting', updated_at = ?
+        SET dismissed_reply_text = ?, status = 'dismissed', updated_at = ?
         WHERE person_id = ?
         """,
         (last_text, _now(), person_id),
@@ -736,6 +822,8 @@ def is_new_friend(row: sqlite3.Row | dict) -> bool:
             return row.get(key, default)
         return default
 
+    if (_get("status") or "") == "dismissed":
+        return False
     if int(_get("opener_sent") or 0):
         return False
     blob = f"{_get('status') or ''} {_get('last_text') or ''} {_get('preview') or ''}"
@@ -760,7 +848,8 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             """
             SELECT p.name, p.location, p.distance, p.age, p.phone_provided,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
-                   c.opener_sent, c.draft, c.message_until, c.updated_at,
+                   c.dismissed_reply_text, c.opener_sent, c.draft, c.message_until,
+                   c.updated_at,
                    (SELECT COUNT(*) FROM messages m WHERE m.person_id = p.id) AS message_count
             FROM people p
             LEFT JOIN chats c ON c.person_id = p.id
@@ -770,7 +859,8 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                     WHEN 'unknown' THEN 1
                     WHEN 'waiting' THEN 2
                     WHEN 'expired' THEN 3
-                    ELSE 4
+                    WHEN 'dismissed' THEN 4
+                    ELSE 5
                 END,
                 p.name COLLATE NOCASE
             """

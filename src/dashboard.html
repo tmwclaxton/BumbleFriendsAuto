@@ -124,6 +124,7 @@
   .phone { background: #1d2a3a; color: #8ec8ff; }
   .draft { background: #3a3214; color: var(--you); }
   .same-name { background: #2a2430; color: #e0b4d4; }
+  .dismissed { background: #2a2724; color: #b8a99a; }
   .section-head {
     display: flex;
     align-items: center;
@@ -156,6 +157,26 @@
     line-height: 1.35;
   }
   #chats-head { padding-top: 14px; }
+  #dismissed-wrap {
+    margin: 14px 10px 12px;
+    background: #161412;
+    border: 1px solid #3a3330;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  #dismissed-wrap[hidden] { display: none; }
+  #dismissed-wrap .section-head { color: #b8a99a; }
+  #dismissed-wrap .row { border-bottom-color: #2c2826; }
+  #dismissed-wrap .row:last-child { border-bottom: 0; }
+  #dismissed-hint {
+    margin: 0;
+    padding: 0 14px 10px;
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--muted);
+    line-height: 1.35;
+  }
   #msg-all {
     text-transform: none;
     letter-spacing: 0;
@@ -350,6 +371,13 @@
     </div>
     <div id="chats-head" class="section-head">Chats</div>
     <div id="list"></div>
+    <div id="dismissed-wrap" hidden>
+      <div class="section-head">
+        <span id="dismissed-label">Dismissed</span>
+      </div>
+      <p id="dismissed-hint">Stays here until they send a new message. Refreshing the chat does not bring them back.</p>
+      <div id="dismissed-list"></div>
+    </div>
   </div>
 </aside>
 <main>
@@ -372,6 +400,9 @@ const newWrap = document.getElementById("new-wrap");
 const newListEl = document.getElementById("new-list");
 const newLabel = document.getElementById("new-label");
 const msgAllBtn = document.getElementById("msg-all");
+const dismissedWrap = document.getElementById("dismissed-wrap");
+const dismissedListEl = document.getElementById("dismissed-list");
+const dismissedLabel = document.getElementById("dismissed-label");
 const msgsEl = document.getElementById("msgs");
 const headEl = document.getElementById("thread-head");
 const metaEl = document.getElementById("meta");
@@ -421,11 +452,12 @@ async function loadPeople() {
   const data = await res.json();
   people = data.people || [];
   openerTemplate = data.opener_template || "";
-  const n = people.filter(p => p.status === "needs_reply").length;
+  const n = people.filter(p => p.status === "needs_reply" && !p.dismissed).length;
   const phones = people.filter(p => p.phone_provided).length;
   const fresh = people.filter(p => p.new_friend).length;
+  const hidden = people.filter(p => p.dismissed || p.status === "dismissed").length;
   const drafts = people.filter(p => (p.draft || "").trim()).length;
-  metaEl.textContent = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + drafts + " drafts · " + phones + " phone provided";
+  metaEl.textContent = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + hidden + " dismissed · " + drafts + " drafts · " + phones + " phone provided";
   renderList();
 }
 
@@ -473,10 +505,14 @@ function faceHtml(p, name) {
   </span>`;
 }
 
+function isDismissed(p) {
+  return !!(p && (p.dismissed || p.status === "dismissed"));
+}
+
 function rowHtml(p, inNew) {
   const on = current === p.name ? " on" : "";
   const snip = esc(inNew ? remainingLabel(p.message_until) : (p.last_text || p.preview || ""));
-  const st = p.new_friend ? "new" : (p.status || "unknown");
+  const st = p.new_friend ? "new" : (isDismissed(p) ? "dismissed" : (p.status || "unknown"));
   const stLabel = p.new_friend ? "new friend" : st.replace("_"," ");
   const tag = inNew ? "" : `<span class="tag ${st}">${esc(stLabel)}</span>`;
   const href = "?chat=" + encodeURIComponent(p.name);
@@ -502,8 +538,9 @@ function rowHtml(p, inNew) {
 function renderList() {
   const q = document.getElementById("filter").value.trim().toLowerCase();
   const match = p => !q || p.name.toLowerCase().includes(q);
-  const fresh = people.filter(p => p.new_friend && match(p));
-  const rest = people.filter(p => !p.new_friend && match(p));
+  const fresh = people.filter(p => p.new_friend && !isDismissed(p) && match(p));
+  const hidden = people.filter(p => isDismissed(p) && match(p));
+  const rest = people.filter(p => !p.new_friend && !isDismissed(p) && match(p));
   const chatsHead = document.getElementById("chats-head");
   if (fresh.length) {
     newWrap.hidden = false;
@@ -515,6 +552,14 @@ function renderList() {
     msgAllBtn.disabled = true;
     newListEl.innerHTML = "";
   }
+  if (hidden.length) {
+    dismissedWrap.hidden = false;
+    dismissedLabel.textContent = "Dismissed · " + hidden.length;
+    dismissedListEl.innerHTML = hidden.map(p => rowHtml(p, false)).join("");
+  } else {
+    dismissedWrap.hidden = true;
+    dismissedListEl.innerHTML = "";
+  }
   chatsHead.hidden = !rest.length && !q;
   listEl.innerHTML = rest.map(p => rowHtml(p, false)).join("");
 }
@@ -524,16 +569,18 @@ function isDayLabel(body) {
 }
 
 function renderHead(name, status, phoneProvided) {
-  const dismiss = status === "needs_reply"
+  const known = people.find(p => p.name === name);
+  const hidden = isDismissed(known) || status === "dismissed";
+  const dismiss = status === "needs_reply" && !hidden
     ? '<button type="button" id="dismiss-reply">Dismiss needs reply</button>'
     : "";
   const phone = phoneProvided ? '<span class="tag phone">phone provided</span>' : "";
-  const known = people.find(p => p.name === name);
   const title = (known && known.display_name) || name;
   const same = known && known.same_name_count > 1
     ? `<span class="tag same-name">${known.same_name_count} named ${esc(known.base_name || name)}</span>`
     : "";
-  headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${same} ${phone}</h2><div class="actions">
+  const hid = hidden ? '<span class="tag dismissed">dismissed</span>' : "";
+  headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${same} ${phone} ${hid}</h2><div class="actions">
     <button type="button" id="refresh-chat">Refresh</button>${dismiss}
   </div>`;
 }

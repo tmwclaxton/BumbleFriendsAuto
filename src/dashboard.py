@@ -179,6 +179,7 @@ def people_api_payload(conn) -> dict:
             "message_until": row["message_until"],
             "opener": format_opener(template, str(row["name"])) if fresh else None,
             "photo": photo_exists(str(row["name"])),
+            "dismissed": (row["status"] or "") == "dismissed",
         }
         people.append(item)
         if fresh:
