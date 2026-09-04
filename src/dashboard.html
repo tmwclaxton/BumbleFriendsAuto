@@ -512,7 +512,34 @@ const statusEl = document.getElementById("status");
 const queueEl = document.getElementById("queue");
 let people = [];
 let ethnicityChoices = [];
-let ethnicityFilter = new Set();
+const FILTER_STORE = "bff-inbox-filters";
+
+function loadStoredFilters() {
+  try {
+    const raw = localStorage.getItem(FILTER_STORE);
+    if (!raw) return {eth: [], name: ""};
+    const data = JSON.parse(raw);
+    return {
+      eth: Array.isArray(data.eth) ? data.eth.map(String) : [],
+      name: typeof data.name === "string" ? data.name : "",
+    };
+  } catch (err) {
+    return {eth: [], name: ""};
+  }
+}
+
+function saveStoredFilters() {
+  try {
+    localStorage.setItem(FILTER_STORE, JSON.stringify({
+      eth: [...ethnicityFilter],
+      name: document.getElementById("filter").value,
+    }));
+  } catch (err) { /* private mode */ }
+}
+
+const storedFilters = loadStoredFilters();
+let ethnicityFilter = new Set(storedFilters.eth);
+document.getElementById("filter").value = storedFilters.name;
 let ethnicityGuess = {};
 let guessTimer = 0;
 let openerTemplate = "";
@@ -785,6 +812,7 @@ document.getElementById("eth-filter").addEventListener("click", e => {
   const id = btn.dataset.eth;
   if (ethnicityFilter.has(id)) ethnicityFilter.delete(id);
   else ethnicityFilter.add(id);
+  saveStoredFilters();
   renderEthFilter();
   renderList();
 });
@@ -982,7 +1010,10 @@ msgAllBtn.addEventListener("click", async () => {
   if (data.ok) pollQueue();
   else msgAllBtn.disabled = false;
 });
-document.getElementById("filter").addEventListener("input", renderList);
+document.getElementById("filter").addEventListener("input", () => {
+  saveStoredFilters();
+  renderList();
+});
 window.addEventListener("popstate", () => {
   const name = chatFromUrl();
   if (name) openThread(name, {push: false});
