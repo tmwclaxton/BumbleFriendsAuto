@@ -26,6 +26,7 @@ from src.store import (
     message_until_from_hours,
     name_aliases,
     names_with_messages,
+    base_person_name,
     next_duplicate_name,
     parse_hours_left,
     person_message_bodies,
@@ -612,8 +613,10 @@ def extract_messages(xml: str, width: int, height: int | None = None) -> list[di
 
 
 def _same_person(a: str, b: str) -> bool:
-    """Exact display name. First-name-only matched Lauren to Lauren Mizaela."""
-    return a.strip().casefold() == b.strip().casefold()
+    """Same phone title. 'Joshua' and 'Joshua 2' share a toolbar name; Lauren ≠ Lauren Mizaela."""
+    if a.strip().casefold() == b.strip().casefold():
+        return True
+    return base_person_name(a).casefold() == base_person_name(b).casefold()
 
 
 def capture_thread(device, width: int, height: int, expected: str | None = None) -> list[tuple[str, str]]:
@@ -766,13 +769,27 @@ def _row_already_saved(conn, row: dict) -> bool:
     return False
 
 
-def _save_name_for_thread(conn, partner: str, thread: list[tuple[str, str]]) -> str:
-    """Keep 'David' if their bubbles match; mint 'David 2' only for a real other David.
+def _save_name_for_thread(
+    conn,
+    partner: str,
+    thread: list[tuple[str, str]],
+    face=None,
+) -> str:
+    """Keep 'David' if their bubbles or face match; mint 'David 2' for a real other David.
 
     Shared openers do not count. An opener-only recapture must not spawn Cesar 2/3/4.
+    A stored avatar that matches the visible face wins over guessing the primary name.
     """
     aliases = name_aliases(conn, partner)
     if not aliases:
+        if face is not None:
+            from src.photos import match_face_to_namesakes, save_face_image
+
+            matched = match_face_to_namesakes(face, partner)
+            save_as = matched or partner
+            if matched is None:
+                save_face_image(face, save_as)
+            return save_as
         return partner
     them_new = {
         _norm_msg(body)
@@ -784,27 +801,141 @@ def _save_name_for_thread(conn, partner: str, thread: list[tuple[str, str]]) -> 
     for alias in aliases:
         them_old = _them_bodies(conn, alias)
         if them_new and them_old and them_new & them_old:
+            _remember_face(alias, face)
             return alias
+    from src.photos import (
+        faces_differ,
+        load_photo,
+        match_face_to_namesakes,
+        next_photo_slot,
+        save_face_image,
+    )
+
+    matched = match_face_to_namesakes(face, partner) if face is not None else None
+    if matched:
+        log.info("namesake %s identified as %s by photo", partner, matched)
+        _remember_face(matched, face)
+        return matched
+    if face is not None:
+        known_faces = [a for a in aliases if load_photo(a) is not None]
+        if known_faces and all(
+            (stored := load_photo(a)) is not None and faces_differ(face, stored) for a in known_faces
+        ):
+            save_as = next_duplicate_name(conn, partner)
+            save_face_image(face, save_as)
+            log.info("namesake %s is a new face → %s", partner, save_as)
+            return save_as
     # No reply captured this time: attach to an opener-only stub, else the primary name.
     if not them_new:
         for alias in stubs:
             if alias.casefold() == partner.casefold():
+                _remember_face(alias, face)
                 return alias
         if stubs:
+            _remember_face(stubs[0], face)
             return stubs[0]
         for alias in aliases:
             if alias.casefold() == partner.casefold():
+                _remember_face(alias, face)
                 return alias
+        _remember_face(aliases[0], face)
         return aliases[0]
     # New them-text, existing row is still a stub → fill that row rather than clone.
     for alias in stubs:
         if alias.casefold() == partner.casefold():
+            _remember_face(alias, face)
             return alias
     if stubs:
+        _remember_face(stubs[0], face)
         return stubs[0]
     if any(a.casefold() == partner.casefold() for a in aliases):
-        return next_duplicate_name(conn, partner)
+        save_as = next_duplicate_name(conn, partner)
+        _remember_face(save_as, face)
+        return save_as
+    _remember_face(partner, face)
     return partner
+
+
+def _remember_face(name: str, face) -> None:
+    if face is None or not name:
+        return
+    from src.photos import photo_exists, save_face_image
+
+    if not photo_exists(name):
+        save_face_image(face, name)
+
+
+def _face_for_row(device, xml: str, row: dict):
+    from src.photos import crop_list_face
+
+    try:
+        return crop_list_face(
+            device,
+            xml,
+            str(row.get("name") or ""),
+            y=int(row["y"]) if row.get("y") is not None else None,
+            x=int(row["x"]) if row.get("x") is not None else None,
+        )
+    except Exception:
+        log.debug("list face crop failed", exc_info=True)
+        return None
+
+
+def _pick_row_for_namesake(device, xml: str, name: str, rows: list[dict]):
+    """When two list rows share a first name, pick the one whose face matches `name`."""
+    want = name.strip().casefold()
+    phone = base_person_name(name).strip().casefold()
+    candidates = [
+        r
+        for r in rows
+        if str(r["name"]).strip().casefold() in {want, phone}
+    ]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    from src.photos import crop_list_face, load_photo, match_face_to_namesakes
+
+    stored = load_photo(name)
+    if stored is None:
+        try:
+            from src.config import load_config
+            from src.store import connect as db_connect, db_path_from_config
+
+            conn = db_connect(db_path_from_config(load_config()))
+            try:
+                chat = conn.execute(
+                    """
+                    SELECT c.last_text, c.preview FROM chats c
+                    JOIN people p ON p.id = c.person_id WHERE p.name = ?
+                    """,
+                    (name,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except Exception:
+            chat = None
+        if chat:
+            needle = (chat["last_text"] or chat["preview"] or "").strip()
+            if len(needle) >= 6:
+                for row in candidates:
+                    if needle[:28] in str(row.get("preview") or ""):
+                        return row
+        if name.casefold() == phone:
+            return candidates[0]
+        return None
+    for row in candidates:
+        face = crop_list_face(
+            device,
+            xml,
+            str(row["name"]),
+            y=int(row["y"]) if row.get("y") is not None else None,
+            x=int(row["x"]) if row.get("x") is not None else None,
+        )
+        matched = match_face_to_namesakes(face, name) if face is not None else None
+        if matched and matched.casefold() == name.casefold():
+            return row
+    return None
 
 
 def _pick_row(
@@ -995,6 +1126,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             last_inbox_key = key
             stagnant = 0
             row_key = f"{row['name']}|{str(row.get('preview') or '')[:80]}"
+            row_face = _face_for_row(device, xml, row)
             _open_named_chat(device, str(row["name"]), int(row["x"]), int(row["y"]))
             wait_idle(device, 1.5)
             xml = _wait_thread(device)
@@ -1054,7 +1186,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             if "match has expired" in banner or "conversation expired" in banner:
                 last_from = last_from or "them"
                 last_text = last_text or "expired"
-            save_as = _save_name_for_thread(conn, partner, thread)
+            save_as = _save_name_for_thread(conn, partner, thread, face=row_face)
             if save_as != partner:
                 log.info("namesake %s stored as %s", partner, save_as)
             person_id = upsert_chat(
@@ -1135,7 +1267,8 @@ def open_chat_via_search(device, package: str, name: str) -> str | None:
         return None
     field.click()
     wait_idle(device, 0.3)
-    field.set_text(name)
+    query = base_person_name(name)
+    field.set_text(query)
     wait_idle(device, 1.8)
     xml = dump_hierarchy(device)
     blob = _texts(xml).lower()
@@ -1145,13 +1278,13 @@ def open_chat_via_search(device, package: str, name: str) -> str | None:
         wait_idle(device, 0.4)
         return None
     rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
-    match = next((r for r in rows if str(r["name"]).lower() == name.strip().lower()), None)
+    match = _pick_row_for_namesake(device, xml, name, rows)
     if match is None:
         device.press("back")
         wait_idle(device, 0.5)
         xml = dump_hierarchy(device)
         rows = _list_rows(xml, min_top=int(height * 0.12), height=height, width=width)
-        match = next((r for r in rows if str(r["name"]).lower() == name.strip().lower()), None)
+        match = _pick_row_for_namesake(device, xml, name, rows)
     if match is None:
         log.warning("search had no row for %s (got %s)", name, [r["name"] for r in rows])
         return None
@@ -1183,8 +1316,9 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
     tap_lo, tap_hi, tap_aim = _tap_zone(height)
     xml = recover_to_list(device, package)
     want = name.strip().lower()
+    phone = base_person_name(name).strip().lower()
     if not any(
-        str(r["name"]).lower() == want
+        str(r["name"]).lower() in {want, phone}
         for r in _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
     ):
         xml = _go_top_of_inbox(device, package, width, height)
@@ -1196,7 +1330,7 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
             xml = recover_to_list(device, package)
         rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
         names = [str(r["name"]) for r in rows]
-        hit = next((r for r in rows if str(r["name"]).lower() == want), None)
+        hit = _pick_row_for_namesake(device, xml, name, rows)
         if hit is not None:
             y = int(hit["y"])
             well_lo, well_hi, _ = _usable_list_band(height, _tab_bar_top(xml, height))
@@ -1219,9 +1353,10 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
         if hit is not None:
             wait_idle(device, 0.7)
             log.info("list-tap %s @ y=%s y1=%s", name, hit["y"], hit["y1"])
-            name_node = device(resourceId="com.bumblebff.app:id/personName", text=name)
+            tap_name = base_person_name(name)
+            name_node = device(resourceId="com.bumblebff.app:id/personName", text=tap_name)
             if not name_node.exists(timeout=0.4):
-                name_node = device(resourceId="com.bumblebff.app:id/connectionsItem_personName", text=name)
+                name_node = device(resourceId="com.bumblebff.app:id/connectionsItem_personName", text=tap_name)
             if name_node.exists(timeout=1.0):
                 name_node.click()
             else:
@@ -1276,6 +1411,8 @@ def recapture_person(device, conn, package: str, name: str) -> bool:
         log.warning("empty recapture for %s", partner)
         return False
     save_as = _save_name_for_thread(conn, partner, thread)
+    if _same_person(partner, name) and name in (name_aliases(conn, partner) or [name]):
+        save_as = name
     if save_as != partner:
         log.info("namesake %s stored as %s", partner, save_as)
     person_id = upsert_chat(
@@ -1450,7 +1587,7 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
         friends = [
             f
             for f in visible
-            if 120 <= int(f.x) <= width - 120 and f.name not in attempted
+            if 120 <= int(f.x) <= width - 120 and f"{f.name}@{int(f.x) // 40}" not in attempted
         ]
         if not friends:
             _scroll_new_friends_strip(device, xml, width, height, toward_end=True)
@@ -1458,7 +1595,7 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
             friends = [
                 f
                 for f in list_new_friends(xml)
-                if 120 <= int(f.x) <= width - 120 and f.name not in attempted
+                if 120 <= int(f.x) <= width - 120 and f"{f.name}@{int(f.x) // 40}" not in attempted
             ]
             if not friends:
                 stagnant_rounds += 1
@@ -1467,8 +1604,19 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
                 continue
         stagnant_rounds = 0
         friend = friends[0]
-        attempted.add(friend.name)
-        if _new_friend_already_saved(conn, friend.name):
+        token = f"{friend.name}@{int(friend.x) // 40}"
+        attempted.add(token)
+        face = _face_for_row(
+            device, xml, {"name": friend.name, "x": friend.x, "y": friend.y}
+        )
+        if face is not None:
+            from src.photos import match_face_to_namesakes
+
+            matched = match_face_to_namesakes(face, friend.name)
+            if matched and _new_friend_already_saved(conn, matched):
+                log.info("new-friend %s already captured as %s", friend.name, matched)
+                continue
+        elif _new_friend_already_saved(conn, friend.name):
             log.info("new-friend %s already captured", friend.name)
             continue
         log.info("new-friend tap %s @ (%s,%s)", friend.name, friend.x, friend.y)
@@ -1481,10 +1629,6 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
             wait_idle(device, 0.8)
             xml = dump_hierarchy(device)
         partner = chat_partner_name(xml) or friend.name
-        if partner in already and partner != friend.name:
-            log.info("new-friend %s already indexed as %s — skip", friend.name, partner)
-            recover_to_list(device, package)
-            continue
         if is_empty_outbound_chat(xml) or re.search(r"hours?\s+left to message", _texts(xml), re.I):
             thread = []
         else:
@@ -1496,9 +1640,12 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
             hours = parse_hours_left(_texts(xml))
             if hours is not None:
                 until = message_until_from_hours(hours)
+        save_as = _save_name_for_thread(conn, partner, thread, face=face)
+        if save_as != partner:
+            log.info("namesake %s stored as %s", partner, save_as)
         person_id = upsert_chat(
             conn,
-            partner,
+            save_as,
             preview=last_text or "",
             last_from=last_from,
             last_text=last_text,
@@ -1507,16 +1654,18 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
         if thread:
             replace_thread(conn, person_id, thread)
         conn.commit()
+        already.add(save_as)
         already.add(partner)
         already.add(friend.name)
         captured += 1
         log.info(
-            "saved new-friend %s msgs=%d last=%s",
+            "saved new-friend %s as %s msgs=%d last=%s",
             partner,
+            save_as,
             len(thread),
             last_from,
         )
-        _maybe_grab_profile_photo(device, partner)
+        _maybe_grab_profile_photo(device, save_as)
         recover_to_list(device, package)
     log.info("new-friend chats captured=%d attempted=%d", captured, len(attempted))
     return captured
@@ -1708,7 +1857,7 @@ def fill_via_search(device, conn, package: str) -> int:
                 continue
             field.click()
             wait_idle(device, 0.3)
-            field.set_text(name)
+            field.set_text(base_person_name(name))
             wait_idle(device, 1.6)
             device.press("back")
             wait_idle(device, 0.5)
@@ -1723,10 +1872,11 @@ def fill_via_search(device, conn, package: str) -> int:
                     last_text=str(row["preview"]) or None,
                 )
             conn.commit()
-            match = next((r for r in rows if str(r["name"]).lower() == name.lower()), None)
+            match = _pick_row_for_namesake(device, xml, name, rows)
             if match is None:
                 log.warning("search had no row for %s (got %s)", name, [r["name"] for r in rows])
                 continue
+            row_face = _face_for_row(device, xml, match)
             log.info("search-open %s @ %s", name, match["y"])
             tap(device, int(match["x"]), int(match["y"]))
             wait_idle(device, 1.6)
@@ -1742,7 +1892,9 @@ def fill_via_search(device, conn, package: str) -> int:
                 log.warning("empty search transcript %s", partner)
                 leave_chat(device)
                 continue
-            save_as = _save_name_for_thread(conn, partner, thread)
+            save_as = _save_name_for_thread(conn, partner, thread, face=row_face)
+            if _same_person(partner, name) and name in (name_aliases(conn, partner) or [name]):
+                save_as = name
             if save_as != partner:
                 log.info("namesake %s stored as %s", partner, save_as)
             person_id = upsert_chat(

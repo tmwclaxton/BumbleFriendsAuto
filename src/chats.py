@@ -77,7 +77,7 @@ def list_new_friends(xml: str) -> list[NewFriend]:
         center = _bounds_center(bounds)
         if center is None:
             continue
-        key = name.lower()
+        key = bounds or f"{name.lower()}@{center[0]}"
         if key in seen:
             continue
         seen.add(key)

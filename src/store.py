@@ -536,7 +536,12 @@ def collapse_cloned_namesakes(conn: sqlite3.Connection) -> list[str]:
                 same = True
             if not same:
                 continue
+            from src.photos import adopt_photo, photos_conflict
+
+            if photos_conflict(keep, other):
+                continue
             absorb_person(conn, keep, other)
+            adopt_photo(other, keep)
             them_map[keep] = _them_bodies(conn, keep)
             log.append(f"{other} → {keep}")
     if log:
