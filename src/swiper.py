@@ -11,6 +11,7 @@ from pathlib import Path
 
 from src.browse import browse_profile
 from src.config import load_config
+from src.profile_filters import collect_card_texts, ethnicity_allows, ethnicity_filter_enabled
 from src.device import (
     bring_app_foreground,
     connect,
@@ -210,6 +211,12 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 continue
 
             do_like = random.random() < like_ratio
+            if ethnicity_filter_enabled(cfg):
+                texts = collect_card_texts(device, extra_scrolls=2)
+                allowed, reason = ethnicity_allows(texts, cfg)
+                log.info("filter ethnicity %s", reason)
+                if not allowed:
+                    do_like = False
             swipe(device, swipe_cfg, like=do_like)
             swipes += 1
             if do_like:
@@ -282,6 +289,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not bring Bumble to the foreground at start",
     )
+    parser.add_argument(
+        "--ethnicity",
+        help="Comma-separated ethnicity allowlist (Hinge buckets). Empty = off.",
+    )
+    parser.add_argument(
+        "--ethnicity-if-missing",
+        choices=("allow", "pass"),
+        help="What to do when the card does not list ethnicity (default allow)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -303,6 +319,15 @@ def main(argv: list[str] | None = None) -> int:
         cfg["delay_max"] = args.delay_max
     if args.no_foreground:
         cfg["bring_to_foreground"] = False
+    if args.ethnicity is not None or args.ethnicity_if_missing is not None:
+        filt = dict(cfg.get("filters") or {})
+        eth = dict(filt.get("ethnicity") or {})
+        if args.ethnicity is not None:
+            eth["include"] = [p.strip() for p in args.ethnicity.split(",") if p.strip()]
+        if args.ethnicity_if_missing is not None:
+            eth["if_missing"] = args.ethnicity_if_missing
+        filt["ethnicity"] = eth
+        cfg["filters"] = filt
 
     if float(cfg["delay_min"]) > float(cfg["delay_max"]):
         parser.error("delay_min must be <= delay_max")

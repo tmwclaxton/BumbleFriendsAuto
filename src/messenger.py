@@ -168,6 +168,9 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
     device = connect(serial)
     if not wake_and_unlock(device, serial=serial) or screen_lock_state(device) != "unlocked":
         return False, "phone still locked — unlock failed"
+    from src.phone_queue import check_cancel
+
+    check_cancel()
     bring_app_foreground(device, package)
     wait_idle(device, 0.8)
     partner = open_chat_via_search(device, package, name)
@@ -245,6 +248,9 @@ def send_new_friend_openers(cfg: dict, *, dry_run: bool = False, serial: str | N
     empty_rounds = 0
 
     while sent < max_messages:
+        from src.phone_queue import check_cancel
+
+        check_cancel()
         xml = ensure_chats_list(device, package)
         friends = [
             f for f in _tappable_friends(xml, device) if f.name.lower() not in attempted
@@ -325,6 +331,11 @@ def message_new_friends(*, serial: str | None = None, sleep_after: bool = True) 
         sent, skipped = send_new_friend_openers(cfg, serial=serial)
         return True, f"sent opener to {sent} new friend(s), skipped {skipped}"
     except Exception as exc:
+        from src.phone_queue import QueueCancelled
+
+        if isinstance(exc, QueueCancelled):
+            log.info("message_new_friends cancelled")
+            return False, "cancelled"
         log.exception("message_new_friends failed")
         return False, str(exc)
     finally:

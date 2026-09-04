@@ -9,7 +9,14 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from src.config import load_config
-from src.phone_queue import enqueue, ensure_worker, get_job, job_poll_payload, queue_snapshot
+from src.phone_queue import (
+    cancel_job as cancel_phone_job,
+    enqueue,
+    ensure_worker,
+    get_job as fetch_job,
+    job_poll_payload,
+    queue_snapshot,
+)
 from src.store import (
     connect as db_connect,
     db_path_from_config,
@@ -20,6 +27,7 @@ from src.store import (
     list_people,
     list_thread,
     set_draft,
+    set_in_group,
 )
 
 log = logging.getLogger(__name__)
@@ -31,7 +39,8 @@ mcp = FastMCP(
         "You cannot send Bumble messages. Draft with save_draft, revise with tweak_draft; "
         "Toby sends from the inbox UI. There is no send-reply or message-new-friends tool. "
         "Read tools (list_*, get_thread) are instant. Phone capture tools (start_refresh_chat, "
-        "start_recapture_inbox) are asynchronous: poll get_job until done or error. "
+        "start_recapture_inbox) are asynchronous: poll get_job until done, error, or cancelled. "
+        "Use cancel_job to drop a queued action or stop a running one at the next checkpoint. "
         "Never treat queued/running as success. Full inbox recapture can take up to ~40 minutes."
     ),
     transport_security=TransportSecuritySettings(
@@ -95,6 +104,7 @@ def list_inbox_people() -> dict:
                     "opener_sent": bool(row["opener_sent"]),
                     "new_friend": is_new_friend(row),
                     "message_until": row["message_until"],
+                    "in_group": bool(row["in_group"]),
                 }
             )
         return {"count": len(people), "people": people}
@@ -104,7 +114,7 @@ def list_inbox_people() -> dict:
 
 @mcp.tool()
 def list_needs_reply_people() -> dict:
-    """People marked needs_reply (Your turn / last message from them). Fast — no phone."""
+    """People marked needs_reply (Your turn / last message from them), excluding those filed as in the group chat. Fast — no phone."""
     conn = _db()
     try:
         rows = []
@@ -127,6 +137,27 @@ def list_needs_reply_people() -> dict:
         return {"count": len(rows), "people": rows}
     finally:
         conn.close()
+
+
+@mcp.tool()
+def mark_in_group(name: str, in_group: bool = True) -> dict:
+    """File someone under In group (added to WhatsApp) or put them back in the main inbox. Does not send, does not touch the phone."""
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    conn = _db()
+    try:
+        ok = set_in_group(conn, name, bool(in_group))
+    finally:
+        conn.close()
+    if not ok:
+        return {"ok": False, "error": "person not found"}
+    return {
+        "ok": True,
+        "name": name,
+        "in_group": bool(in_group),
+        "hint": "Filed under In group in the inbox." if in_group else "Back in the main inbox list.",
+    }
 
 
 @mcp.tool()
@@ -183,7 +214,7 @@ def get_thread(name: str) -> dict:
 
 @mcp.tool()
 def list_jobs() -> dict:
-    """List recent phone-queue jobs (queued, running, done, error)."""
+    """List recent phone-queue jobs (queued, running, done, error, cancelled)."""
     ensure_worker()
     return {"jobs": queue_snapshot()}
 
@@ -201,7 +232,7 @@ def start_refresh_chat(name: str) -> dict:
         "job_id": job["id"],
         "status": job["status"],
         "suggested_wait_seconds": 8,
-        "hint": "Poll get_job until status is done or error.",
+        "hint": "Poll get_job until status is done, error, or cancelled.",
     }
 
 
@@ -320,8 +351,24 @@ def start_recapture_inbox() -> dict:
         "job_id": job["id"],
         "status": job["status"],
         "suggested_wait_seconds": 15,
-        "hint": "Poll get_job every 10–15s until done/error. Do not treat queued/running as success.",
+        "hint": "Poll get_job every 10–15s until done/error/cancelled. Do not treat queued/running as success.",
     }
+
+
+@mcp.tool()
+def cancel_job(job_id: int) -> dict:
+    """Cancel a queued phone action, or ask a running one (recapture, photo grab, new-friend scan) to stop at the next safe checkpoint."""
+    ensure_worker()
+    try:
+        jid = int(job_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "job_id must be an integer"}
+    ok = cancel_phone_job(jid)
+    payload = job_poll_payload(fetch_job(jid))
+    payload["ok"] = ok
+    if not ok:
+        payload["error"] = "cannot cancel (already finished or missing)"
+    return payload
 
 
 @mcp.tool()
@@ -332,7 +379,7 @@ def get_job(job_id: int) -> dict:
         jid = int(job_id)
     except (TypeError, ValueError):
         return {"ok": False, "error": "job_id must be an integer"}
-    return job_poll_payload(get_job(jid))
+    return job_poll_payload(fetch_job(jid))
 
 
 @mcp.tool()
@@ -346,7 +393,7 @@ def wait_for_job(job_id: int, timeout_seconds: float = 20.0) -> dict:
     timeout = max(1.0, min(float(timeout_seconds or 20.0), 25.0))
     deadline = time.time() + timeout
     while True:
-        job = get_job(jid)
+        job = fetch_job(jid)
         payload = job_poll_payload(job)
         status = payload.get("status")
         if status not in {"queued", "running"}:

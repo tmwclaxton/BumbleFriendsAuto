@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS chats (
     dismissed_reply_text TEXT,
     draft TEXT,
     message_until TEXT,
+    in_group INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
 
@@ -90,6 +91,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chats ADD COLUMN draft TEXT")
     if "message_until" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN message_until TEXT")
+    if "in_group" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN in_group INTEGER NOT NULL DEFAULT 0")
     _backfill_message_until(conn)
     _reapply_dismissals(conn)
     conn.commit()
@@ -402,7 +405,8 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                 """
                 UPDATE chats SET last_from = ?, last_text = ?, preview = ?, badge = ?,
                     status = ?, opener_sent = MAX(opener_sent, ?),
-                    message_until = COALESCE(message_until, ?), draft = COALESCE(draft, ?)
+                    message_until = COALESCE(message_until, ?), draft = COALESCE(draft, ?),
+                    in_group = MAX(IFNULL(in_group, 0), ?)
                 WHERE person_id = ?
                 """,
                 (
@@ -414,15 +418,21 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                     int(drop_chat["opener_sent"] or 0),
                     drop_chat["message_until"],
                     drop_chat["draft"],
+                    int(drop_chat["in_group"] or 0) if "in_group" in drop_chat.keys() else 0,
                     keep_id,
                 ),
             )
     else:
-        drop_chat = conn.execute("SELECT draft FROM chats WHERE person_id = ?", (drop_id,)).fetchone()
+        drop_chat = conn.execute(
+            "SELECT draft, in_group FROM chats WHERE person_id = ?",
+            (drop_id,),
+        ).fetchone()
         if drop_chat and drop_chat["draft"]:
             keep_chat = conn.execute("SELECT draft FROM chats WHERE person_id = ?", (keep_id,)).fetchone()
             if keep_chat is None or not keep_chat["draft"]:
                 conn.execute("UPDATE chats SET draft = ? WHERE person_id = ?", (drop_chat["draft"], keep_id))
+        if drop_chat and int(drop_chat["in_group"] or 0):
+            conn.execute("UPDATE chats SET in_group = 1 WHERE person_id = ?", (keep_id,))
     drop_person = conn.execute("SELECT location, distance, age, phone_provided FROM people WHERE id = ?", (drop_id,)).fetchone()
     keep_person = conn.execute("SELECT location, distance, age, phone_provided FROM people WHERE id = ?", (keep_id,)).fetchone()
     if drop_person and keep_person:
@@ -731,6 +741,22 @@ def dismiss_needs_reply(conn: sqlite3.Connection, name: str) -> bool:
     return True
 
 
+def set_in_group(conn: sqlite3.Connection, name: str, in_group: bool) -> bool:
+    """File the chat under In group (WhatsApp) or put it back in the main list."""
+    name = name.strip()
+    if not name:
+        return False
+    if conn.execute("SELECT id FROM people WHERE name = ?", (name,)).fetchone() is None:
+        return False
+    person_id = upsert_chat(conn, name)
+    conn.execute(
+        "UPDATE chats SET in_group = ?, updated_at = ? WHERE person_id = ?",
+        (1 if in_group else 0, _now(), person_id),
+    )
+    conn.commit()
+    return True
+
+
 def replace_thread(
     conn: sqlite3.Connection,
     person_id: int,
@@ -824,6 +850,8 @@ def is_new_friend(row: sqlite3.Row | dict) -> bool:
 
     if (_get("status") or "") == "dismissed":
         return False
+    if int(_get("in_group") or 0):
+        return False
     if int(_get("opener_sent") or 0):
         return False
     blob = f"{_get('status') or ''} {_get('last_text') or ''} {_get('preview') or ''}"
@@ -849,6 +877,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             SELECT p.name, p.location, p.distance, p.age, p.phone_provided,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
                    c.dismissed_reply_text, c.opener_sent, c.draft, c.message_until,
+                   c.in_group,
                    c.updated_at,
                    (SELECT COUNT(*) FROM messages m WHERE m.person_id = p.id) AS message_count
             FROM people p
@@ -889,7 +918,7 @@ def list_needs_reply(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             SELECT p.name, c.badge, c.last_from, c.last_text, c.preview, c.draft, c.updated_at
             FROM chats c
             JOIN people p ON p.id = c.person_id
-            WHERE c.status = 'needs_reply'
+            WHERE c.status = 'needs_reply' AND IFNULL(c.in_group, 0) = 0
             ORDER BY p.name COLLATE NOCASE
             """
         )

@@ -8,6 +8,17 @@ package: com.bumblebff.app
 max_swipes: 30
 like_ratio: 1.0          # 1.0 = always like; 0.8 = like ~80% of the time
 
+# Hinge-style ethnicity allowlist for the swipe deck.
+# Bumble Friends (UK) has no Discover ethnicity picker — this reads a
+# self-declared chip / Ethnicity row on the card, then likes or passes.
+# Empty include = off. if_missing: allow (like anyway) or pass.
+# buckets: white, black, east asian, south asian, southeast asian, asian,
+# hispanic, middle eastern, native american, pacific islander, mixed, other
+filters:
+  ethnicity:
+    include: []
+    if_missing: allow
+
 # Delay between profiles after a decision (seconds), sampled uniformly
 delay_min: 2.5
 delay_max: 7.0

@@ -36,6 +36,19 @@ from src.store import (
 log = logging.getLogger(__name__)
 
 
+def _check_cancel() -> None:
+    from src.phone_queue import check_cancel
+
+    check_cancel()
+
+
+def _reraise_cancel(exc: BaseException) -> None:
+    from src.phone_queue import QueueCancelled
+
+    if isinstance(exc, QueueCancelled):
+        raise exc
+
+
 def _maybe_grab_profile_photo(device, name: str) -> None:
     from src.photos import capture_profile_photo, photo_exists
 
@@ -449,6 +462,7 @@ def discover_via_letter_search(device, package: str) -> list[dict[str, str]]:
                     break
                 _scroll_inbox(device, width, height, older=True, distance=int(height * 0.16))
         except Exception as exc:
+            _reraise_cancel(exc)
             log.warning("letter search %r failed: %s", letter, exc)
         finally:
             device.press("back")
@@ -484,6 +498,7 @@ def discover_via_message_search(device, package: str) -> list[dict[str, str]]:
     seen: dict[str, dict[str, str]] = {}
     for term in _SEARCH_WORDS:
         try:
+            _check_cancel()
             _ensure_search(device, package)
             field = _search_field(device)
             if field is None:
@@ -497,6 +512,7 @@ def discover_via_message_search(device, package: str) -> list[dict[str, str]]:
             last_key: tuple[str, ...] | None = None
             stagnant = 0
             for _ in range(25):
+                _check_cancel()
                 xml = dump_hierarchy(device)
                 rows = _list_rows(xml, min_top=0, height=height, width=width)
                 for row in rows:
@@ -518,6 +534,7 @@ def discover_via_message_search(device, package: str) -> list[dict[str, str]]:
                     break
                 _scroll_inbox(device, width, height, older=True, distance=int(height * 0.18))
         except Exception as exc:
+            _reraise_cancel(exc)
             log.warning("message search %r failed: %s", term, exc)
         finally:
             device.press("back")
@@ -635,6 +652,7 @@ def capture_thread(device, width: int, height: int, expected: str | None = None)
         stagnant = 0
         last_code = 0
         for pass_i in range(limit):
+            _check_cancel()
             _scroll(toward_older)
             xml = dump_hierarchy(device)
             code = _ingest(xml, prepend)
@@ -686,6 +704,7 @@ def scan_chat_list(device, package: str) -> list[dict[str, str]]:
     stagnant = 0
     last_key: tuple[str, ...] | None = None
     for _ in range(150):
+        _check_cancel()
         xml = dump_hierarchy(device)
         if not _on_list(xml):
             xml = recover_to_list(device, package)
@@ -919,6 +938,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
     captured = 0
     last_inbox_key: tuple[str, ...] | None = None
     for _step in range(400):
+        _check_cancel()
         if limit > 0 and captured >= limit:
             break
         try:
@@ -1058,6 +1078,7 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
                 log.warning("not on inbox after %s", save_as)
                 recover_to_list(device, package)
         except Exception as exc:
+            _reraise_cancel(exc)
             log.warning("capture error (%s); reconnect", exc)
             time.sleep(2)
             device = connect()
@@ -1282,6 +1303,7 @@ def refresh_named_chat(name: str, *, serial: str | None = None) -> tuple[bool, s
     device = connect(serial)
     if not wake_and_unlock(device, serial=serial):
         return False, "phone still locked — unlock failed"
+    _check_cancel()
     bring_app_foreground(device, package)
     wait_idle(device, 0.6)
     conn = db_connect(db_path_from_config(cfg))
@@ -1345,6 +1367,7 @@ def collect_new_friend_names(device, package: str) -> list[str]:
     stagnant = 0
     last_key: tuple[str, ...] | None = None
     for _ in range(40):
+        _check_cancel()
         xml = dump_hierarchy(device)
         if not _on_list(xml):
             xml = recover_to_list(device, package)
@@ -1412,6 +1435,7 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
         except Exception:
             _scroll_new_friends_strip(device, xml, width, height, toward_end=False)
     for _ in range(80):
+        _check_cancel()
         xml = recover_to_list(device, package)
         if not _on_list(xml):
             bring_app_foreground(device, package)
@@ -1530,6 +1554,7 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
 
             indexed_names: set[str] = set()
             for filt in _INBOX_FILTERS:
+                _check_cancel()
                 _set_inbox_filter(device, filt)
                 rows = scan_chat_list(device, package)
                 _index(rows)
@@ -1554,6 +1579,11 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
         log.info(msg)
         return True, msg
     except Exception as exc:
+        from src.phone_queue import QueueCancelled
+
+        if isinstance(exc, QueueCancelled):
+            log.info("recapture_inbox cancelled")
+            return False, "cancelled"
         log.exception("recapture_inbox failed")
         return False, str(exc)
     finally:
@@ -1578,6 +1608,7 @@ def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True) ->
         bring_app_foreground(device, package)
         wait_idle(device, 1.0)
         for filt in _INBOX_FILTERS:
+            _check_cancel()
             _set_inbox_filter(device, filt)
             scan_chat_list(device, package)
         collect_new_friend_names(device, package)
@@ -1586,6 +1617,11 @@ def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True) ->
         log.info(msg)
         return True, msg
     except Exception as exc:
+        from src.phone_queue import QueueCancelled
+
+        if isinstance(exc, QueueCancelled):
+            log.info("grab_inbox_photos cancelled")
+            return False, "cancelled"
         log.exception("grab_inbox_photos failed")
         return False, str(exc)
     finally:
@@ -1625,6 +1661,7 @@ def fill_via_search(device, conn, package: str) -> int:
     captured = 0
     for name in targets:
         try:
+            _check_cancel()
             _ensure_search(device, package)
             field = _search_field(device)
             if field is None:
@@ -1687,6 +1724,7 @@ def fill_via_search(device, conn, package: str) -> int:
             leave_chat(device)
             wait_idle(device, 0.6)
         except Exception as exc:
+            _reraise_cancel(exc)
             log.warning("search-fill error %s (%s)", name, exc)
             time.sleep(1)
             device = connect()

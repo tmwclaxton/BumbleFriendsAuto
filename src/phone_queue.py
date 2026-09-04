@@ -19,6 +19,21 @@ _jobs_lock = threading.Lock()
 _jobs_wake = threading.Event()
 _job_seq = 0
 _worker_started = False
+_cancel_ids: set[int] = set()
+
+
+class QueueCancelled(Exception):
+    """Raised by long phone jobs when the inbox asks them to stop."""
+
+
+def running_cancelled() -> bool:
+    with _jobs_lock:
+        return any(int(j["id"]) in _cancel_ids for j in _jobs if j.get("status") == "running")
+
+
+def check_cancel() -> None:
+    if running_cancelled():
+        raise QueueCancelled("cancelled")
 
 
 def queue_snapshot() -> list[dict]:
@@ -86,16 +101,28 @@ def enqueue(kind: str, name: str = "", text: str = "") -> dict:
 
 
 def cancel_job(job_id: int) -> bool:
+    snap: dict | None = None
+    restore_draft = False
     with _jobs_lock:
         for job in _jobs:
-            if int(job["id"]) == job_id and job["status"] == "queued":
+            if int(job["id"]) != job_id:
+                continue
+            if job["status"] == "queued":
                 job["status"] = "cancelled"
+                job["message"] = "cancelled"
                 snap = dict(job)
+                restore_draft = snap.get("kind") == "reply"
                 _persist_queue()
+                break
+            if job["status"] == "running":
+                _cancel_ids.add(int(job["id"]))
+                job["message"] = "cancelling"
+                _persist_queue()
+                snap = dict(job)
                 break
         else:
             return False
-    if snap.get("kind") == "reply":
+    if restore_draft and snap:
         from src.store import set_draft
 
         conn = db_connect(db_path_from_config(load_config()))
@@ -104,6 +131,20 @@ def cancel_job(job_id: int) -> bool:
         finally:
             conn.close()
     return True
+
+
+def cancel_queued() -> int:
+    """Cancel every job still waiting (not the one already on the phone)."""
+    ids: list[int] = []
+    with _jobs_lock:
+        for job in _jobs:
+            if job.get("status") == "queued":
+                ids.append(int(job["id"]))
+    n = 0
+    for job_id in ids:
+        if cancel_job(job_id):
+            n += 1
+    return n
 
 
 def _update_job(job_id: int, **fields: object) -> None:
@@ -166,18 +207,25 @@ def _queue_worker() -> None:
             _jobs_wake.wait(timeout=1.0)
             _jobs_wake.clear()
             continue
+        latest = get_job(int(job["id"]))
+        if latest is None or latest.get("status") != "queued":
+            continue
         _update_job(job["id"], status="running")
         log.info("queue run #%s %s %s", job["id"], job["kind"], job.get("name") or "")
         try:
             ok, message = _run_job(job)
+        except QueueCancelled:
+            ok, message = False, "cancelled"
         except Exception as exc:
             log.exception("queue job failed")
             ok, message = False, str(exc)
+        cancelled = int(job["id"]) in _cancel_ids or message == "cancelled"
+        _cancel_ids.discard(int(job["id"]))
         _update_job(
             job["id"],
-            status="done" if ok else "error",
+            status="cancelled" if cancelled else ("done" if ok else "error"),
             message=message,
-            error=None if ok else message,
+            error=None if cancelled or ok else message,
         )
         if job.get("kind") == "reply":
             from src.store import set_draft
@@ -193,7 +241,12 @@ def _queue_worker() -> None:
                 log.exception("could not save draft after reply job")
             finally:
                 conn.close()
-        log.info("queue #%s %s — %s", job["id"], "ok" if ok else "fail", message)
+        log.info(
+            "queue #%s %s — %s",
+            job["id"],
+            "cancelled" if cancelled else ("ok" if ok else "fail"),
+            message,
+        )
         if _next_queued() is None:
             try:
                 from src.unlock import sleep_screen
@@ -239,7 +292,7 @@ def job_poll_payload(job: dict | None) -> dict:
         "suggested_wait_seconds": wait,
         "hint": (
             "Job still in progress — call get_job again after suggested_wait_seconds. "
-            "Do not treat queued/running as success."
+            "Do not treat queued/running as success. Use cancel_job to stop it."
             if status in {"queued", "running"}
             else None
         ),

@@ -125,6 +125,7 @@
   .draft { background: #3a3214; color: var(--you); }
   .same-name { background: #2a2430; color: #e0b4d4; }
   .dismissed { background: #2a2724; color: #b8a99a; }
+  .in_group { background: #17332c; color: var(--wait); }
   .section-head {
     display: flex;
     align-items: center;
@@ -157,6 +158,26 @@
     line-height: 1.35;
   }
   #chats-head { padding-top: 14px; }
+  #group-wrap {
+    margin: 14px 10px 4px;
+    background: #121814;
+    border: 1px solid #2a4038;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  #group-wrap[hidden] { display: none; }
+  #group-wrap .section-head { color: var(--wait); }
+  #group-wrap .row { border-bottom-color: #24332e; }
+  #group-wrap .row:last-child { border-bottom: 0; }
+  #group-hint {
+    margin: 0;
+    padding: 0 14px 10px;
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--muted);
+    line-height: 1.35;
+  }
   #dismissed-wrap {
     margin: 14px 10px 12px;
     background: #161412;
@@ -220,6 +241,20 @@
     cursor: pointer;
   }
   #dismiss-reply:hover { background: #4a2c20; }
+  #toggle-group {
+    flex-shrink: 0;
+    background: #17332c;
+    color: var(--wait);
+    border: 1px solid #3d6b5c;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: 12px/1.2 inherit;
+    cursor: pointer;
+  }
+  #toggle-group:hover { background: #1f443a; }
+  #toggle-group.on {
+    background: #1f443a;
+  }
   #thread-head .actions { display: flex; gap: 8px; align-items: center; }
   #refresh-chat {
     flex-shrink: 0;
@@ -371,6 +406,13 @@
     </div>
     <div id="chats-head" class="section-head">Chats</div>
     <div id="list"></div>
+    <div id="group-wrap" hidden>
+      <div class="section-head">
+        <span id="group-label">In group</span>
+      </div>
+      <p id="group-hint">Added to the WhatsApp group. Filed away here until you take them out. New Bumble messages stay in the thread.</p>
+      <div id="group-list"></div>
+    </div>
     <div id="dismissed-wrap" hidden>
       <div class="section-head">
         <span id="dismissed-label">Dismissed</span>
@@ -400,6 +442,9 @@ const newWrap = document.getElementById("new-wrap");
 const newListEl = document.getElementById("new-list");
 const newLabel = document.getElementById("new-label");
 const msgAllBtn = document.getElementById("msg-all");
+const groupWrap = document.getElementById("group-wrap");
+const groupListEl = document.getElementById("group-list");
+const groupLabel = document.getElementById("group-label");
 const dismissedWrap = document.getElementById("dismissed-wrap");
 const dismissedListEl = document.getElementById("dismissed-list");
 const dismissedLabel = document.getElementById("dismissed-label");
@@ -452,12 +497,13 @@ async function loadPeople() {
   const data = await res.json();
   people = data.people || [];
   openerTemplate = data.opener_template || "";
-  const n = people.filter(p => p.status === "needs_reply" && !p.dismissed).length;
+  const n = people.filter(p => p.status === "needs_reply" && !p.dismissed && !p.in_group).length;
   const phones = people.filter(p => p.phone_provided).length;
-  const fresh = people.filter(p => p.new_friend).length;
-  const hidden = people.filter(p => p.dismissed || p.status === "dismissed").length;
+  const fresh = people.filter(p => p.new_friend && !p.in_group).length;
+  const grouped = people.filter(p => p.in_group).length;
+  const hidden = people.filter(p => (p.dismissed || p.status === "dismissed") && !p.in_group).length;
   const drafts = people.filter(p => (p.draft || "").trim()).length;
-  metaEl.textContent = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + hidden + " dismissed · " + drafts + " drafts · " + phones + " phone provided";
+  metaEl.textContent = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + grouped + " in group · " + hidden + " dismissed · " + drafts + " drafts · " + phones + " phone provided";
   renderList();
 }
 
@@ -506,14 +552,18 @@ function faceHtml(p, name) {
 }
 
 function isDismissed(p) {
-  return !!(p && (p.dismissed || p.status === "dismissed"));
+  return !!(p && (p.dismissed || p.status === "dismissed") && !p.in_group);
+}
+
+function isInGroup(p) {
+  return !!(p && p.in_group);
 }
 
 function rowHtml(p, inNew) {
   const on = current === p.name ? " on" : "";
   const snip = esc(inNew ? remainingLabel(p.message_until) : (p.last_text || p.preview || ""));
-  const st = p.new_friend ? "new" : (isDismissed(p) ? "dismissed" : (p.status || "unknown"));
-  const stLabel = p.new_friend ? "new friend" : st.replace("_"," ");
+  const st = p.new_friend ? "new" : (isInGroup(p) ? "in_group" : (isDismissed(p) ? "dismissed" : (p.status || "unknown")));
+  const stLabel = p.new_friend ? "new friend" : (isInGroup(p) ? "in group" : st.replace("_"," "));
   const tag = inNew ? "" : `<span class="tag ${st}">${esc(stLabel)}</span>`;
   const href = "?chat=" + encodeURIComponent(p.name);
   const phone = p.phone_provided
@@ -538,9 +588,10 @@ function rowHtml(p, inNew) {
 function renderList() {
   const q = document.getElementById("filter").value.trim().toLowerCase();
   const match = p => !q || p.name.toLowerCase().includes(q);
-  const fresh = people.filter(p => p.new_friend && !isDismissed(p) && match(p));
-  const hidden = people.filter(p => isDismissed(p) && match(p));
-  const rest = people.filter(p => !p.new_friend && !isDismissed(p) && match(p));
+  const fresh = people.filter(p => p.new_friend && !isDismissed(p) && !isInGroup(p) && match(p));
+  const grouped = people.filter(p => isInGroup(p) && match(p));
+  const hidden = people.filter(p => isDismissed(p) && !isInGroup(p) && match(p));
+  const rest = people.filter(p => !p.new_friend && !isDismissed(p) && !isInGroup(p) && match(p));
   const chatsHead = document.getElementById("chats-head");
   if (fresh.length) {
     newWrap.hidden = false;
@@ -551,6 +602,14 @@ function renderList() {
     newWrap.hidden = true;
     msgAllBtn.disabled = true;
     newListEl.innerHTML = "";
+  }
+  if (grouped.length) {
+    groupWrap.hidden = false;
+    groupLabel.textContent = "In group · " + grouped.length;
+    groupListEl.innerHTML = grouped.map(p => rowHtml(p, false)).join("");
+  } else {
+    groupWrap.hidden = true;
+    groupListEl.innerHTML = "";
   }
   if (hidden.length) {
     dismissedWrap.hidden = false;
@@ -570,8 +629,9 @@ function isDayLabel(body) {
 
 function renderHead(name, status, phoneProvided) {
   const known = people.find(p => p.name === name);
-  const hidden = isDismissed(known) || status === "dismissed";
-  const dismiss = status === "needs_reply" && !hidden
+  const grouped = isInGroup(known);
+  const hidden = !grouped && (isDismissed(known) || status === "dismissed");
+  const dismiss = status === "needs_reply" && !hidden && !grouped
     ? '<button type="button" id="dismiss-reply">Dismiss needs reply</button>'
     : "";
   const phone = phoneProvided ? '<span class="tag phone">phone provided</span>' : "";
@@ -580,8 +640,12 @@ function renderHead(name, status, phoneProvided) {
     ? `<span class="tag same-name">${known.same_name_count} named ${esc(known.base_name || name)}</span>`
     : "";
   const hid = hidden ? '<span class="tag dismissed">dismissed</span>' : "";
-  headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${same} ${phone} ${hid}</h2><div class="actions">
-    <button type="button" id="refresh-chat">Refresh</button>${dismiss}
+  const grp = grouped ? '<span class="tag in_group">in group</span>' : "";
+  const groupBtn = grouped
+    ? '<button type="button" id="toggle-group" class="on" data-in-group="0">Not in group</button>'
+    : '<button type="button" id="toggle-group" data-in-group="1">Added to group</button>';
+  headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${same} ${phone} ${grp} ${hid}</h2><div class="actions">
+    <button type="button" id="refresh-chat">Refresh</button>${groupBtn}${dismiss}
   </div>`;
 }
 
@@ -635,6 +699,25 @@ headEl.addEventListener("click", async e => {
     const data = await res.json();
     statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
     pollQueue();
+    return;
+  }
+  const groupBtn = e.target.closest("#toggle-group");
+  if (groupBtn && current) {
+    groupBtn.disabled = true;
+    const filed = groupBtn.dataset.inGroup === "1";
+    const res = await fetch("/api/in-group", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: current, in_group: filed}),
+    });
+    const data = await res.json();
+    statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+    if (data.ok) {
+      await loadPeople();
+      await openThread(current, {push: false});
+    } else {
+      groupBtn.disabled = false;
+    }
     return;
   }
   const btn = e.target.closest("#dismiss-reply");
@@ -732,8 +815,16 @@ function jobLabel(job) {
   if (job.kind === "refresh") return "Refresh " + job.name;
   if (job.kind === "recapture_all") return "Recapture inbox";
   if (job.kind === "message_new_friends") return "Send opener to new friends";
+  if (job.kind === "grab_photos") return "Grab photos";
   const snip = String(job.text || "").replace(/\s+/g, " ").slice(0, 42);
   return "Reply to " + job.name + (snip ? " — " + snip : "");
+}
+
+function jobState(job) {
+  if (job.status === "queued") return "queued";
+  const msg = String(job.message || "");
+  if (msg.startsWith("cancel")) return "stopping";
+  return "running";
 }
 
 function renderQueue(jobs) {
@@ -745,19 +836,29 @@ function renderQueue(jobs) {
     queueEl.innerHTML = "";
     return;
   }
-  queueEl.innerHTML = active.map(j => {
+  const queued = active.filter(j => j.status === "queued");
+  const cancelAll = queued.length > 1
+    ? `<div class="q-row"><button type="button" data-cancel-all="1">Cancel queued</button></div>`
+    : "";
+  queueEl.innerHTML = cancelAll + active.map(j => {
+    const state = jobState(j);
     const cls = j.status === "running" ? "q-run" : "";
-    const cancel = j.status === "queued"
-      ? `<button type="button" data-cancel="${j.id}">Cancel</button>`
-      : "";
-    const state = j.status === "running" ? "sending" : "queued";
+    const label = state === "stopping" ? "Stopping…" : (j.status === "running" ? "Stop" : "Cancel");
+    const disabled = state === "stopping" ? " disabled" : "";
+    const cancel = `<button type="button" data-cancel="${j.id}"${disabled}>${label}</button>`;
     return `<div class="q-row ${cls}"><span>${esc(state)}: ${esc(jobLabel(j))}</span>${cancel}</div>`;
   }).join("");
 }
 
 queueEl.addEventListener("click", async e => {
+  if (e.target.closest("[data-cancel-all]")) {
+    await fetch("/api/queue/cancel-all", {method: "POST"});
+    pollQueue();
+    return;
+  }
   const btn = e.target.closest("[data-cancel]");
   if (!btn) return;
+  btn.disabled = true;
   await fetch("/api/queue/cancel", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -772,7 +873,7 @@ async function pollQueue() {
     const data = await res.json();
     const jobs = data.jobs || [];
     renderQueue(jobs);
-    const finished = jobs.filter(j => j.status === "done" || j.status === "error");
+    const finished = jobs.filter(j => j.status === "done" || j.status === "error" || j.status === "cancelled");
     if (seenFinished === null) {
       seenFinished = new Set(finished.map(j => j.id));
       lastFinished = finished.reduce((m, j) => Math.max(m, j.id), 0);
@@ -784,15 +885,17 @@ async function pollQueue() {
       lastFinished = Math.max(lastFinished, job.id);
       statusEl.textContent = job.status === "done"
         ? (job.message || "done")
+        : job.status === "cancelled"
+        ? (job.message || "cancelled")
         : ("Failed: " + (job.error || "error"));
       if (job.kind === "reply" && job.text) {
-        if (job.status === "error") persistDraft(job.name, job.text);
+        if (job.status === "error" || job.status === "cancelled") persistDraft(job.name, job.text);
         else if (job.status === "done") persistDraft(job.name, "");
         if (job.name === current) {
-          draftEl.value = job.status === "error" ? job.text : "";
+          draftEl.value = (job.status === "error" || job.status === "cancelled") ? job.text : "";
         }
       }
-      if (job.status === "done" && (job.name === current || job.kind === "message_new_friends" || job.kind === "recapture_all")) {
+      if ((job.status === "done" || job.status === "cancelled") && (job.name === current || job.kind === "message_new_friends" || job.kind === "recapture_all" || job.kind === "grab_photos")) {
         await loadPeople();
         if (current) await openThread(current, {push: false});
       }

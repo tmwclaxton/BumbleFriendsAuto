@@ -18,7 +18,7 @@ from starlette.routing import Route
 from src.config import load_config
 from src.dashboard import _load_html, _thread_payload, people_api_payload
 from src.mcp_server import mcp
-from src.phone_queue import cancel_job, enqueue, ensure_worker, queue_snapshot
+from src.phone_queue import cancel_job, cancel_queued, enqueue, ensure_worker, queue_snapshot
 from src.store import connect as db_connect, db_path_from_config
 
 log = logging.getLogger(__name__)
@@ -133,6 +133,35 @@ async def api_dismiss(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "message": f"dismissed needs-reply for {name}"})
 
 
+async def api_in_group(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    if "in_group" not in data:
+        return JSONResponse({"ok": False, "error": "in_group required"}, status_code=400)
+    from src.store import set_in_group
+
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        ok = set_in_group(conn, name, bool(data.get("in_group")))
+    finally:
+        conn.close()
+    if not ok:
+        return JSONResponse({"ok": False, "error": "person not found"}, status_code=404)
+    filed = bool(data.get("in_group"))
+    return JSONResponse(
+        {
+            "ok": True,
+            "in_group": filed,
+            "message": f"{name} {'added to group' if filed else 'removed from group'}",
+        }
+    )
+
+
 async def api_refresh(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
@@ -198,6 +227,11 @@ async def api_cancel(request: Request) -> JSONResponse:
     return JSONResponse({"ok": ok, "error": None if ok else "cannot cancel"})
 
 
+async def api_cancel_all(_request: Request) -> JSONResponse:
+    n = cancel_queued()
+    return JSONResponse({"ok": True, "cancelled": n})
+
+
 async def api_reply(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
@@ -222,12 +256,14 @@ def build_app() -> Starlette:
         Route("/api/thread", api_thread),
         Route("/api/queue", api_queue),
         Route("/api/dismiss", api_dismiss, methods=["POST"]),
+        Route("/api/in-group", api_in_group, methods=["POST"]),
         Route("/api/refresh", api_refresh, methods=["POST"]),
         Route("/api/recapture", api_recapture, methods=["POST"]),
         Route("/api/photos", api_photos, methods=["POST"]),
         Route("/api/message-new-friends", api_message_new_friends, methods=["POST"]),
         Route("/api/draft", api_draft, methods=["POST"]),
         Route("/api/queue/cancel", api_cancel, methods=["POST"]),
+        Route("/api/queue/cancel-all", api_cancel_all, methods=["POST"]),
         Route("/api/reply", api_reply, methods=["POST"]),
         # FastMCP already registers path /mcp — do not Mount("/mcp") or it becomes /mcp/mcp.
         *list(mcp_app.routes),

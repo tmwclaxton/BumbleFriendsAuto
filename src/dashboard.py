@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from src.config import ROOT, load_config
-from src.phone_queue import cancel_job, enqueue, ensure_worker, queue_snapshot
+from src.phone_queue import cancel_job, cancel_queued, enqueue, ensure_worker, queue_snapshot
 from src.photos import photo_exists, photo_file
 from src.store import (
     connect as db_connect,
@@ -99,7 +99,7 @@ def _preview_already_in_thread(preview: str, msgs: list[dict]) -> bool:
 def _thread_payload(conn, name: str) -> dict:
     row = conn.execute(
         """
-        SELECT p.name, c.status, c.last_from, c.last_text, c.preview, c.draft, c.message_until
+        SELECT p.name, c.status, c.last_from, c.last_text, c.preview, c.draft, c.message_until, c.in_group
         FROM people p
         LEFT JOIN chats c ON c.person_id = p.id
         WHERE p.name = ?
@@ -117,7 +117,14 @@ def _thread_payload(conn, name: str) -> dict:
         }
     ]
     if row is None:
-        return {"name": name, "messages": msgs, "status": "unknown", "draft": "", "message_until": None}
+        return {
+            "name": name,
+            "messages": msgs,
+            "status": "unknown",
+            "draft": "",
+            "message_until": None,
+            "in_group": False,
+        }
     extras: list[str] = []
     for candidate in (row["last_text"], row["preview"]):
         text = (candidate or "").strip()
@@ -139,6 +146,7 @@ def _thread_payload(conn, name: str) -> dict:
         "status": row["status"] or "unknown",
         "draft": row["draft"] or "",
         "message_until": row["message_until"],
+        "in_group": bool(row["in_group"]),
     }
 
 
@@ -180,6 +188,7 @@ def people_api_payload(conn) -> dict:
             "opener": format_opener(template, str(row["name"])) if fresh else None,
             "photo": photo_exists(str(row["name"])),
             "dismissed": (row["status"] or "") == "dismissed",
+            "in_group": bool(row["in_group"]),
         }
         people.append(item)
         if fresh:
@@ -370,6 +379,36 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json({"ok": True, "message": f"dismissed needs-reply for {name}"})
             return
+        if self.path == "/api/in-group":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            if not name:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            if "in_group" not in data:
+                self._json({"ok": False, "error": "in_group required"}, 400)
+                return
+            from src.store import set_in_group
+
+            conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
+            try:
+                ok = set_in_group(conn, name, bool(data.get("in_group")))
+            finally:
+                conn.close()
+            if not ok:
+                self._json({"ok": False, "error": "person not found"}, 404)
+                return
+            filed = bool(data.get("in_group"))
+            self._json(
+                {
+                    "ok": True,
+                    "in_group": filed,
+                    "message": f"{name} {'added to group' if filed else 'removed from group'}",
+                }
+            )
+            return
         if self.path == "/api/refresh":
             data = self._read_json()
             if data is None:
@@ -446,6 +485,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ok = cancel_job(job_id)
             self._json({"ok": ok, "error": None if ok else "cannot cancel"})
+            return
+        if self.path == "/api/queue/cancel-all":
+            n = cancel_queued()
+            self._json({"ok": True, "cancelled": n})
             return
         if self.path != "/api/reply":
             self.send_error(404)
