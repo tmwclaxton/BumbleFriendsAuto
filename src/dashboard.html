@@ -239,7 +239,25 @@
     color: var(--muted);
     line-height: 1.35;
   }
-  #chats-head { padding-top: 14px; }
+  #chats-head {
+    padding-top: 14px;
+    flex-wrap: wrap;
+  }
+  #refresh-all {
+    text-transform: none;
+    letter-spacing: 0;
+    font: 12px/1.2 inherit;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 5px 10px;
+    font-weight: 650;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #refresh-all:hover { background: #1a1820; color: var(--text); }
+  #refresh-all:disabled { opacity: .45; cursor: default; }
   #group-wrap {
     margin: 14px 10px 4px;
     background: #121814;
@@ -493,7 +511,12 @@
       <p id="new-hint">Matches waiting for a first message. Refresh strip looks at the phone. Send opener only messages this list, not the chats below.</p>
       <div id="new-list"></div>
     </div>
-    <div id="chats-head" class="section-head">Chats</div>
+    <div id="chats-head" class="section-head">
+      <span>Chats</span>
+      <span class="section-actions">
+        <button type="button" id="refresh-all" title="Open every chat on the phone and refresh stored transcripts. Can take up to ~40 minutes.">Refresh all</button>
+      </span>
+    </div>
     <div id="list"></div>
     <div id="group-wrap" hidden>
       <div class="section-head">
@@ -532,6 +555,7 @@ const newListEl = document.getElementById("new-list");
 const newLabel = document.getElementById("new-label");
 const msgAllBtn = document.getElementById("msg-all");
 const refreshNewBtn = document.getElementById("refresh-new");
+const refreshAllBtn = document.getElementById("refresh-all");
 const newHint = document.getElementById("new-hint");
 const groupWrap = document.getElementById("group-wrap");
 const groupListEl = document.getElementById("group-list");
@@ -1100,6 +1124,20 @@ refreshNewBtn.addEventListener("click", async () => {
   if (data.ok) pollQueue();
   else refreshNewBtn.disabled = false;
 });
+refreshAllBtn.addEventListener("click", async () => {
+  if (!confirm(
+    "Refresh every chat on the phone?\n\n" +
+    "Opens each conversation, updates stored transcripts, and can take up to ~40 minutes. " +
+    "Does not send messages."
+  )) return;
+  refreshAllBtn.disabled = true;
+  statusEl.textContent = "Queued full inbox refresh";
+  const res = await fetch("/api/recapture", {method: "POST"});
+  const data = await res.json();
+  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+  if (data.ok) pollQueue();
+  else refreshAllBtn.disabled = false;
+});
 msgAllBtn.addEventListener("click", async () => {
   const fresh = people.filter(p => p.new_friend);
   if (!fresh.length) return;
@@ -1145,7 +1183,7 @@ document.getElementById("composer").addEventListener("submit", async e => {
 
 function jobLabel(job) {
   if (job.kind === "refresh") return "Refresh " + job.name;
-  if (job.kind === "recapture_all") return "Recapture inbox";
+  if (job.kind === "recapture_all") return "Refresh all chats";
   if (job.kind === "message_new_friends") return "Send opener to new friends";
   if (job.kind === "grab_photos") return "Grab photos";
   if (job.kind === "refresh_new_friends") return "Refresh New friends strip";
@@ -1165,9 +1203,11 @@ function renderQueue(jobs) {
   const active = jobs.filter(j => j.status === "running" || j.status === "queued");
   const messaging = active.some(j => j.kind === "message_new_friends");
   const refreshing = active.some(j => j.kind === "refresh_new_friends");
+  const recapturing = active.some(j => j.kind === "recapture_all");
   if (messaging) msgAllBtn.disabled = true;
   else if (people.some(p => p.new_friend)) msgAllBtn.disabled = false;
   refreshNewBtn.disabled = refreshing;
+  refreshAllBtn.disabled = recapturing;
   if (!active.length) {
     queueEl.innerHTML = "";
     return;
