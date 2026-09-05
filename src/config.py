@@ -63,6 +63,18 @@ DEFAULTS: dict[str, Any] = {
     "nanogpt": {
         "api_key": "",
         "vision_model": "google/gemini-2.5-flash",
+        "chat_model": "openai/gpt-5.6-sol",
+    },
+    "obsidian": {
+        "mcp_url": "http://127.0.0.1:18080/mcp",
+        "mcp_token": "",
+        "events_note": "LGS/Events.md",
+        "run_prompt_note": "LGS/Run prompt.md",
+        "people_folder": "LGS/People",
+    },
+    "draft": {
+        "enabled": True,
+        "max_attempts": 5,
     },
     "messenger": {
         "template": (
@@ -123,5 +135,29 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     nano_model = (os.environ.get("NANOGPT_VISION_MODEL") or "").strip()
     if nano_model:
         nano["vision_model"] = nano_model
+    chat_model = (os.environ.get("NANOGPT_CHAT_MODEL") or "").strip()
+    if chat_model:
+        nano["chat_model"] = chat_model
     cfg["nanogpt"] = nano
+
+    obs = dict(cfg.get("obsidian") or {})
+    obs_url = (os.environ.get("OBSIDIAN_MCP_URL") or "").strip()
+    if obs_url:
+        obs["mcp_url"] = obs_url
+    obs_token = (
+        os.environ.get("OBSIDIAN_MCP_TOKEN")
+        or os.environ.get("OBSIDIAN_MCP_API_KEY")
+        or ""
+    ).strip()
+    if obs_token:
+        obs["mcp_token"] = obs_token
+    cfg["obsidian"] = obs
+
+    draft = dict(cfg.get("draft") or {})
+    draft_enabled = (os.environ.get("AUTO_DRAFT_ENABLED") or "").strip().lower()
+    if draft_enabled in {"0", "false", "no", "off"}:
+        draft["enabled"] = False
+    elif draft_enabled in {"1", "true", "yes", "on"}:
+        draft["enabled"] = True
+    cfg["draft"] = draft
     return cfg

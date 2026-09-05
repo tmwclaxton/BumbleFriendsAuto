@@ -102,6 +102,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chats ADD COLUMN message_until TEXT")
     if "in_group" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN in_group INTEGER NOT NULL DEFAULT 0")
+    if "draft_turn_fp" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN draft_turn_fp TEXT")
+    if "draft_pending_fp" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN draft_pending_fp TEXT")
+    if "draft_status" not in chat_cols:
+        conn.execute(
+            "ALTER TABLE chats ADD COLUMN draft_status TEXT NOT NULL DEFAULT 'idle'"
+        )
+    if "draft_error" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN draft_error TEXT")
+    if "draft_attempts" not in chat_cols:
+        conn.execute(
+            "ALTER TABLE chats ADD COLUMN draft_attempts INTEGER NOT NULL DEFAULT 0"
+        )
+    if "draft_next_attempt_at" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN draft_next_attempt_at TEXT")
+    if "draft_updated_at" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN draft_updated_at TEXT")
     _backfill_message_until(conn)
     _reapply_dismissals(conn)
     conn.commit()
@@ -920,6 +938,76 @@ def set_ethnicity(
     return True
 
 
+def trailing_incoming_bodies(messages: list[tuple[str, str]]) -> list[str]:
+    """Normalized bodies of the contiguous trailing them-turn (skipping chrome)."""
+    bodies: list[str] = []
+    for side, body in reversed(messages):
+        text = (body or "").strip()
+        if not text or _is_thread_chrome(text):
+            continue
+        if side != "them":
+            break
+        bodies.append(_norm_msg(text))
+    bodies.reverse()
+    return bodies
+
+
+def incoming_turn_fingerprint(messages: list[tuple[str, str]]) -> str | None:
+    """Stable fingerprint for the latest unanswered incoming turn, or None."""
+    bodies = trailing_incoming_bodies(messages)
+    if not bodies:
+        return None
+    return "\n".join(bodies)
+
+
+def enqueue_auto_draft_if_needed(
+    conn: sqlite3.Connection,
+    person_id: int,
+    messages: list[tuple[str, str]],
+) -> bool:
+    """Queue GPT drafting when capture ends on a new incoming turn.
+
+    Returns True when a pending draft job was created or refreshed.
+    """
+    row = conn.execute(
+        """
+        SELECT status, in_group, draft_turn_fp, draft_pending_fp, draft_status
+        FROM chats WHERE person_id = ?
+        """,
+        (person_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if int(row["in_group"] or 0):
+        return False
+    if (row["status"] or "") != "needs_reply":
+        return False
+    fp = incoming_turn_fingerprint(messages)
+    if not fp:
+        return False
+    done_fp = (row["draft_turn_fp"] or "").strip()
+    if done_fp and done_fp == fp:
+        return False
+    pending = (row["draft_pending_fp"] or "").strip()
+    status = (row["draft_status"] or "idle").strip() or "idle"
+    if pending == fp and status in {"pending", "running"}:
+        return False
+    conn.execute(
+        """
+        UPDATE chats SET
+            draft_pending_fp = ?,
+            draft_status = 'pending',
+            draft_error = NULL,
+            draft_attempts = 0,
+            draft_next_attempt_at = ?,
+            draft_updated_at = ?
+        WHERE person_id = ?
+        """,
+        (fp, _now(), _now(), person_id),
+    )
+    return True
+
+
 def replace_thread(
     conn: sqlite3.Connection,
     person_id: int,
@@ -928,14 +1016,219 @@ def replace_thread(
     """Replace stored transcript with a chronological (oldest-first) capture."""
     conn.execute("DELETE FROM messages WHERE person_id = ?", (person_id,))
     now = _now()
+    cleaned: list[tuple[str, str]] = []
     for seq, (side, body) in enumerate(messages):
         body = body.strip()
         if not body:
             continue
+        cleaned.append((side, body))
         conn.execute(
             "INSERT INTO messages (person_id, side, body, captured_at) VALUES (?, ?, ?, ?)",
             (person_id, side, body, f"{now}#{seq:04d}"),
         )
+    enqueue_auto_draft_if_needed(conn, person_id, cleaned)
+
+
+def list_pending_auto_drafts(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 20,
+) -> list[sqlite3.Row]:
+    now = _now()
+    return list(
+        conn.execute(
+            """
+            SELECT p.id AS person_id, p.name, c.draft_pending_fp, c.draft_turn_fp,
+                   c.draft_status, c.draft_error, c.draft_attempts,
+                   c.draft_next_attempt_at, c.status, c.in_group, c.draft
+            FROM chats c
+            JOIN people p ON p.id = c.person_id
+            WHERE c.draft_status IN ('pending', 'error')
+              AND c.draft_pending_fp IS NOT NULL
+              AND trim(c.draft_pending_fp) != ''
+              AND IFNULL(c.in_group, 0) = 0
+              AND IFNULL(c.status, '') != 'dismissed'
+              AND (
+                    (c.draft_status = 'pending'
+                     AND (c.draft_next_attempt_at IS NULL OR c.draft_next_attempt_at <= ?))
+                 OR (c.draft_status = 'error'
+                     AND c.draft_next_attempt_at IS NOT NULL
+                     AND c.draft_next_attempt_at <= ?)
+              )
+            ORDER BY
+                CASE WHEN c.draft_updated_at IS NULL THEN 0 ELSE 1 END,
+                c.draft_updated_at ASC,
+                p.name COLLATE NOCASE
+            LIMIT ?
+            """,
+            (now, now, limit),
+        )
+    )
+
+
+def claim_auto_draft(conn: sqlite3.Connection, person_id: int, pending_fp: str) -> bool:
+    """Mark a pending draft as running if the fingerprint is still current."""
+    cur = conn.execute(
+        """
+        UPDATE chats SET
+            draft_status = 'running',
+            draft_error = NULL,
+            draft_updated_at = ?
+        WHERE person_id = ?
+          AND draft_pending_fp = ?
+          AND draft_status IN ('pending', 'error')
+        """,
+        (_now(), person_id, pending_fp),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def complete_auto_draft(
+    conn: sqlite3.Connection,
+    name: str,
+    *,
+    pending_fp: str,
+    text: str,
+) -> bool:
+    """Save draft only if the pending fingerprint is still the one we generated for."""
+    name = name.strip()
+    if not name or not (text or "").strip():
+        return False
+    row = conn.execute(
+        """
+        SELECT c.person_id, c.draft_pending_fp, c.draft_status
+        FROM chats c
+        JOIN people p ON p.id = c.person_id
+        WHERE p.name = ?
+        """,
+        (name,),
+    ).fetchone()
+    if row is None:
+        return False
+    if (row["draft_pending_fp"] or "") != pending_fp:
+        return False
+    if (row["draft_status"] or "") != "running":
+        return False
+    person_id = int(row["person_id"])
+    conn.execute(
+        """
+        UPDATE chats SET
+            draft = ?,
+            draft_turn_fp = ?,
+            draft_pending_fp = NULL,
+            draft_status = 'done',
+            draft_error = NULL,
+            draft_attempts = 0,
+            draft_next_attempt_at = NULL,
+            draft_updated_at = ?
+        WHERE person_id = ?
+        """,
+        ((text or "").strip(), pending_fp, _now(), person_id),
+    )
+    conn.commit()
+    return True
+
+
+def fail_auto_draft(
+    conn: sqlite3.Connection,
+    person_id: int,
+    *,
+    pending_fp: str,
+    error: str,
+    attempts: int,
+    next_attempt_at: str | None,
+    give_up: bool = False,
+) -> None:
+    status = "error"
+    pending = pending_fp
+    if give_up:
+        # Keep error visible; leave pending_fp so a manual retry can re-queue.
+        pass
+    conn.execute(
+        """
+        UPDATE chats SET
+            draft_status = ?,
+            draft_error = ?,
+            draft_attempts = ?,
+            draft_pending_fp = ?,
+            draft_next_attempt_at = ?,
+            draft_updated_at = ?
+        WHERE person_id = ? AND draft_pending_fp = ?
+        """,
+        (
+            status,
+            (error or "")[:500] or "draft failed",
+            int(attempts),
+            pending,
+            next_attempt_at,
+            _now(),
+            person_id,
+            pending_fp,
+        ),
+    )
+    conn.commit()
+
+
+def retry_auto_draft(conn: sqlite3.Connection, name: str) -> bool:
+    """Re-queue drafting for the current pending fingerprint (or latest them-turn)."""
+    name = name.strip()
+    if not name:
+        return False
+    row = conn.execute(
+        """
+        SELECT c.person_id, c.draft_pending_fp, c.draft_turn_fp, c.status, c.in_group
+        FROM chats c
+        JOIN people p ON p.id = c.person_id
+        WHERE p.name = ?
+        """,
+        (name,),
+    ).fetchone()
+    if row is None or int(row["in_group"] or 0):
+        return False
+    fp = (row["draft_pending_fp"] or "").strip()
+    if not fp:
+        thread = [(str(m["side"]), str(m["body"])) for m in list_thread(conn, name)]
+        fp = incoming_turn_fingerprint(thread) or ""
+    if not fp:
+        return False
+    if (row["draft_turn_fp"] or "").strip() == fp and not (row["draft_pending_fp"] or "").strip():
+        # Force a regenerate of the current turn.
+        pass
+    conn.execute(
+        """
+        UPDATE chats SET
+            draft_pending_fp = ?,
+            draft_status = 'pending',
+            draft_error = NULL,
+            draft_attempts = 0,
+            draft_next_attempt_at = ?,
+            draft_updated_at = ?
+        WHERE person_id = ?
+        """,
+        (fp, _now(), _now(), int(row["person_id"])),
+    )
+    conn.commit()
+    return True
+
+
+def auto_draft_fields(row: sqlite3.Row | dict) -> dict[str, object]:
+    """Normalize draft-job fields for API payloads."""
+
+    def _get(key: str, default=None):
+        if hasattr(row, "keys") and key in row.keys():
+            return row[key]
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return default
+
+    status = (_get("draft_status") or "idle") or "idle"
+    return {
+        "draft_status": status,
+        "draft_error": _get("draft_error") or "",
+        "draft_attempts": int(_get("draft_attempts") or 0),
+        "draft_pending": bool((_get("draft_pending_fp") or "").strip()),
+    }
 
 
 def list_thread(conn: sqlite3.Connection, name: str) -> list[sqlite3.Row]:
@@ -1042,6 +1335,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
                    c.dismissed_reply_text, c.opener_sent, c.draft, c.message_until,
                    c.in_group,
+                   c.draft_status, c.draft_error, c.draft_attempts, c.draft_pending_fp,
                    c.updated_at,
                    (SELECT COUNT(*) FROM messages m WHERE m.person_id = p.id) AS message_count
             FROM people p

@@ -268,6 +268,26 @@ async def api_draft(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+async def api_draft_retry(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    from src.store import retry_auto_draft
+
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        ok = retry_auto_draft(conn, name)
+    finally:
+        conn.close()
+    if not ok:
+        return JSONResponse({"ok": False, "error": "nothing to retry"}, status_code=400)
+    return JSONResponse({"ok": True, "queued": True})
+
+
 async def api_cancel(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
@@ -299,6 +319,9 @@ async def api_reply(request: Request) -> JSONResponse:
 
 def build_app() -> Starlette:
     ensure_worker()
+    from src.draft_worker import ensure_draft_worker
+
+    ensure_draft_worker()
     mcp_app = mcp.streamable_http_app()
     routes = [
         Route("/", homepage),
@@ -319,6 +342,7 @@ def build_app() -> Starlette:
         Route("/api/message-new-friends", api_message_new_friends, methods=["POST"]),
         Route("/api/new-friends", api_new_friends, methods=["POST"]),
         Route("/api/draft", api_draft, methods=["POST"]),
+        Route("/api/draft/retry", api_draft_retry, methods=["POST"]),
         Route("/api/queue/cancel", api_cancel, methods=["POST"]),
         Route("/api/queue/cancel-all", api_cancel_all, methods=["POST"]),
         Route("/api/reply", api_reply, methods=["POST"]),

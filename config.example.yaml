@@ -24,6 +24,21 @@ filters:
 nanogpt:
   api_key: ""
   vision_model: google/gemini-2.5-flash
+  chat_model: openai/gpt-5.6-sol
+
+# Obsidian MCP on admin.grantgunner.org (events + run prompt for auto-drafts).
+# Prefer OBSIDIAN_MCP_TOKEN / OBSIDIAN_MCP_URL in the environment.
+obsidian:
+  mcp_url: http://127.0.0.1:18080/mcp
+  mcp_token: ""
+  events_note: LGS/Events.md
+  run_prompt_note: LGS/Run prompt.md
+  people_folder: LGS/People
+
+# Auto-draft replies with GPT Sol when a new incoming turn is captured.
+draft:
+  enabled: true
+  max_attempts: 5
 
 # Delay between profiles after a decision (seconds), sampled uniformly
 delay_min: 2.5

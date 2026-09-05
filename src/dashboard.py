@@ -99,7 +99,8 @@ def _preview_already_in_thread(preview: str, msgs: list[dict]) -> bool:
 def _thread_payload(conn, name: str) -> dict:
     row = conn.execute(
         """
-        SELECT p.name, c.status, c.last_from, c.last_text, c.preview, c.draft, c.message_until, c.in_group
+        SELECT p.name, c.status, c.last_from, c.last_text, c.preview, c.draft, c.message_until,
+               c.in_group, c.draft_status, c.draft_error, c.draft_attempts, c.draft_pending_fp
         FROM people p
         LEFT JOIN chats c ON c.person_id = p.id
         WHERE p.name = ?
@@ -124,6 +125,10 @@ def _thread_payload(conn, name: str) -> dict:
             "draft": "",
             "message_until": None,
             "in_group": False,
+            "draft_status": "idle",
+            "draft_error": "",
+            "draft_attempts": 0,
+            "draft_pending": False,
         }
     extras: list[str] = []
     for candidate in (row["last_text"], row["preview"]):
@@ -140,6 +145,8 @@ def _thread_payload(conn, name: str) -> dict:
         if real and real[-1]["side"] == "you" and side == "you":
             side = "them"
         msgs.append({"side": side, "body": text, "from_preview": True})
+    from src.store import auto_draft_fields
+
     return {
         "name": row["name"] or name,
         "messages": msgs,
@@ -147,6 +154,7 @@ def _thread_payload(conn, name: str) -> dict:
         "draft": row["draft"] or "",
         "message_until": row["message_until"],
         "in_group": bool(row["in_group"]),
+        **auto_draft_fields(row),
     }
 
 
@@ -163,7 +171,7 @@ def people_api_payload(conn) -> dict:
     )
     people = []
     new_friends: list[str] = []
-    from src.store import namesake_meta
+    from src.store import auto_draft_fields, namesake_meta
 
     labels = namesake_meta(conn)
     for row in list_people(conn):
@@ -191,11 +199,13 @@ def people_api_payload(conn) -> dict:
             "in_group": bool(row["in_group"]),
             "ethnicity": row["ethnicity"] or "",
             "ethnicity_source": row["ethnicity_source"] or "",
+            **auto_draft_fields(row),
         }
         people.append(item)
         if fresh:
             new_friends.append(str(row["name"]))
     from src.ethnicity_vision import guess_status
+    from src.draft_worker import draft_status
     from src.profile_filters import ETHNICITY_CHOICES
 
     return {
@@ -204,6 +214,7 @@ def people_api_payload(conn) -> dict:
         "opener_template": template,
         "ethnicity_choices": [{"id": cid, "label": label} for cid, label in ETHNICITY_CHOICES],
         "ethnicity_guess": guess_status(),
+        "auto_draft": draft_status(),
     }
 
 
@@ -540,6 +551,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json({"ok": True})
             return
+        if self.path == "/api/draft/retry":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            if not name:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            from src.store import retry_auto_draft
+
+            conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
+            try:
+                ok = retry_auto_draft(conn, name)
+            finally:
+                conn.close()
+            if not ok:
+                self._json({"ok": False, "error": "nothing to retry"}, 400)
+                return
+            self._json({"ok": True, "queued": True})
+            return
         if self.path == "/api/queue/cancel":
             data = self._read_json()
             if data is None:
@@ -578,6 +609,9 @@ class InboxServer(ThreadingHTTPServer):
 
 def _serve_worker(host: str, port: int, db_path: Path) -> int:
     ensure_worker()
+    from src.draft_worker import ensure_draft_worker
+
+    ensure_draft_worker()
     # Combined ASGI app (dashboard + MCP) when available; else classic HTTP only.
     if os.environ.get("BFF_COMBINED_SERVER", "1") == "1":
         try:

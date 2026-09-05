@@ -172,6 +172,8 @@
   .new { background: #2a2438; color: #c9b6ff; }
   .phone { background: #1d2a3a; color: #8ec8ff; }
   .draft { background: #3a3214; color: var(--you); }
+  .drafting { background: #1d2a3a; color: #8ec8ff; }
+  .draft_error { background: #3a2218; color: var(--need); }
   .same-name { background: #2a2430; color: #e0b4d4; }
   .dismissed { background: #2a2724; color: #b8a99a; }
   .in_group { background: #17332c; color: var(--wait); }
@@ -627,7 +629,12 @@ async function loadPeople() {
   const grouped = people.filter(p => p.in_group).length;
   const hidden = people.filter(p => (p.dismissed || p.status === "dismissed") && !p.in_group).length;
   const drafts = people.filter(p => (p.draft || "").trim()).length;
-  metaEl.textContent = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + grouped + " in group · " + hidden + " dismissed · " + drafts + " drafts · " + phones + " phone provided";
+  const drafting = people.filter(p => ["pending", "running", "error"].includes(p.draft_status)).length;
+  let line = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + grouped + " in group · " + hidden + " dismissed · " + drafts + " drafts · " + phones + " phone provided";
+  if (drafting) line += " · " + drafting + " auto-draft";
+  const ad = data.auto_draft || {};
+  if (ad.error) line += " · draft worker: " + ad.error;
+  metaEl.textContent = line;
   renderList();
 }
 
@@ -696,6 +703,12 @@ function rowHtml(p, inNew) {
   const draft = (p.draft || "").trim()
     ? '<span class="tag draft">draft</span>'
     : "";
+  const ds = (p.draft_status || "").trim();
+  const drafting = (ds === "pending" || ds === "running")
+    ? '<span class="tag drafting">drafting</span>'
+    : (ds === "error"
+      ? '<span class="tag draft_error" title="' + esc(p.draft_error || "draft failed") + '">draft err</span>'
+      : "");
   const same = (p.same_name_count || 1) > 1
     ? `<span class="tag same-name">${p.same_name_count} named ${esc(p.base_name || p.name)}</span>`
     : "";
@@ -707,7 +720,7 @@ function rowHtml(p, inNew) {
   return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
     ${faceHtml(p, p.name)}
     <div class="meta">
-      <div><span class="name">${esc(shown)}</span>${tag}${same}${eth}${draft}${phone}</div>
+      <div><span class="name">${esc(shown)}</span>${tag}${same}${eth}${draft}${drafting}${phone}</div>
       <div class="snip">${snip}</div>
     </div>
   </a>`;
@@ -807,9 +820,13 @@ function renderHead(name, status, phoneProvided) {
   const guessOne = known && known.photo
     ? '<button type="button" id="guess-eth">Guess photo</button>'
     : "";
+  const ds = (known && known.draft_status) || "";
+  const retryDraft = (ds === "error" || ds === "pending" || ds === "running")
+    ? '<button type="button" id="retry-draft" title="' + esc((known && known.draft_error) || "Re-queue GPT Sol draft") + '">Retry draft</button>'
+    : "";
   headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${same} ${phone} ${grp} ${hid}</h2><div class="actions">
     <select id="ethnicity-set" aria-label="Ethnicity">${ethOpts}</select>${guessOne}
-    <button type="button" id="refresh-chat">Refresh</button>${groupBtn}${dismiss}
+    <button type="button" id="refresh-chat">Refresh</button>${retryDraft}${groupBtn}${dismiss}
   </div>`;
 }
 
@@ -831,6 +848,14 @@ async function openThread(name, opts) {
   if (current !== name) return;
   renderHead(name, data.status || (known && known.status), known && known.phone_provided);
   if (switching || !draftEl.value) draftEl.value = data.draft || "";
+  const person = people.find(p => p.name === name);
+  if (person) {
+    person.draft = data.draft || "";
+    person.draft_status = data.draft_status || person.draft_status;
+    person.draft_error = data.draft_error || "";
+    person.draft_pending = !!data.draft_pending;
+    renderHead(name, data.status || person.status, person.phone_provided);
+  }
   const msgs = data.messages || [];
   if (!msgs.length) {
     if (known && known.new_friend) {
@@ -882,6 +907,36 @@ headEl.addEventListener("change", async e => {
   }
   renderList();
   renderHead(current, person && person.status, person && person.phone_provided);
+});
+
+headEl.addEventListener("click", async e => {
+  const btn = e.target.closest("#retry-draft");
+  if (!btn || !current) return;
+  btn.disabled = true;
+  statusEl.textContent = "Re-queueing draft…";
+  try {
+    const res = await fetch("/api/draft/retry", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: current}),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      statusEl.textContent = "Failed: " + (data.error || res.status);
+      return;
+    }
+    const person = people.find(p => p.name === current);
+    if (person) {
+      person.draft_status = "pending";
+      person.draft_error = "";
+      person.draft_pending = true;
+    }
+    statusEl.textContent = "Draft re-queued";
+    renderList();
+    renderHead(current, person && person.status, person && person.phone_provided);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 function renderEthGuess(state) {
