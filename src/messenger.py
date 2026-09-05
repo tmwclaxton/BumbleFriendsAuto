@@ -7,6 +7,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from src.chats import (
     chat_partner_name,
@@ -119,6 +120,24 @@ def leave_chat(device) -> None:
         wait_idle(device, 1.0)
 
 
+def _norm_message(text: str) -> str:
+    return " ".join((text or "").replace("\u2019", "'").split()).casefold()
+
+
+def _message_visible(xml: str, message: str) -> bool:
+    wanted = _norm_message(message)
+    if not wanted:
+        return False
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return False
+    return any(
+        _norm_message(node.attrib.get("text") or "") == wanted
+        for node in root.iter()
+    )
+
+
 def send_opener(device, message: str) -> bool:
     field = device(resourceId=INPUT_RID)
     if not field.exists(timeout=3.0):
@@ -147,8 +166,12 @@ def send_opener(device, message: str) -> bool:
     else:
         tap(device, send[0], send[1])
 
-    wait_idle(device, 1.0)
-    return True
+    for _ in range(6):
+        wait_idle(device, 0.6)
+        if _message_visible(dump_hierarchy(device), message):
+            return True
+    log.warning("send tapped but message was not confirmed in the thread")
+    return False
 
 
 def send_named_message(name: str, text: str, *, serial: str | None = None) -> tuple[bool, str]:
@@ -158,13 +181,23 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
     if not name or not text:
         return False, "name and message required"
 
-    from src.store import add_message, connect as db_connect, db_path_from_config, upsert_chat
+    from src.store import add_message, connect as db_connect, db_path_from_config, list_thread, upsert_chat
     from src.sync_chats import open_chat_from_list, open_chat_via_search, recover_to_list
 
     from src.unlock import screen_lock_state, wake_and_unlock
 
     cfg = load_config()
     package = str(cfg["package"])
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        if any(
+            row["side"] == "you"
+            and _norm_message(str(row["body"])) == _norm_message(text)
+            for row in list_thread(conn, name)
+        ):
+            return True, f"already sent to {name} — not sent twice"
+    finally:
+        conn.close()
     device = connect(serial)
     if not wake_and_unlock(device, serial=serial) or screen_lock_state(device) != "unlocked":
         return False, "phone still locked — unlock failed"
@@ -179,13 +212,24 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
         partner = open_chat_from_list(device, package, name)
     if not partner:
         return False, f"could not open chat with {name}"
+    chat_xml = dump_hierarchy(device)
+    if _message_visible(chat_xml, text):
+        conn = db_connect(db_path_from_config(cfg))
+        try:
+            person_id = upsert_chat(conn, name, last_from="you", last_text=text, badge="")
+            add_message(conn, person_id, "you", text)
+            conn.commit()
+        finally:
+            conn.close()
+        leave_chat(device)
+        return True, f"already visible on phone for {name} — not sent twice"
     ok = send_opener(device, text)
     try:
         leave_chat(device)
     except Exception:
         pass
     if not ok:
-        return False, "composer/send failed — nothing sent"
+        return False, "send could not be confirmed — inspect the phone before retrying"
     conn = db_connect(db_path_from_config(cfg))
     person_id = upsert_chat(conn, partner, last_from="you", last_text=text, badge="")
     add_message(conn, person_id, "you", text)

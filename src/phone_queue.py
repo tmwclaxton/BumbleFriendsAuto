@@ -83,6 +83,14 @@ def load_queue() -> None:
 def enqueue(kind: str, name: str = "", text: str = "") -> dict:
     global _job_seq
     with _jobs_lock:
+        for existing in _jobs:
+            if (
+                existing.get("status") in {"queued", "running"}
+                and existing.get("kind") == kind
+                and str(existing.get("name") or "") == name
+                and str(existing.get("text") or "") == text
+            ):
+                return dict(existing)
         _job_seq += 1
         job = {
             "id": _job_seq,
