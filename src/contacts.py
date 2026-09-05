@@ -103,8 +103,10 @@ def _google_account(serial: str) -> tuple[str, str] | None:
         )
     except subprocess.CalledProcessError:
         return None
-    name = re.search(r"account_name=(\S+)", out or "")
-    typ = re.search(r"account_type=(\S+)", out or "")
+    # content query prints "account_name=foo@bar.com, account_type=com.google"
+    # — the comma is a field separator, not part of the value.
+    name = re.search(r"account_name=([^,\s]+)", out or "")
+    typ = re.search(r"account_type=([^,\s]+)", out or "")
     if name and typ and "@" in name.group(1):
         return name.group(1), typ.group(1)
     return None
