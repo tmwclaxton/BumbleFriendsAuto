@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -360,6 +361,18 @@ def _search_field(device):
     return None
 
 
+def _set_search_query(device, field, query: str) -> None:
+    """Type through Android input so Bumble actually refreshes search results."""
+    field.click()
+    wait_idle(device, 0.2)
+    field.set_text("")
+    wait_idle(device, 0.2)
+    encoded = (query or "").replace(" ", "%s")
+    if encoded:
+        device.shell(f"input text {shlex.quote(encoded)}")
+    device.shell("input keyevent 66")
+
+
 _INBOX_FILTERS = ("Recent", "Unread", "Nearby")
 _STRIP_RID = "com.bumblebff.app:id/connections_connectionsListExpiring"
 
@@ -436,9 +449,7 @@ def discover_via_letter_search(device, package: str) -> list[dict[str, str]]:
                 log.warning("search field missing for letter %r", letter)
                 recover_to_list(device, package)
                 continue
-            field.click()
-            wait_idle(device, 0.25)
-            field.set_text(letter)
+            _set_search_query(device, field, letter)
             wait_idle(device, 1.1)
             last_key: tuple[str, ...] | None = None
             stagnant = 0
@@ -507,9 +518,7 @@ def discover_via_message_search(device, package: str) -> list[dict[str, str]]:
                 log.warning("search field missing for %r", term)
                 recover_to_list(device, package)
                 continue
-            field.click()
-            wait_idle(device, 0.25)
-            field.set_text(term)
+            _set_search_query(device, field, term)
             wait_idle(device, 1.3)
             last_key: tuple[str, ...] | None = None
             stagnant = 0
@@ -1267,10 +1276,8 @@ def open_chat_via_search(device, package: str, name: str) -> str | None:
     if field is None:
         log.warning("search field missing")
         return None
-    field.click()
-    wait_idle(device, 0.3)
     query = base_person_name(name)
-    field.set_text(query)
+    _set_search_query(device, field, query)
     wait_idle(device, 1.8)
     xml = dump_hierarchy(device)
     blob = _texts(xml).lower()
@@ -1860,9 +1867,7 @@ def fill_via_search(device, conn, package: str) -> int:
             if field is None:
                 log.warning("search field missing for %s", name)
                 continue
-            field.click()
-            wait_idle(device, 0.3)
-            field.set_text(base_person_name(name))
+            _set_search_query(device, field, base_person_name(name))
             wait_idle(device, 1.6)
             device.press("back")
             wait_idle(device, 0.5)
