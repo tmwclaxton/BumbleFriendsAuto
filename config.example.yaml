@@ -18,6 +18,13 @@ filters:
   ethnicity:
     include: []
     if_missing: allow
+  # Live vision on each People card: men → white / east asian / southeast asian only
+  # (pass black + south asian / Indian). Women → like unless crazy=yes.
+  swipe_vision:
+    enabled: true
+    men_include: [white, east_asian, southeast_asian]
+    men_exclude: [black, south_asian]
+    men_if_missing: pass
 
 # NanoGPT vision for inbox ethnicity tags (Guess from photos).
 # Prefer NANOGPT_API_KEY in the environment — do not commit a real key.

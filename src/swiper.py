@@ -12,6 +12,7 @@ from pathlib import Path
 from src.browse import browse_profile
 from src.config import load_config
 from src.profile_filters import collect_card_texts, ethnicity_allows, ethnicity_filter_enabled
+from src.swipe_vision import evaluate_card, swipe_vision_enabled
 from src.device import (
     bring_app_foreground,
     connect,
@@ -22,6 +23,7 @@ from src.device import (
 )
 from src.gestures import sleep_between_swipes, swipe, tap
 from src.screen import STOP_KINDS, ScreenKind, classify, find_dismiss_point, find_tab_point
+from src.unlock import wake_and_unlock
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +98,9 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
     dump_dir = Path(str(cfg.get("dump_dir") or "dumps"))
 
     device = connect(serial)
+    if not wake_and_unlock(device, serial=serial):
+        log.error("phone still locked — unlock failed")
+        return 1
     if cfg.get("bring_to_foreground", True):
         bring_app_foreground(device, package)
 
@@ -211,7 +216,12 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 continue
 
             do_like = random.random() < like_ratio
-            if ethnicity_filter_enabled(cfg):
+            if swipe_vision_enabled(cfg):
+                texts = collect_card_texts(device, extra_scrolls=1)
+                vision_like, reason, meta = evaluate_card(device, texts, cfg)
+                log.info("filter swipe_vision %s meta=%s", reason, meta.get("vision") or meta)
+                do_like = bool(vision_like)
+            elif ethnicity_filter_enabled(cfg):
                 texts = collect_card_texts(device, extra_scrolls=2)
                 allowed, reason = ethnicity_allows(texts, cfg)
                 log.info("filter ethnicity %s", reason)
@@ -298,6 +308,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=("allow", "pass"),
         help="What to do when the card does not list ethnicity (default allow)",
     )
+    parser.add_argument(
+        "--swipe-vision",
+        choices=("on", "off"),
+        help="NanoGPT gender/ethnicity vision filter on each card (default on when key set)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -327,6 +342,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.ethnicity_if_missing is not None:
             eth["if_missing"] = args.ethnicity_if_missing
         filt["ethnicity"] = eth
+        cfg["filters"] = filt
+    if args.swipe_vision is not None:
+        filt = dict(cfg.get("filters") or {})
+        vision = dict(filt.get("swipe_vision") or {})
+        vision["enabled"] = args.swipe_vision == "on"
+        filt["swipe_vision"] = vision
         cfg["filters"] = filt
 
     if float(cfg["delay_min"]) > float(cfg["delay_max"]):

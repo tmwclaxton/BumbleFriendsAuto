@@ -59,6 +59,13 @@ DEFAULTS: dict[str, Any] = {
             "include": [],
             "if_missing": "allow",
         },
+        # Live NanoGPT vision on each People card before like/pass.
+        "swipe_vision": {
+            "enabled": True,
+            "men_include": ["white", "east_asian", "southeast_asian"],
+            "men_exclude": ["black", "south_asian"],
+            "men_if_missing": "pass",
+        },
     },
     "nanogpt": {
         "api_key": "",
