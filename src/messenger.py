@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 import time
+import unicodedata
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -121,7 +123,15 @@ def leave_chat(device) -> None:
 
 
 def _norm_message(text: str) -> str:
-    return " ".join((text or "").replace("\u2019", "'").split()).casefold()
+    """Semantic text used to confirm a sent bubble.
+
+    Bumble's accessibility tree replaces emoji such as 👀/😂 with ``..``.
+    Comparing word tokens confirms the actual prose without depending on that
+    lossy rendering.
+    """
+    text = unicodedata.normalize("NFKC", text or "")
+    text = text.replace("\u2019", "'").replace("\u2018", "'").casefold()
+    return " ".join(re.findall(r"[^\W_]+(?:'[^\W_]+)*", text, flags=re.UNICODE))
 
 
 def _message_visible(xml: str, message: str) -> bool:
@@ -231,10 +241,12 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
     if not ok:
         return False, "send could not be confirmed — inspect the phone before retrying"
     conn = db_connect(db_path_from_config(cfg))
-    person_id = upsert_chat(conn, partner, last_from="you", last_text=text, badge="")
+    # The phone toolbar only says "Josh" for a stored "Josh 7". The requested
+    # inbox name is the row we positively selected and whose draft must clear.
+    person_id = upsert_chat(conn, name, last_from="you", last_text=text, badge="")
     add_message(conn, person_id, "you", text)
     conn.commit()
-    return True, f"sent to {partner}"
+    return True, f"sent to {name}"
 
 
 def send_new_friend_openers(cfg: dict, *, dry_run: bool = False, serial: str | None = None) -> tuple[int, int]:
