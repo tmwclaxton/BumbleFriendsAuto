@@ -62,6 +62,9 @@ _MATCH_PATTERNS = (
     r"send\s*a\s*message\.\.\.",
     r"keep\s*swiping",
     r"say\s*hello",
+    r"crossed\s*paths",
+    r"you'?ve\s+crossed",
+    r"great\s+news",
 )
 
 # First right-swipe confirm modal on Bumble Friends.

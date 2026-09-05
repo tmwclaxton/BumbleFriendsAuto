@@ -80,10 +80,16 @@ def swipe(
     like=True → right; like=False → left.
     """
     jitter = float(swipe_cfg.get("jitter", 0.03))
-    start_x = float(swipe_cfg["start_x"])
     start_y = float(swipe_cfg["start_y"])
-    end_x = float(swipe_cfg["end_x_like"] if like else swipe_cfg["end_x_pass"])
     end_y = float(swipe_cfg.get("end_y", start_y))
+    # Fling across the full card from the trailing edge so Bumble registers it.
+    # Like → start left, fling right. Pass → start right, fling left.
+    if like:
+        start_x = float(swipe_cfg.get("start_x", 0.22))
+        end_x = float(swipe_cfg["end_x_like"])
+    else:
+        start_x = float(swipe_cfg.get("pass_start_x", 0.80))
+        end_x = float(swipe_cfg["end_x_pass"])
     # Slight vertical drift so the path isn't perfectly flat.
     end_y = _clamp(_jitter(end_y, 0.02))
 

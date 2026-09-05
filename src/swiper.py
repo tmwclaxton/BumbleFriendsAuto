@@ -81,6 +81,46 @@ def dismiss_match(device, xml: str) -> bool:
     return True
 
 
+def _card_identity(device) -> str:
+    """Stable identity for the current card (name/age text) to detect advances.
+
+    Image hashes are unreliable here because browse scrolls the card and the
+    photo carousel auto-advances, so the same person can hash differently.
+    The profile name+age text is stable per person.
+    """
+    try:
+        xml = dump_hierarchy(device)
+    except Exception:
+        return ""
+    import re
+
+    texts = []
+    for m in re.finditer(r'(?:text|content-desc)="([^"]+)"', xml):
+        t = m.group(1).strip()
+        if t:
+            texts.append(t)
+    blob = " ".join(texts)
+    # Name + age typically appears as "Jake, 26" near the top of the card.
+    m = re.search(r"([A-Z][a-zA-Z'’.-]+),\s*(\d{2})\b", blob)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    # Fallback: first couple of non-trivial text nodes.
+    sig = "|".join(texts[:4])
+    return sig[:80]
+
+
+def _maybe_dismiss_overlay(device, package: str) -> None:
+    """If a match / crossed-paths popup is covering the card, dismiss it."""
+    try:
+        state, xml = _read_state(device, package)
+    except Exception:
+        return
+    if state.kind == ScreenKind.MATCH:
+        log.info("dismiss overlay match before vision")
+        dismiss_match(device, xml)
+        wait_idle(device, 0.8)
+
+
 def confirm_like_prompt(device, xml: str) -> bool:
     """Dismiss the first-like 'Interested?' modal by tapping YES."""
     point = find_like_confirm_yes(xml, _screen_size(device))
@@ -116,7 +156,20 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
     dump_dir = Path(str(cfg.get("dump_dir") or "dumps"))
 
     device = connect(serial)
-    if not wake_and_unlock(device, serial=serial):
+    unlocked = False
+    for attempt in range(4):
+        try:
+            unlocked = wake_and_unlock(device, serial=serial)
+            break
+        except Exception as exc:
+            log.warning("unlock attempt %d dropped (%s); reconnecting", attempt + 1, exc)
+            time.sleep(2)
+            try:
+                device = connect(serial)
+            except Exception as exc2:
+                log.warning("reconnect failed: %s", exc2)
+                time.sleep(2)
+    if not unlocked:
         log.error("phone still locked — unlock failed")
         return 1
     if cfg.get("bring_to_foreground", True):
@@ -247,6 +300,11 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 go_to_people(device, xml_after)
                 continue
 
+            # Dismiss any match/crossed-paths overlay before reading the card so
+            # the vision screenshot shows the card, not a popup.
+            if state_after.kind == ScreenKind.CARD:
+                _maybe_dismiss_overlay(device, package)
+
             do_like = random.random() < like_ratio
             if swipe_vision_enabled(cfg):
                 texts = collect_card_texts(device, extra_scrolls=1)
@@ -259,7 +317,42 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 log.info("filter ethnicity %s", reason)
                 if not allowed:
                     do_like = False
+
+            pre_id = _card_identity(device)
+            log.info("card identity before swipe: %s", pre_id or "?")
             swipe(device, swipe_cfg, like=do_like)
+            # Verify the card actually advanced; retry the swipe a few times if
+            # the same card is still on screen (weak/blocked swipe).
+            advanced = False
+            for attempt in range(6):
+                wait_idle(device, 1.0)
+                post, post_xml = _read_state(device, package)
+                if post.kind == ScreenKind.LIKE_CONFIRM:
+                    confirm_like_prompt(device, post_xml)
+                    continue
+                if post.kind == ScreenKind.MATCH:
+                    dismiss_match(device, post_xml)
+                    matches_dismissed += 1
+                    # after dismissing a match the next card is shown
+                    advanced = True
+                    break
+                if post.kind != ScreenKind.CARD:
+                    advanced = True  # navigated away / loading — treat as moved on
+                    break
+                new_id = _card_identity(device)
+                if new_id and pre_id and new_id != pre_id:
+                    advanced = True
+                    break
+                log.info(
+                    "swipe did not advance (attempt %d) id=%s; retrying",
+                    attempt + 1,
+                    new_id or "?",
+                )
+                swipe(device, swipe_cfg, like=do_like)
+            if not advanced:
+                log.warning("stop:card_stuck — swipe not advancing")
+                return 2
+
             swipes += 1
             if do_like:
                 likes += 1
