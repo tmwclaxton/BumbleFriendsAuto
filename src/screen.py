@@ -11,6 +11,7 @@ from xml.etree import ElementTree as ET
 class ScreenKind(str, Enum):
     CARD = "card"
     MATCH = "match"
+    LIKE_CONFIRM = "like_confirm"
     PAYWALL = "paywall"
     VERIFY = "verify"
     EMPTY = "empty"
@@ -61,6 +62,13 @@ _MATCH_PATTERNS = (
     r"send\s*a\s*message\.\.\.",
     r"keep\s*swiping",
     r"say\s*hello",
+)
+
+# First right-swipe confirm modal on Bumble Friends.
+_LIKE_CONFIRM_PATTERNS = (
+    r"\binterested\?\b",
+    r"swiping\s+a\s+profile\s+to\s+the\s+right",
+    r"means\s+that\s+you\s+want\s+to\s+connect",
 )
 
 _EMPTY_PATTERNS = (
@@ -266,6 +274,9 @@ def classify(
     if hit := _matches_any(blob, _MATCH_PATTERNS):
         return ScreenState(ScreenKind.MATCH, package, texts, reason=hit)
 
+    if hit := _matches_any(blob, _LIKE_CONFIRM_PATTERNS):
+        return ScreenState(ScreenKind.LIKE_CONFIRM, package, texts, reason=hit)
+
     if hit := _matches_any(blob, _PAYWALL_PATTERNS):
         return ScreenState(ScreenKind.PAYWALL, package, texts, reason=hit)
 
@@ -384,3 +395,26 @@ def find_dismiss_point(xml: str, screen_size: tuple[int, int]) -> tuple[int, int
 
     # BFF match screen puts X top-left.
     return (int(width * 0.08), int(height * 0.08))
+
+
+def find_like_confirm_yes(xml: str, screen_size: tuple[int, int]) -> tuple[int, int] | None:
+    """Tap point for the first-like 'Interested?' YES button."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return None
+    width, height = screen_size
+    yes_re = re.compile(r"^(yes|ok|continue|confirm)$", re.I)
+    hits: list[tuple[int, int]] = []
+    for node in root.iter():
+        label = ((node.attrib.get("text") or "") or (node.attrib.get("content-desc") or "")).strip()
+        if not label or not yes_re.match(label):
+            continue
+        center = _bounds_center(node.attrib.get("bounds") or "")
+        if center:
+            hits.append(center)
+    if hits:
+        # Prefer lower / right-hand YES.
+        hits.sort(key=lambda p: (p[1], p[0]), reverse=True)
+        return hits[0]
+    return (int(width * 0.72), int(height * 0.58))

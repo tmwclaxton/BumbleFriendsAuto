@@ -22,7 +22,14 @@ from src.device import (
     wait_idle,
 )
 from src.gestures import sleep_between_swipes, swipe, tap
-from src.screen import STOP_KINDS, ScreenKind, classify, find_dismiss_point, find_tab_point
+from src.screen import (
+    STOP_KINDS,
+    ScreenKind,
+    classify,
+    find_dismiss_point,
+    find_like_confirm_yes,
+    find_tab_point,
+)
 from src.unlock import wake_and_unlock
 
 log = logging.getLogger(__name__)
@@ -71,6 +78,17 @@ def dismiss_match(device, xml: str) -> bool:
         return False
     tap(device, point[0], point[1])
     wait_idle(device, 1.0)
+    return True
+
+
+def confirm_like_prompt(device, xml: str) -> bool:
+    """Dismiss the first-like 'Interested?' modal by tapping YES."""
+    point = find_like_confirm_yes(xml, _screen_size(device))
+    if point is None:
+        return False
+    log.info("confirm like prompt @ %s", point)
+    tap(device, point[0], point[1])
+    wait_idle(device, 1.2)
     return True
 
 
@@ -166,6 +184,14 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 go_to_people(device, xml)
                 continue
 
+            if state.kind == ScreenKind.LIKE_CONFIRM:
+                log.info("confirm_like_prompt")
+                if not confirm_like_prompt(device, xml):
+                    log.warning("stop:like_confirm_undismissable")
+                    return 2
+                recover_attempts = 0
+                continue
+
             if state.kind == ScreenKind.MATCH:
                 log.info("dismiss_match")
                 if not dismiss_match(device, xml):
@@ -194,6 +220,12 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                     log.warning("adb dropped after browse; will recover next loop")
                     continue
                 raise
+            if state_after.kind == ScreenKind.LIKE_CONFIRM:
+                log.info("confirm_like_prompt")
+                if not confirm_like_prompt(device, xml_after):
+                    log.warning("stop:like_confirm_undismissable")
+                    return 2
+                continue
             if state_after.kind == ScreenKind.MATCH:
                 log.info("dismiss_match")
                 if not dismiss_match(device, xml_after):
@@ -247,6 +279,13 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                         settled = True
                         break
                     raise
+                if post.kind == ScreenKind.LIKE_CONFIRM:
+                    log.info("confirm_like_prompt")
+                    if confirm_like_prompt(device, post_xml):
+                        settled = True
+                        break
+                    log.warning("stop:like_confirm_undismissable")
+                    return 2
                 if post.kind == ScreenKind.MATCH:
                     log.info("dismiss_match")
                     if dismiss_match(device, post_xml):
