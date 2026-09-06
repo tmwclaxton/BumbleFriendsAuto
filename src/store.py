@@ -998,8 +998,6 @@ def enqueue_auto_draft_if_needed(
     ).fetchone()
     if row is None:
         return False
-    if int(row["in_group"] or 0):
-        return False
     if (row["status"] or "") != "needs_reply":
         return False
     fp = incoming_turn_fingerprint(messages)
@@ -1066,7 +1064,6 @@ def list_pending_auto_drafts(
             WHERE c.draft_status IN ('pending', 'error')
               AND c.draft_pending_fp IS NOT NULL
               AND trim(c.draft_pending_fp) != ''
-              AND IFNULL(c.in_group, 0) = 0
               AND IFNULL(c.status, '') != 'dismissed'
               AND (
                     (c.draft_status = 'pending'
@@ -1204,7 +1201,7 @@ def retry_auto_draft(conn: sqlite3.Connection, name: str) -> bool:
         """,
         (name,),
     ).fetchone()
-    if row is None or int(row["in_group"] or 0):
+    if row is None:
         return False
     fp = (row["draft_pending_fp"] or "").strip()
     if not fp:
