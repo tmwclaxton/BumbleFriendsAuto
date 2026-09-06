@@ -46,6 +46,8 @@ GATE_TIMEOUT = 900  # seconds to wait for human approval per card
 SERIAL = "29081FDH200GZ8"
 PKG = "com.bumblebff.app"
 TARGET = int(os.environ.get("CAREFUL_TARGET", "10"))
+# CAREFUL_GATE=0 -> no human approval gate (unattended run)
+GATE = os.environ.get("CAREFUL_GATE", "1") != "0"
 
 
 def wait_for_approval(i: int, decision: dict) -> bool:
@@ -217,6 +219,33 @@ def main() -> int:
         text_gender = vision.get("gender")
         log.info("  decision: %s -> %s (%s)", vision, "LIKE" if like else "PASS", reason)
 
+        # Second opinion before any male LIKE: the audit caught male ethnicity
+        # misclassifications (e.g. a Black man labeled white -> wrong LIKE).
+        # Re-classify a fresh frame of the SAME card; if it flips the decision,
+        # pass instead and log the flip for review.
+        flipped = False
+        if like and vision.get("gender") == "male":
+            time.sleep(0.8)
+            d.screenshot(str(shot))
+            vis2 = sv.check_card_visible(shot, cfg)
+            if vis2["visible"] == "yes":
+                try:
+                    vision2 = sv.classify_card_image(shot, cfg)
+                except Exception:
+                    vision2 = None
+                if vision2:
+                    name2 = (vision2.get("name") or "").lower()
+                    if name2 and vname and name2 == vname:
+                        like2, reason2 = sv.decide_swipe(texts=[], vision=vision2, cfg=cfg)
+                        log.info("  2nd opinion: %s -> %s", vision2, "LIKE" if like2 else "PASS")
+                        if not like2:
+                            like = False
+                            reason = f"2nd-opinion flip ({reason2}; 1st={vision})"
+                            vision = vision2
+                            flipped = True
+                    else:
+                        log.info("  2nd opinion name mismatch (%s vs %s) — keeping 1st decision", name2, vname)
+
         results.append(
             {
                 "i": done,
@@ -226,15 +255,17 @@ def main() -> int:
                 "text_gender": text_gender,
                 "like": like,
                 "reason": reason,
+                "flipped_by_second_opinion": flipped,
                 "shot": shot.name,
             }
         )
 
-        # 3) Human audit gate — no swipe until approved.
-        if not wait_for_approval(done, results[-1]):
-            log.error("ABORT: card %d not approved", done)
-            (OUT / "results.json").write_text(json.dumps(results, indent=2))
-            return 3
+        # 3) Human audit gate — only when GATE is on.
+        if GATE:
+            if not wait_for_approval(done, results[-1]):
+                log.error("ABORT: card %d not approved", done)
+                (OUT / "results.json").write_text(json.dumps(results, indent=2))
+                return 3
 
         # 4) swipe + verify advance. Compare the NEXT card's screenshot name
         # against the one we just swiped — screenshots are the reliable signal.
@@ -276,6 +307,9 @@ def main() -> int:
         time.sleep(1.0)
 
     log.info("DONE %d cards", done)
+    likes = sum(1 for r in results if r["like"])
+    flips = sum(1 for r in results if r.get("flipped_by_second_opinion"))
+    log.info("summary: %d likes, %d passes, %d second-opinion flips", likes, done - likes, flips)
     (OUT / "results.json").write_text(json.dumps(results, indent=2))
     return 0
 
