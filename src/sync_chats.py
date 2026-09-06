@@ -917,6 +917,17 @@ def _fast_verdict(conn, row: dict) -> tuple[str, str, bool]:
         if len(matches) > 1:
             return "open", f"preview fits {len(matches)} namesakes", False
         if not matches:
+            # Expired rows keep showing their last real message as the list
+            # preview, not the expiry notice — match against the whole stored
+            # thread so they don't re-open every scan.
+            for alias, _lf, _lt, status, _d in contentful:
+                if status != "expired":
+                    continue
+                if any(
+                    _preview_matches_stored(preview, str(m["body"]))
+                    for m in list_thread(conn, alias)
+                ):
+                    return "skip", alias, False
             return "open", f"preview differs: {preview[:40]!r}", False
         alias = matches[0]
         last_from, last_text, _st, dismissed = next(
