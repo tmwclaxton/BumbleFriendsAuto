@@ -22,19 +22,22 @@ log = logging.getLogger(__name__)
 _API_URL = "https://nano-gpt.com/api/v1/chat/completions"
 
 _PROMPT = (
-    "You are screening a Bumble Friends profile photo for a friends app (not dating).\n"
+    "You are screening a Bumble Friends profile card screenshot for a friends app (not dating).\n"
     "Reply with ONE line in this exact format:\n"
-    "gender=<male|female|unknown>; ethnicity=<id>; crazy=<yes|no>\n\n"
+    "name=<first name>; pronouns=<she/her|he/him|they/them|none>; gender=<male|female|unknown>; ethnicity=<id>; crazy=<yes|no>\n\n"
+    "How to decide gender — in this priority order:\n"
+    "1. Read the pronouns printed on the card (e.g. 'she/her' -> female, 'he/him' -> male). OCR the text.\n"
+    "2. Read the first NAME printed at the top of the card and infer gender from it "
+    "(e.g. Lucy, Priya, Aisha -> female; James, Mohammed, Raj -> male). Use the name, not looks.\n"
+    "3. Only if no pronouns AND an ambiguous name, fall back to presentation; else unknown.\n\n"
     "ethnicity id must be ONE of:\n"
     "white, black, east_asian, south_asian, southeast_asian, asian, hispanic, "
-    "middle_eastern, native_american, pacific_islander, mixed, other, unknown\n\n"
-    "Rules:\n"
-    "- gender from presentation / face; use unknown only if you truly cannot tell.\n"
+    "middle_eastern, native_american, pacific_islander, mixed, other, unknown\n"
     "- Prefer east_asian / south_asian / southeast_asian over bare asian when possible.\n"
     "- south_asian = Indian / Pakistani / Bangladeshi / Sri Lankan look.\n"
     "- crazy=yes only if they look visibly unhinged, aggressive, or unsettling in a way "
     "you would not want to meet for hiking/board games. Normal/attractive/quirky = no.\n"
-    "- Photo only. No explanation."
+    "- Read the card text for name/pronouns. No explanation."
 )
 
 _LINE_RE = re.compile(
@@ -43,6 +46,8 @@ _LINE_RE = re.compile(
     r"crazy\s*=\s*(yes|no)",
     re.I | re.S,
 )
+_NAME_RE = re.compile(r"name\s*=\s*([A-Za-z'’.-]+)", re.I)
+_PRON_RE = re.compile(r"pronouns\s*=\s*(she/her|he/him|they/them|none)", re.I)
 
 _HE = re.compile(r"\bhe\s*/\s*him\b|\bhe\s*/\s*his\b", re.I)
 _SHE = re.compile(r"\bshe\s*/\s*her\b|\bshe\s*/\s*hers\b", re.I)
@@ -71,23 +76,68 @@ def gender_from_texts(texts: list[str]) -> str | None:
     return None
 
 
+def _gender_from_name(name: str) -> str | None:
+    """Best-effort gender from a first name using a small built-in map.
+
+    Only returns male/female for clearly gendered names; else None.
+    """
+    if not name:
+        return None
+    n = name.strip().lower().strip("'’.-")
+    female = {
+        "lucy", "priya", "aisha", "sarah", "emma", "olivia", "sophie", "sophia",
+        "chloe", "emily", "hannah", "katie", "laura", "rachel", "rebecca", "amy",
+        "anna", "bella", "cara", "diya", "elena", "fatima", "grace", "harpreet",
+        "isla", "jasmine", "jessica", "julia", "kavya", "lily", "maya", "mia",
+        "natasha", "neha", "nina", "olga", "pooja", "ria", "rosa", "sana", "sara",
+        "shreya", "simran", "tara", "zara", "zoe", "anjali", "deepika", "isha",
+        "mahnoor", "sulekha", "naveena", "noor", "maryam", "amara",
+    }
+    male = {
+        "james", "mohammed", "mohammad", "raj", "joseph", "daniel", "david",
+        "michael", "will", "william", "thomas", "charlie", "harry", "jack",
+        "oliver", "george", "leon", "pascal", "edward", "zach", "joshua", "dan",
+        "kevin", "lewis", "kartik", "shahzaib", "aaran", "joe", "mikey", "promise",
+        "toru", "mac", "naveen", "arjun", "rohan", "vikram", "aditya", "sanjay",
+        "ali", "omar", "ahmed", "hassan", "ibrahim", "yusuf", "phillip", "philip",
+    }
+    if n in female:
+        return "female"
+    if n in male:
+        return "male"
+    return None
+
+
 def _parse_vision_line(text: str) -> dict[str, str]:
     raw = (text or "").strip().strip("`\"'")
     match = _LINE_RE.search(raw)
+    name_m = _NAME_RE.search(raw)
+    pron_m = _PRON_RE.search(raw)
+    name = name_m.group(1) if name_m else ""
+    pron = pron_m.group(1).lower() if pron_m else ""
     if match:
         gender = match.group(1).lower()
         eth = parse_guess(match.group(2))
         crazy = "yes" if match.group(3).lower() == "yes" else "no"
-        return {"gender": gender, "ethnicity": eth, "crazy": crazy}
-    # Fallback: try to salvage pieces
-    gender = "unknown"
-    if re.search(r"\bfemale\b", raw, re.I):
+    else:
+        # Fallback: try to salvage pieces
+        gender = "unknown"
+        if re.search(r"\bfemale\b", raw, re.I):
+            gender = "female"
+        elif re.search(r"\bmale\b", raw, re.I):
+            gender = "male"
+        eth = parse_guess(raw)
+        crazy = "yes" if re.search(r"crazy\s*=\s*yes|\bcrazy\b", raw, re.I) else "no"
+    # Override gender with pronouns, then name — more reliable than appearance.
+    if pron.startswith("she"):
         gender = "female"
-    elif re.search(r"\bmale\b", raw, re.I):
+    elif pron.startswith("he"):
         gender = "male"
-    eth = parse_guess(raw)
-    crazy = "yes" if re.search(r"crazy\s*=\s*yes|\bcrazy\b", raw, re.I) else "no"
-    return {"gender": gender, "ethnicity": eth, "crazy": crazy}
+    else:
+        ng = _gender_from_name(name)
+        if ng:
+            gender = ng
+    return {"gender": gender, "ethnicity": eth, "crazy": crazy, "name": name, "pronouns": pron}
 
 
 def _men_include(cfg: dict) -> frozenset[str]:
@@ -165,6 +215,80 @@ def classify_card_image(path: Path, cfg: dict | None = None) -> dict[str, str]:
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError("NanoGPT response missing text") from exc
     return _parse_vision_line(text)
+
+
+_VISIBILITY_PROMPT = (
+    "Look at this phone screenshot for a friends-swiping app.\n"
+    "Reply with ONE line in this exact format:\n"
+    "visible=<yes|no>; reason=<short>\n\n"
+    "This is a check for whether the app is showing a usable profile card RIGHT NOW — "
+    "NOT a judgement of the person's photo quality.\n\n"
+    "visible=yes if a profile card is on screen and you can make out the person, EVEN IF "
+    "their photo is a soft-focus selfie, slightly blurry, dark, or they look away. "
+    "Photo quality / blurriness / lighting of the PERSON does NOT matter — only whether "
+    "the card itself is shown and readable.\n\n"
+    "visible=no ONLY when the app is NOT showing a usable card, i.e.:\n"
+    "- A popup, dialog, notification shade, match screen, or overlay is covering the card.\n"
+    "- The screen is the phone home screen, a different app, black, or loading.\n"
+    "- The card is mid-swipe / mid-transition so two cards or a partial frame is shown.\n"
+    "- There is no person/card visible at all.\n\n"
+    "When in doubt between yes/no: if you can see one person's profile card and read their "
+    "name, answer yes. No explanation beyond the short reason."
+)
+
+_VISIBILITY_RE = re.compile(r"visible\s*=\s*(yes|no)", re.I)
+
+
+def check_card_visible(path: Path, cfg: dict | None = None) -> dict[str, str]:
+    """Ask the vision model whether the card is clearly visible / unobstructed.
+
+    Returns {"visible": "yes"|"no", "reason": str}. On any error, returns
+    visible=no so the caller can abort safely rather than swipe blind.
+    """
+    cfg = cfg if cfg is not None else load_config()
+    key = api_key(cfg)
+    if not key:
+        return {"visible": "no", "reason": "no api key"}
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return {"visible": "no", "reason": f"read error {exc}"}
+    if len(raw) < 80:
+        return {"visible": "no", "reason": "screenshot too small"}
+    data_url = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+    payload = {
+        "model": vision_model(cfg),
+        "temperature": 0,
+        "max_tokens": 30,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _VISIBILITY_PROMPT},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ],
+    }
+    req = urllib.request.Request(
+        _API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=40) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        text = str(body["choices"][0]["message"]["content"] or "")
+    except Exception as exc:
+        return {"visible": "no", "reason": f"api error {exc}"}
+    m = _VISIBILITY_RE.search(text or "")
+    visible = m.group(1).lower() if m else "no"
+    reason = "clear" if visible == "yes" else (text.strip()[:80] or "not visible")
+    return {"visible": visible, "reason": reason}
 
 
 def decide_swipe(
