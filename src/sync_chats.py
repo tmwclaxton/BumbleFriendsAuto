@@ -24,6 +24,7 @@ from src.store import (
     collapse_cloned_namesakes,
     connect as db_connect,
     db_path_from_config,
+    list_thread,
     message_until_from_hours,
     name_aliases,
     names_with_messages,
@@ -812,6 +813,24 @@ def _save_name_for_thread(
         if them_matches_person(conn, alias, them_new):
             _remember_face(alias, face)
             return alias
+    # Weaker-capture guard: when every bubble we just captured already lives in
+    # an existing alias's stored thread, this is the same conversation captured
+    # partially (tainted/truncated read) — attach to it, never mint a clone.
+    new_all = {
+        _norm_msg(body)
+        for side, body in thread
+        if _norm_msg(body) and not _is_thread_chrome(body)
+    }
+    if new_all and len(new_all) > 1:
+        for alias in aliases:
+            old_all = {
+                _norm_msg(str(m["body"]))
+                for m in list_thread(conn, alias)
+                if _norm_msg(str(m["body"])) and not _is_thread_chrome(str(m["body"]))
+            }
+            if old_all and new_all <= old_all:
+                _remember_face(alias, face)
+                return alias
     from src.photos import (
         faces_differ,
         load_photo,

@@ -417,6 +417,11 @@ def _is_thread_chrome(text: str) -> bool:
         return True
     if re.match(r"^[A-Za-z][A-Za-z'’\-]+,\s*\d{2}$", blob):
         return True
+    # Media placeholders / voice-note durations are UI chrome, not evidence.
+    if blob.lower() in {"audio message", "photo", "gif", "video"}:
+        return True
+    if re.match(r"^\d{1,2}:\d{2}$", blob):
+        return True
     return blob.lower() in {"extend", "seen", "delivered"}
 
 
@@ -465,6 +470,18 @@ def namesake_same_person(conn: sqlite3.Connection, keep: str, other: str) -> boo
     face often looks 'different'). Opener-only stubs stay split when the faces
     clearly differ.
     """
+    # Identical full transcripts (both sides) with at least one non-opener
+    # bubble are the same conversation, regardless of photo-crop disagreement.
+    # Catches clones minted from tainted captures (e.g. 'Audio message' read as
+    # a them-bubble) that photo evidence then keeps split.
+    full_k = [_norm_msg(str(m["body"])) for m in list_thread(conn, keep)]
+    full_o = [_norm_msg(str(m["body"])) for m in list_thread(conn, other)]
+    full_k = [t for t in full_k if t]
+    full_o = [t for t in full_o if t]
+    if full_k and full_k == full_o and any(
+        not _generic_opener(t) for t in full_k
+    ):
+        return True
     them_k = _them_bodies(conn, keep)
     them_o = _them_bodies(conn, other)
     if them_k and them_o and them_k & them_o:
