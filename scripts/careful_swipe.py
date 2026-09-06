@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -38,10 +39,32 @@ log = logging.getLogger("careful")
 
 OUT = Path("/app/data/careful_run")
 OUT.mkdir(parents=True, exist_ok=True)
+GATE_DIR = OUT / "gate"
+GATE_DIR.mkdir(parents=True, exist_ok=True)
+GATE_TIMEOUT = 900  # seconds to wait for human approval per card
 
 SERIAL = "29081FDH200GZ8"
 PKG = "com.bumblebff.app"
-TARGET = 10
+TARGET = int(os.environ.get("CAREFUL_TARGET", "10"))
+
+
+def wait_for_approval(i: int, decision: dict) -> bool:
+    """Park before the swipe until card_XX.approve (or .reject) appears."""
+    (GATE_DIR / f"card_{i:02d}.pending.json").write_text(json.dumps(decision, indent=2))
+    approve = GATE_DIR / f"card_{i:02d}.approve"
+    reject = GATE_DIR / f"card_{i:02d}.reject"
+    log.info("  GATE: awaiting approval card_%02d (touch %s to approve)", i, approve)
+    deadline = time.time() + GATE_TIMEOUT
+    while time.time() < deadline:
+        if approve.exists():
+            log.info("  GATE: approved card %d", i)
+            return True
+        if reject.exists():
+            log.error("  GATE: REJECTED card %d", i)
+            return False
+        time.sleep(2)
+    log.error("  GATE: timeout waiting for approval card %d", i)
+    return False
 
 
 def tap_point(d, pt):
@@ -102,6 +125,33 @@ def _wait_for_settled_card(d, timeout: float = 6.0) -> str:
     return last
 
 
+def capture_visible_card(d, shot, cfg, attempts: int = 4):
+    """Screenshot -> visibility gate -> classify, all on the SAME frame.
+
+    Never returns a classification of a frame that failed the visibility
+    check (black/loading/mid-transition frames get retried, not classified).
+    Returns (vis, vision) or (None, None) if no usable frame appeared.
+    """
+    for n in range(attempts):
+        d.screenshot(str(shot))
+        vis = sv.check_card_visible(shot, cfg)
+        log.info("  capture %d/%d visible=%s (%s)", n + 1, attempts, vis["visible"], vis["reason"])
+        if vis["visible"] == "yes":
+            try:
+                vision = sv.classify_card_image(shot, cfg)
+            except Exception as exc:
+                log.warning("  classify failed: %s", exc)
+                vision = None
+            if vision:
+                return vis, vision
+        if n < attempts - 1:
+            # Harmless on a clean card; recovers scrolled views and gives
+            # loading/transition frames time to settle.
+            _scroll_to_top(d)
+            time.sleep(1.5)
+    return None, None
+
+
 def main() -> int:
     cfg = load_config()
     # vision rules
@@ -130,51 +180,37 @@ def main() -> int:
         # card" — the XML classifier is brittle across Bumble layouts.
         clean_screen(d)
 
-        # 1) Screenshot FIRST, then classify that exact frame. The vision model
-        # OCRs the name off the screenshot, so identity and vision always refer
-        # to the same card. (Reading identity from a fresh hierarchy dump races
-        # the render and can return the NEXT card while the screenshot shows the
-        # previous one.)
+        # 1) Capture a visibility-gated frame and classify THAT exact image.
+        # The vision model OCRs the name off the screenshot, so identity and
+        # vision always refer to the same card. Loading/black/transition frames
+        # are retried, never classified.
         shot = OUT / f"card_{done:02d}.jpg"
-        d.screenshot(str(shot))
-        vis = sv.check_card_visible(shot, cfg)
-        log.info("card %d visible=%s (%s)", done, vis["visible"], vis["reason"])
-        if vis["visible"] != "yes":
-            # Could be mid-animation or stuck in a scrolled/expanded view.
-            log.info("  not visible (%s) — trying to recover card view", vis["reason"])
-            _scroll_to_top(d)
-            time.sleep(1.2)
-            d.screenshot(str(shot))
-            vis = sv.check_card_visible(shot, cfg)
-            log.info("  after scroll-to-top visible=%s (%s)", vis["visible"], vis["reason"])
-            if vis["visible"] != "yes":
-                time.sleep(1.5)
-                d.screenshot(str(shot))
-                vis = sv.check_card_visible(shot, cfg)
-                log.info("  retry visible=%s (%s)", vis["visible"], vis["reason"])
-                if vis["visible"] != "yes":
-                    log.error("ABORT: model cannot see the card clearly: %s", vis["reason"])
-                    return 2
-
-        # 2) Classify the SAME screenshot. Name comes from the image itself.
-        try:
-            vision = sv.classify_card_image(shot, cfg)
-        except Exception as exc:
-            log.error("ABORT: vision classify failed: %s", exc)
+        vis, vision = capture_visible_card(d, shot, cfg)
+        if vision is None:
+            log.error("ABORT: no usable card frame after retries")
             return 2
         ident = vision.get("name") or _card_identity(d)
         log.info("  card=%s vision=%s", ident, vision)
 
         # Cross-check: hierarchy name should match the screenshot name. If not,
-        # the frame is stale — re-screenshot once.
+        # one of them is stale — re-capture once through the same gate.
         hier = _card_identity(d)
         vname = (vision.get("name") or "").lower()
         if vname and hier and vname not in hier.lower():
-            log.info("  stale frame (hier=%s vs shot=%s) — re-screenshot", hier, vname)
-            time.sleep(1.2)
-            d.screenshot(str(shot))
-            vision = sv.classify_card_image(shot, cfg)
+            log.info("  stale frame (hier=%s vs shot=%s) — re-capture", hier, vname)
+            time.sleep(1.5)
+            vis, vision = capture_visible_card(d, shot, cfg)
+            if vision is None:
+                log.error("ABORT: no usable card frame after re-capture")
+                return 2
             ident = vision.get("name") or hier
+            vname = (vision.get("name") or "").lower()
+            hier2 = _card_identity(d)
+            if vname and hier2 and vname not in hier2.lower():
+                log.warning(
+                    "  hierarchy still disagrees (hier=%s vs shot=%s) — trusting settled screenshot",
+                    hier2, vname,
+                )
             log.info("  re-shot card=%s vision=%s", ident, vision)
 
         like, reason = sv.decide_swipe(texts=[], vision=vision, cfg=cfg)
@@ -194,7 +230,13 @@ def main() -> int:
             }
         )
 
-        # 3) swipe + verify advance. Compare the NEXT card's screenshot name
+        # 3) Human audit gate — no swipe until approved.
+        if not wait_for_approval(done, results[-1]):
+            log.error("ABORT: card %d not approved", done)
+            (OUT / "results.json").write_text(json.dumps(results, indent=2))
+            return 3
+
+        # 4) swipe + verify advance. Compare the NEXT card's screenshot name
         # against the one we just swiped — screenshots are the reliable signal.
         swipe(d, swipe_cfg, like=like)
         advanced = False
@@ -206,9 +248,12 @@ def main() -> int:
                 break
             probe = OUT / "_probe.jpg"
             d.screenshot(str(probe))
+            new_name = ""
             try:
-                pv = sv.classify_card_image(probe, cfg)
-                new_name = (pv.get("name") or "").lower()
+                pv_vis = sv.check_card_visible(probe, cfg)
+                if pv_vis["visible"] == "yes":
+                    pv = sv.classify_card_image(probe, cfg)
+                    new_name = (pv.get("name") or "").lower()
             except Exception:
                 new_name = ""
             if new_name and vname and new_name != vname:
