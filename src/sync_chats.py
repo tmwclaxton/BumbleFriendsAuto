@@ -30,6 +30,7 @@ from src.store import (
     names_with_messages,
     base_person_name,
     next_duplicate_name,
+    same_reply_text,
     them_matches_person,
     parse_hours_left,
     person_message_bodies,
@@ -76,6 +77,7 @@ _CHROME = re.compile(
     r"(your turn to message|their turn to message|hours to reply|"
     r"match has expired|conversation expired|delivered|^seen$|"
     r"need more time|extend this match|not sure what to say|"
+    r"ask\s+\w+\s+to verify their profile|"
     r"let.?s help you break the ice|^extend$|hours?\s+left to message)",
     re.I,
 )
@@ -780,6 +782,159 @@ def _row_already_saved(conn, row: dict) -> bool:
     return False
 
 
+_MEDIA_PREVIEWS = {"audio message", "photo", "gif", "video", "sticker"}
+_DURATION_RE = re.compile(r"^\d{1,2}:\d{2}$")
+_YOU_PREFIX_RE = re.compile(r"^you:\s*", re.I)
+_URL_RE = re.compile(r"https?://[^\s)\]]+", re.I)
+_PUNCT_RE = re.compile(r"[^\w\s]+", re.UNICODE)
+
+
+def _url_domains(text: str) -> set[str]:
+    out: set[str] = set()
+    for url in _URL_RE.findall(text or ""):
+        host = re.sub(r"^https?://", "", url, flags=re.I)
+        host = host.split("/")[0].split("?")[0].lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host:
+            out.add(host)
+    return out
+
+
+def _squash(text: str) -> str:
+    """Punctuation/emoji-insensitive normal form (list previews drop both)."""
+    return " ".join(_PUNCT_RE.sub(" ", _norm_msg(text)).split())
+
+
+def _preview_matches_stored(preview: str, stored: str) -> bool:
+    """List-row preview vs our stored last bubble.
+
+    Previews truncate with an ellipsis, may prefix own messages with 'You:',
+    and drop punctuation the thread bubble keeps. Media rows show a
+    placeholder ('Audio message') while the stored bubble holds the
+    voice-note duration ('00:33'). Link messages are the worst: the preview
+    carries the raw text + URL while the thread renders a link card whose
+    text is just the domain ('docs.google.com').
+    """
+    p_raw = _YOU_PREFIX_RE.sub("", preview or "")
+    p = _norm_msg(p_raw)
+    s = _norm_msg(stored)
+    if not p or not s:
+        return False
+    if p in _MEDIA_PREVIEWS:
+        return s in _MEDIA_PREVIEWS or bool(_DURATION_RE.match(s))
+    if same_reply_text(p, s):
+        return True
+    # Link bubble: preview has the URL, stored bubble is just its domain.
+    domains = _url_domains(p_raw)
+    if domains and any(d in s for d in domains):
+        return True
+    # Multi-line bubble: the list preview shows only its first line.
+    first = _norm_msg((stored or "").split("\n")[0])
+    if first and p == first:
+        return True
+    # Punctuation-insensitive prefix/equality ('Awesome whereabouts' vs
+    # 'Awesome! Whereabouts you based?').
+    ps, ss = _squash(p_raw), _squash(stored)
+    if not ps or not ss:
+        return False
+    if ps == ss:
+        return True
+    first_s = _squash((stored or "").split("\n")[0])
+    if first_s and (ps == first_s or (len(ps) >= 8 and first_s.startswith(ps))):
+        return True
+    shorter, longer = (ps, ss) if len(ps) <= len(ss) else (ss, ps)
+    return len(shorter) >= 12 and longer.startswith(shorter)
+
+
+_VERIFY_PLACEHOLDER_RE = re.compile(r"^ask\s+.+\s+to verify their profile$", re.I)
+
+
+def _alias_state(conn, alias: str) -> tuple[str | None, str, str, str]:
+    """(last_from, last_text, status, dismissed_reply_text) from the chats cache.
+
+    A 'verify their profile' placeholder is a system banner, not a message —
+    fall back to the newest real bubble so preview matching compares against
+    what the list row actually shows.
+    """
+    chat = conn.execute(
+        """
+        SELECT c.last_from, c.last_text, c.status, c.dismissed_reply_text FROM chats c
+        JOIN people p ON p.id = c.person_id WHERE p.name = ?
+        """,
+        (alias,),
+    ).fetchone()
+    last_from = str(chat["last_from"]) if chat and chat["last_from"] else None
+    last_text = str(chat["last_text"]) if chat and chat["last_text"] else ""
+    status = str(chat["status"]) if chat and chat["status"] else ""
+    dismissed = str(chat["dismissed_reply_text"]) if chat and chat["dismissed_reply_text"] else ""
+    if _VERIFY_PLACEHOLDER_RE.match(last_text or ""):
+        for msg in reversed(list_thread(conn, alias)):
+            body = str(msg["body"] or "")
+            if body and not _VERIFY_PLACEHOLDER_RE.match(body):
+                last_text = body
+                last_from = str(msg["side"] or "") or last_from
+                break
+        else:
+            last_text = ""
+    return last_from, last_text, status, dismissed
+
+
+def _fast_verdict(conn, row: dict) -> tuple[str, str, bool]:
+    """Decide from a list row alone whether that chat needs opening.
+
+    Returns (action, target, clear_badge):
+      ('skip', alias, clear_badge) — the visible preview IS the stored last
+        message of exactly one namesake and the badge agrees with stored
+        state; clear_badge marks a 'Your turn' badge we already ground-truthed
+        as stale for this exact thread state.
+      ('open', reason, False) — something changed or is ambiguous.
+    Duplicate names resolve through which alias's last message the preview
+    matches — only ambiguous rows get opened.
+    """
+    name = str(row["name"])
+    preview = str(row.get("preview") or "").strip()
+    badge = str(row.get("badge") or "").strip().lower()
+    aliases = name_aliases(conn, name)
+    if not aliases:
+        return "open", "new name", False
+    states = [(alias, *_alias_state(conn, alias)) for alias in aliases]
+    contentful = [s for s in states if s[2]]
+    if not contentful:
+        # Unmessaged new-friend stubs: the opener job owns these, not us.
+        target = next((a for a, _, _, _, _ in states if a.casefold() == name.casefold()), states[0][0])
+        if not preview or parse_hours_left(preview) or "no messages yet" in preview.lower():
+            return "skip", target, False
+        return "open", "first incoming message", False
+    if "expired" in preview.lower():
+        # Expiry chrome as the preview: skip when an alias already recorded it.
+        for alias, _lf, last_text, status, _d in states:
+            if status == "expired" or "expired" in last_text.lower():
+                return "skip", alias, False
+        return "open", "newly expired conversation", False
+    if preview:
+        matches = [a for a, _, last_text, _, _ in contentful if _preview_matches_stored(preview, last_text)]
+        if len(matches) > 1:
+            return "open", f"preview fits {len(matches)} namesakes", False
+        if not matches:
+            return "open", f"preview differs: {preview[:40]!r}", False
+        alias = matches[0]
+        last_from, last_text, _st, dismissed = next(
+            (lf, lt, st, d) for a, lf, lt, st, d in contentful if a == alias
+        )
+        if badge == "your turn" and last_from == "you":
+            # Ground-truthed stale badge before? Trust that until the thread changes.
+            if dismissed and last_text and same_reply_text(dismissed, last_text):
+                return "skip", alias, True
+            return "open", "badge 'your turn' contradicts stored last message", False
+        return "skip", alias, False
+    # No preview text to compare — only a badge contradiction is worth opening.
+    them = [a for a, lf, _, _, _ in contentful if lf == "them"]
+    if badge == "your turn" and not them:
+        return "open", "badge 'your turn' but no stored incoming message", False
+    return "skip", (them[0] if them else contentful[0][0]), False
+
+
 def _save_name_for_thread(
     conn,
     partner: str,
@@ -796,7 +951,7 @@ def _save_name_for_thread(
         if face is not None:
             from src.photos import match_face_to_namesakes, save_face_image
 
-            matched = match_face_to_namesakes(face, partner)
+            matched = match_face_to_namesakes(face, partner, conn=conn)
             save_as = matched or partner
             if matched is None:
                 save_face_image(face, save_as)
@@ -838,7 +993,7 @@ def _save_name_for_thread(
         save_face_image,
     )
 
-    matched = match_face_to_namesakes(face, partner) if face is not None else None
+    matched = match_face_to_namesakes(face, partner, conn=conn) if face is not None else None
     if matched:
         log.info("namesake %s identified as %s by photo", partner, matched)
         _remember_face(matched, face)
@@ -1073,7 +1228,16 @@ def _go_top_of_inbox(device, package: str, width: int, height: int) -> str:
     return xml
 
 
-def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: bool = False) -> int:
+def capture_all_chats(
+    device,
+    conn,
+    package: str,
+    limit: int = 0,
+    *,
+    recapture: bool = False,
+    fast: bool = False,
+    stats: dict | None = None,
+) -> int:
     width = int(device.info["displayWidth"])
     height = int(device.info["displayHeight"])
     xml = _go_top_of_inbox(device, package, width, height)
@@ -1082,8 +1246,12 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
 
     opened: set[str] = set()
     misses: dict[str, int] = {}
+    reasons: dict[str, str] = {}
+    mismatches: list[str] = []
     if recapture:
         log.info("recapture: opening every inbox row (not skipping saved chats)")
+    elif fast:
+        log.info("fast: opening only rows whose preview/badge disagree with storage")
     else:
         log.info("resume: skip rows whose preview already lives in SQLite")
 
@@ -1093,6 +1261,13 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             return True
         if recapture:
             return False
+        if fast:
+            action, why, _clear = _fast_verdict(conn, row)
+            if action == "open":
+                reasons[key] = why
+                log.info("fast: open %s — %s", row["name"], why)
+                return False
+            return True
         return _row_already_saved(conn, row)
 
     stagnant = 0
@@ -1110,6 +1285,21 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             log.info("inbox: %s", ", ".join(f"{r['name']}@{r['y']}" for r in rows) or "(none)")
             _grab_list_avatars(device, xml)
             for seen in rows:
+                if fast:
+                    # Refresh badge/status on the alias the preview points at.
+                    # last_text is left untouched: overwriting it with the
+                    # truncated preview would break both future comparisons
+                    # and dismiss matching (e.g. voice-note '00:33').
+                    action, target, clear_badge = _fast_verdict(conn, seen)
+                    if action != "skip":
+                        continue
+                    upsert_chat(
+                        conn,
+                        target,
+                        preview=str(seen["preview"]),
+                        badge="" if clear_badge else str(seen["badge"] or ""),
+                    )
+                    continue
                 if name_aliases(conn, str(seen["name"])) and not _row_already_saved(conn, seen):
                     continue
                 badge = str(seen["badge"] or "")
@@ -1157,6 +1347,41 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             stagnant = 0
             row_key = f"{row['name']}|{str(row.get('preview') or '')[:80]}"
             row_face = _face_for_row(device, xml, row)
+            if fast and str(reasons.get(row_key) or "").startswith("preview fits"):
+                # Duplicate names sharing one last message: the row's face crop
+                # can identify which alias this row is without opening the chat.
+                candidates = [
+                    a
+                    for a in name_aliases(conn, str(row["name"]))
+                    if _preview_matches_stored(
+                        str(row.get("preview") or ""), _alias_state(conn, a)[1]
+                    )
+                ]
+                picked = None
+                if row_face is not None and candidates:
+                    from src.photos import match_face_to_namesakes
+
+                    matched = match_face_to_namesakes(row_face, str(row["name"]), conn=conn)
+                    if matched and matched in candidates:
+                        picked = matched
+                if picked:
+                    badge_l = str(row.get("badge") or "").strip().lower()
+                    picked_from = _alias_state(conn, picked)[0]
+                    if not (badge_l == "your turn" and picked_from == "you"):
+                        log.info(
+                            "fast: %s resolved to %s by face — no open needed",
+                            row["name"],
+                            picked,
+                        )
+                        upsert_chat(
+                            conn,
+                            picked,
+                            preview=str(row["preview"]),
+                            badge=str(row["badge"] or ""),
+                        )
+                        conn.commit()
+                        opened.add(row_key)
+                        continue
             _open_named_chat(device, str(row["name"]), int(row["x"]), int(row["y"]))
             wait_idle(device, 1.5)
             xml = _wait_thread(device)
@@ -1210,12 +1435,43 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
                     opened.add(row_key)
                 recover_to_list(device, package)
                 continue
+            if fast:
+                # Ground-truth check: the captured newest bubble should be the
+                # message the list preview showed. One retry on disagreement —
+                # captures can lag a render behind (Gabriel's missed 'Ampthill').
+                want = str(row.get("preview") or "").strip()
+                if want and not _preview_matches_stored(want, thread[-1][1]):
+                    log.warning(
+                        "fast: %s captured last %r != preview %r — retrying capture",
+                        partner, thread[-1][1][:60], want[:60],
+                    )
+                    retry = capture_thread(device, width, height, expected=partner)
+                    if retry and (
+                        _preview_matches_stored(want, retry[-1][1]) or len(retry) > len(thread)
+                    ):
+                        thread = retry
+                    if not _preview_matches_stored(want, thread[-1][1]):
+                        log.warning("fast: %s preview still unmatched — keeping badge", partner)
+                        mismatches.append(partner)
             last_from = thread[-1][0]
             last_text = thread[-1][1]
             banner = _texts(dump_hierarchy(device)).lower()
             if "match has expired" in banner or "conversation expired" in banner:
                 last_from = last_from or "them"
                 last_text = last_text or "expired"
+            badge_v = str(row["badge"])
+            badge_cleared = False
+            if (
+                fast
+                and badge_v.strip().lower() == "your turn"
+                and last_from == "you"
+                and partner not in mismatches
+            ):
+                # Thread proves we sent the last message; the list badge is
+                # stale (the Yelen loop). Trust the thread, clear the badge.
+                log.info("fast: %s 'your turn' badge is stale — thread ends with us", partner)
+                badge_v = ""
+                badge_cleared = True
             save_as = _save_name_for_thread(conn, partner, thread, face=row_face)
             if save_as != partner:
                 log.info("namesake %s stored as %s", partner, save_as)
@@ -1223,12 +1479,19 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
                 conn,
                 save_as,
                 preview=str(row["preview"]),
-                badge=str(row["badge"]),
+                badge=badge_v,
                 last_from=last_from,
                 last_text=last_text,
                 opener_sent=any(_OPENER.search(body) for _side, body in thread),
             )
             replace_thread(conn, person_id, thread)
+            if badge_cleared:
+                # Remember we ground-truthed this exact thread state so the
+                # next fast scan skips instead of re-opening every run.
+                conn.execute(
+                    "UPDATE chats SET dismissed_reply_text = ? WHERE person_id = ?",
+                    (last_text, person_id),
+                )
             conn.commit()
             opened.add(row_key)
             captured += 1
@@ -1249,6 +1512,9 @@ def capture_all_chats(device, conn, package: str, limit: int = 0, *, recapture: 
             recover_to_list(device, package)
             width = int(device.info["displayWidth"])
             height = int(device.info["displayHeight"])
+    if stats is not None:
+        stats["reasons"] = reasons
+        stats["mismatches"] = mismatches
     return captured
 
 
@@ -1640,7 +1906,7 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
         if face is not None:
             from src.photos import match_face_to_namesakes
 
-            matched = match_face_to_namesakes(face, friend.name)
+            matched = match_face_to_namesakes(face, friend.name, conn=conn)
             if matched and _new_friend_already_saved(conn, matched):
                 log.info("new-friend %s already captured as %s", friend.name, matched)
                 continue
@@ -1772,6 +2038,70 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
                 sleep_screen(device, serial=serial)
             except Exception:
                 log.warning("could not sleep screen after recapture")
+
+
+def fast_reply_scan(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+    """Find who needs a reply without opening every chat.
+
+    Scrolls the inbox list once, reading each row's name / badge / preview.
+    A chat is only opened when the visible preview differs from the stored
+    last message, the row is new or an ambiguous namesake, or the 'Your turn'
+    badge contradicts the stored last message. Everything else just gets a
+    badge/status refresh from the list. Minutes instead of ~40.
+    """
+    from src.unlock import sleep_screen, wake_and_unlock
+
+    cfg = load_config()
+    package = str(cfg["package"])
+    device = connect(serial)
+    try:
+        if not wake_and_unlock(device, serial=serial):
+            return False, "phone still locked — unlock failed"
+        bring_app_foreground(device, package)
+        wait_idle(device, 1.0)
+        conn = db_connect(db_path_from_config(cfg))
+        try:
+            merged = collapse_cloned_namesakes(conn)
+            if merged:
+                log.info("collapsed %d cloned namesake(s): %s", len(merged), ", ".join(merged))
+            _set_inbox_filter(device, "Recent")
+            stats: dict = {}
+            n = capture_all_chats(device, conn, package, fast=True, stats=stats)
+            merged_after = collapse_cloned_namesakes(conn)
+            if merged_after:
+                log.info("collapsed %d cloned namesake(s) after fast scan: %s", len(merged_after), ", ".join(merged_after))
+            needs = conn.execute(
+                "SELECT COUNT(*) FROM chats WHERE status = ?", ("needs_reply",)
+            ).fetchone()[0]
+            reasons = stats.get("reasons") or {}
+            mismatches = stats.get("mismatches") or []
+        finally:
+            conn.close()
+        msg = f"fast scan: opened {n} changed chat(s), {needs} need reply"
+        if reasons:
+            why = {}
+            for r in reasons.values():
+                key = r.split(":")[0]
+                why[key] = why.get(key, 0) + 1
+            msg += " (" + ", ".join(f"{v}x {k}" for k, v in sorted(why.items())) + ")"
+        if mismatches:
+            msg += f" — preview mismatch: {', '.join(mismatches[:5])}"
+        log.info(msg)
+        return True, msg
+    except Exception as exc:
+        from src.phone_queue import QueueCancelled
+
+        if isinstance(exc, QueueCancelled):
+            log.info("fast_reply_scan cancelled")
+            return False, "cancelled"
+        log.exception("fast_reply_scan failed")
+        return False, str(exc)
+    finally:
+        if sleep_after:
+            try:
+                sleep_screen(device, serial=serial)
+            except Exception:
+                log.warning("could not sleep screen after fast scan")
 
 
 def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:

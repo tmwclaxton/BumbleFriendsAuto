@@ -3,3 +3,5 @@
 0 13 * * * python -m src.jobs.recapture_cron
 0 17 * * * python -m src.jobs.recapture_cron
 0 23 * * * python -m src.jobs.recapture_cron
+# Fast reply scan between full recaptures (list-only unless something changed).
+*/30 8-23 * * * python -m src.jobs.fast_scan_cron

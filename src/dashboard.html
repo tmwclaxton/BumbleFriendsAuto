@@ -243,7 +243,8 @@
     padding-top: 14px;
     flex-wrap: wrap;
   }
-  #refresh-all {
+  #refresh-all,
+  #fast-scan {
     text-transform: none;
     letter-spacing: 0;
     font: 12px/1.2 inherit;
@@ -256,8 +257,8 @@
     cursor: pointer;
     white-space: nowrap;
   }
-  #refresh-all:hover { background: #1a1820; color: var(--text); }
-  #refresh-all:disabled { opacity: .45; cursor: default; }
+  #refresh-all:hover, #fast-scan:hover { background: #1a1820; color: var(--text); }
+  #refresh-all:disabled, #fast-scan:disabled { opacity: .45; cursor: default; }
   #group-wrap {
     margin: 14px 10px 4px;
     background: #121814;
@@ -514,6 +515,7 @@
     <div id="chats-head" class="section-head">
       <span>Chats</span>
       <span class="section-actions">
+        <button type="button" id="fast-scan" title="Scroll the inbox list and open only chats whose latest message changed or whose 'Your turn' badge disagrees with what we stored. A few minutes, no full recapture.">Fast reply scan</button>
         <button type="button" id="refresh-all" title="Open every chat on the phone and refresh stored transcripts. Can take up to ~40 minutes.">Refresh all</button>
       </span>
     </div>
@@ -556,6 +558,7 @@ const newLabel = document.getElementById("new-label");
 const msgAllBtn = document.getElementById("msg-all");
 const refreshNewBtn = document.getElementById("refresh-new");
 const refreshAllBtn = document.getElementById("refresh-all");
+const fastScanBtn = document.getElementById("fast-scan");
 const newHint = document.getElementById("new-hint");
 const groupWrap = document.getElementById("group-wrap");
 const groupListEl = document.getElementById("group-list");
@@ -1138,6 +1141,15 @@ refreshAllBtn.addEventListener("click", async () => {
   if (data.ok) pollQueue();
   else refreshAllBtn.disabled = false;
 });
+fastScanBtn.addEventListener("click", async () => {
+  fastScanBtn.disabled = true;
+  statusEl.textContent = "Queued fast reply scan";
+  const res = await fetch("/api/fast-scan", {method: "POST"});
+  const data = await res.json();
+  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+  if (data.ok) pollQueue();
+  else fastScanBtn.disabled = false;
+});
 msgAllBtn.addEventListener("click", async () => {
   const fresh = people.filter(p => p.new_friend);
   if (!fresh.length) return;
@@ -1184,6 +1196,7 @@ document.getElementById("composer").addEventListener("submit", async e => {
 function jobLabel(job) {
   if (job.kind === "refresh") return "Refresh " + job.name;
   if (job.kind === "recapture_all") return "Refresh all chats";
+  if (job.kind === "fast_scan") return "Fast reply scan";
   if (job.kind === "message_new_friends") return "Send opener to new friends";
   if (job.kind === "grab_photos") return "Grab photos";
   if (job.kind === "refresh_new_friends") return "Refresh New friends strip";
@@ -1204,10 +1217,12 @@ function renderQueue(jobs) {
   const messaging = active.some(j => j.kind === "message_new_friends");
   const refreshing = active.some(j => j.kind === "refresh_new_friends");
   const recapturing = active.some(j => j.kind === "recapture_all");
+  const fastScanning = active.some(j => j.kind === "fast_scan");
   if (messaging) msgAllBtn.disabled = true;
   else if (people.some(p => p.new_friend)) msgAllBtn.disabled = false;
   refreshNewBtn.disabled = refreshing;
   refreshAllBtn.disabled = recapturing;
+  fastScanBtn.disabled = fastScanning || recapturing;
   if (!active.length) {
     queueEl.innerHTML = "";
     return;
@@ -1271,7 +1286,7 @@ async function pollQueue() {
           draftEl.value = (job.status === "error" || job.status === "cancelled") ? job.text : "";
         }
       }
-      if ((job.status === "done" || job.status === "cancelled") && (job.name === current || job.kind === "message_new_friends" || job.kind === "recapture_all" || job.kind === "grab_photos" || job.kind === "refresh_new_friends")) {
+      if ((job.status === "done" || job.status === "cancelled") && (job.name === current || job.kind === "message_new_friends" || job.kind === "recapture_all" || job.kind === "fast_scan" || job.kind === "grab_photos" || job.kind === "refresh_new_friends")) {
         await loadPeople();
         if (current) await openThread(current, {push: false});
       }

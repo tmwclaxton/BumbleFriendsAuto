@@ -422,6 +422,9 @@ def _is_thread_chrome(text: str) -> bool:
         return True
     if re.match(r"^\d{1,2}:\d{2}$", blob):
         return True
+    # 'Ask X to verify their profile' is a system banner, not a message.
+    if re.match(r"^ask\s+.+\s+to verify their profile$", blob, re.I):
+        return True
     return blob.lower() in {"extend", "seen", "delivered"}
 
 

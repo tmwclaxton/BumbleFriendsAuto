@@ -50,11 +50,26 @@ def _base_name(name: str) -> str:
     return name
 
 
-def namesake_photo_names(name: str) -> list[str]:
-    """Stored avatar slots for this first name: Joshua, Joshua 2, …"""
+def namesake_photo_names(name: str, conn=None) -> list[str]:
+    """Stored avatar slots for this first name: Joshua, Joshua 2, …
+
+    When conn is given, slots without a people row are ignored — list-crop
+    jitter used to mint phantom 'Name N' files that then stole threads via
+    photo matching (Yelen 9, Gerardo 11).
+    """
     base = _base_name(name)
+    allowed: set[str] | None = None
+    if conn is not None:
+        try:
+            from src.store import name_aliases
+
+            allowed = {a.casefold() for a in name_aliases(conn, base)}
+        except Exception:
+            allowed = None
     found: list[str] = []
     for candidate in [base] + [f"{base} {i}" for i in range(2, 12)]:
+        if allowed is not None and candidate.casefold() not in allowed:
+            continue
         if photo_exists(candidate):
             found.append(candidate)
     return found
@@ -111,14 +126,14 @@ def load_photo(name: str):
         return None
 
 
-def match_face_to_namesakes(face, name: str) -> str | None:
+def match_face_to_namesakes(face, name: str, conn=None) -> str | None:
     """Return the stored namesake whose avatar matches `face`, or None if unsure."""
     if face is None:
         return None
     best_name = None
     best_dist = 1e9
     second = 1e9
-    for candidate in namesake_photo_names(name):
+    for candidate in namesake_photo_names(name, conn=conn):
         stored = load_photo(candidate)
         if stored is None:
             continue
@@ -347,47 +362,65 @@ def grab_visible_list_avatars(device, xml: str | None = None) -> int:
         log.warning("list avatar screenshot failed")
         return 0
     aliases_by_base: dict[str, list[str]] = {}
+    conn = None
     try:
         from src.config import load_config
         from src.store import connect as db_connect, db_path_from_config, name_aliases
 
         conn = db_connect(db_path_from_config(load_config()))
-        try:
-            seen_bases: set[str] = set()
-            for raw_name, _box in boxes:
-                base = _base_name(raw_name)
-                if base in seen_bases:
-                    continue
-                seen_bases.add(base)
-                aliases_by_base[base] = name_aliases(conn, raw_name) or [raw_name]
-        finally:
-            conn.close()
+        seen_bases: set[str] = set()
+        for raw_name, _box in boxes:
+            base = _base_name(raw_name)
+            if base in seen_bases:
+                continue
+            seen_bases.add(base)
+            aliases_by_base[base] = name_aliases(conn, raw_name) or [raw_name]
     except Exception:
         log.debug("namesake alias lookup failed", exc_info=True)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
 
     saved = 0
-    for name, box in boxes:
-        try:
-            crop = _crop_square(img, box, inset=0.12)
-            if crop is None:
-                continue
-            matched = match_face_to_namesakes(crop, name)
-            if matched:
-                continue
-            aliases = aliases_by_base.get(_base_name(name))
-            dest = next_photo_slot(name, aliases)
-            stored = load_photo(dest)
-            if stored is not None and not faces_differ(crop, stored):
-                continue
-            dest_path = photo_file(dest)
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            crop.save(dest_path, "JPEG", quality=82)
-            if dest_path.is_file() and dest_path.stat().st_size > 80:
-                saved += 1
-                if dest != name:
-                    log.info("list avatar %s stored as %s", name, dest)
-        except Exception:
-            log.debug("crop failed for %s", name, exc_info=True)
+    try:
+        for name, box in boxes:
+            try:
+                crop = _crop_square(img, box, inset=0.12)
+                if crop is None:
+                    continue
+                matched = match_face_to_namesakes(crop, name, conn=conn)
+                if matched:
+                    continue
+                aliases = aliases_by_base.get(_base_name(name))
+                dest = next_photo_slot(name, aliases)
+                # Never mint a phantom 'Name N' slot: only save to the row's own
+                # name or an alias that exists as a person row. List-crop jitter
+                # otherwise mints endless slots (Gerardo 11) that later steal
+                # threads through photo matching.
+                known = {a.casefold() for a in (aliases or [name])}
+                if dest.casefold() != name.casefold() and dest.casefold() not in known:
+                    continue
+                stored = load_photo(dest)
+                if stored is not None and not faces_differ(crop, stored):
+                    continue
+                dest_path = photo_file(dest)
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                crop.save(dest_path, "JPEG", quality=82)
+                if dest_path.is_file() and dest_path.stat().st_size > 80:
+                    saved += 1
+                    if dest != name:
+                        log.info("list avatar %s stored as %s", name, dest)
+            except Exception:
+                log.debug("crop failed for %s", name, exc_info=True)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
     if saved:
         log.info("saved %d list avatar(s)", saved)
     return saved

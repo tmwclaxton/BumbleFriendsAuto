@@ -226,6 +226,13 @@ async def api_recapture(_: Request) -> JSONResponse:
     )
 
 
+async def api_fast_scan(_: Request) -> JSONResponse:
+    job = enqueue("fast_scan", "")
+    return JSONResponse(
+        {"ok": True, "queued": True, "job": job, "message": "queued fast reply scan"}
+    )
+
+
 async def api_photos(_: Request) -> JSONResponse:
     job = enqueue("grab_photos", "")
     return JSONResponse(
@@ -338,6 +345,7 @@ def build_app() -> Starlette:
         Route("/api/ethnicity/guess/cancel", api_ethnicity_guess_cancel, methods=["POST"]),
         Route("/api/refresh", api_refresh, methods=["POST"]),
         Route("/api/recapture", api_recapture, methods=["POST"]),
+        Route("/api/fast-scan", api_fast_scan, methods=["POST"]),
         Route("/api/photos", api_photos, methods=["POST"]),
         Route("/api/message-new-friends", api_message_new_friends, methods=["POST"]),
         Route("/api/new-friends", api_new_friends, methods=["POST"]),
