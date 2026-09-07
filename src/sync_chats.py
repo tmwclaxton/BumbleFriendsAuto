@@ -632,6 +632,59 @@ def _same_person(a: str, b: str) -> bool:
     return base_person_name(a).casefold() == base_person_name(b).casefold()
 
 
+def verify_open_thread(conn, device, name: str, width: int, height: int) -> bool:
+    """Namesake safety: confirm the currently open thread really is `name`.
+
+    The toolbar only shows the base name ("Josh") for every namesake, so a
+    tapped row can land in the wrong sibling's thread — and sending there
+    messages the wrong human. Compare the visible bubbles against each
+    alias's stored thread (excluding the shared opener and chrome): the open
+    thread belongs to whichever alias's distinctive messages are on screen.
+    Single-alias names need no check (toolbar match is enough).
+    """
+    aliases = name_aliases(conn, name)
+    if len(aliases) <= 1:
+        return True
+    try:
+        xml = dump_hierarchy(device)
+    except Exception:
+        log.warning("namesake verify: hierarchy dump failed for %s", name)
+        return False
+    visible = {
+        _norm_msg(m.get("text"))
+        for m in extract_messages(xml, width, height)
+        if _norm_msg(m.get("text"))
+    }
+    if not visible:
+        log.warning("namesake verify: nothing readable on screen for %s", name)
+        return False
+
+    def _evidence(alias: str) -> set[str]:
+        return {
+            _norm_msg(str(m["body"]))
+            for m in list_thread(conn, alias)
+            if _norm_msg(str(m["body"]))
+            and not _is_thread_chrome(str(m["body"]))
+            and not _OPENER.search(str(m["body"]))
+        }
+
+    scores = {a: len(_evidence(a) & visible) for a in aliases}
+    best = max(scores.values(), default=0)
+    if best == 0:
+        log.warning("namesake verify: no stored bubbles visible for %s", name)
+        return False
+    winners = [a for a, s in scores.items() if s == best]
+    if len(winners) > 1:
+        log.warning("namesake verify: tie %s for %s", winners, name)
+        return False
+    if winners[0].casefold() == name.casefold():
+        return True
+    log.warning(
+        "namesake verify: open thread is %s, wanted %s — refusing", winners[0], name
+    )
+    return False
+
+
 def capture_thread(device, width: int, height: int, expected: str | None = None) -> list[tuple[str, str]]:
     """Scroll to the newest, then oldest, then newest again; return oldest→newest bubbles."""
     seen: set[tuple[str, str]] = set()
@@ -1716,8 +1769,9 @@ def recapture_person(device, conn, package: str, name: str) -> bool:
         log.warning("empty recapture for %s", partner)
         return False
     save_as = _save_name_for_thread(conn, partner, thread)
-    if _same_person(partner, name) and name in (name_aliases(conn, partner) or [name]):
-        save_as = name
+    # No "requested name" override: the toolbar shows the base name for every
+    # namesake, so the opened row may be a sibling. Trust content attribution;
+    # forcing `save_as = name` here crossed Josh/Josh 2's stored threads.
     if save_as != partner:
         log.info("namesake %s stored as %s", partner, save_as)
     person_id = upsert_chat(

@@ -192,7 +192,7 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
         return False, "name and message required"
 
     from src.store import add_message, connect as db_connect, db_path_from_config, list_thread, upsert_chat
-    from src.sync_chats import open_chat_from_list, open_chat_via_search, recover_to_list
+    from src.sync_chats import open_chat_from_list, open_chat_via_search, recover_to_list, verify_open_thread
 
     from src.unlock import screen_lock_state, wake_and_unlock
 
@@ -216,12 +216,39 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
     check_cancel()
     bring_app_foreground(device, package)
     wait_idle(device, 0.8)
-    partner = open_chat_via_search(device, package, name)
-    if not partner:
-        recover_to_list(device, package)
+    width = int(device.info["displayWidth"])
+    height = int(device.info["displayHeight"])
+
+    def _verified_open() -> str | None:
+        """Open the chat and confirm it is really `name`'s thread."""
+        partner = open_chat_via_search(device, package, name)
+        if partner:
+            conn = db_connect(db_path_from_config(cfg))
+            try:
+                ok = verify_open_thread(conn, device, name, width, height)
+            finally:
+                conn.close()
+            if ok:
+                return partner
+            log.warning("search opened the wrong namesake for %s — refusing row", name)
+            leave_chat(device)
+            recover_to_list(device, package)
         partner = open_chat_from_list(device, package, name)
+        if partner:
+            conn = db_connect(db_path_from_config(cfg))
+            try:
+                ok = verify_open_thread(conn, device, name, width, height)
+            finally:
+                conn.close()
+            if ok:
+                return partner
+            log.warning("list opened the wrong namesake for %s — refusing row", name)
+            leave_chat(device)
+        return None
+
+    partner = _verified_open()
     if not partner:
-        return False, f"could not open chat with {name}"
+        return False, f"could not verify the open thread is {name} — NOT sent (namesake ambiguity)"
     chat_xml = dump_hierarchy(device)
     if _message_visible(chat_xml, text):
         conn = db_connect(db_path_from_config(cfg))
