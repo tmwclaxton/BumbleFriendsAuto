@@ -33,6 +33,7 @@ Voice rules learned from Toby's real sent messages:
 - NEVER say "no pressure" (or "no worries if not", "if you're up for it" style hedges) — Toby just asks the question and lets them answer.
 - NEVER re-pitch the intro ("I'm putting together a wee group...") to anyone who has already replied — answer what they actually said instead.
 - If they ask how Toby is: one short honest line (work, R&D, life) + bounce it back ("you?"), then any next step.
+- If they ask where/when/what the plan is (or have just said yes), paste the itinerary link for their hub straight from Events — that link is shareable; only invented links are banned.
 One next step only. Plain text only — no markdown, no quotes wrapping the whole reply, no analysis.
 If Events has no sendable upcoming row for their hub, do not invent an event; ask whereabouts or keep the chat warm without a date.
 Prefer facts from the live SQLite transcript over the People note when they disagree.
@@ -95,6 +96,12 @@ _PHONE_RE = re.compile(
     re.I,
 )
 _URL_RE = re.compile(r"https?://|docs\.google\.com|eventbrite\.co\.uk", re.I)
+# The two real LGS itinerary docs — shareable once they ask for the plan or
+# say yes. Any OTHER link in a draft is still treated as invented.
+_ALLOWED_LINKS = (
+    "https://docs.google.com/document/d/14wjywN2o9TcUgcLK4fkBfXsM_yT4tkGJsbJ2HbbPfq8/edit",
+    "https://docs.google.com/document/d/1z1faOPgLaJu9TAyhIZa_lWCRwNG4D7DoFAOxpTU8Rz0/edit?tab=t.0",
+)
 _SENT_CLAIM_RE = re.compile(
     r"\b(i('ve| have)? sent|just sent|message (has been )?sent|already sent)\b",
     re.I,
@@ -129,7 +136,10 @@ def validate_draft(text: str) -> str:
         raise ValueError("draft too short")
     if len(raw) > 600:
         raise ValueError("draft too long")
-    if _URL_RE.search(raw):
+    link_check = raw
+    for _link in _ALLOWED_LINKS:
+        link_check = link_check.replace(_link, "")
+    if _URL_RE.search(link_check):
         raise ValueError("draft must not include links")
     if _PHONE_RE.search(raw):
         raise ValueError("draft must not invent phone/WhatsApp links")
