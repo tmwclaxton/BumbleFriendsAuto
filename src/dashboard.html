@@ -691,13 +691,13 @@ async function loadPeople() {
   renderPhoneFilter();
   renderEthGuess(ethnicityGuess);
   const n = people.filter(p => p.status === "needs_reply" && !p.dismissed && !p.in_group).length;
-  const phones = people.filter(p => p.phone_provided).length;
+  const phonesProvided = people.filter(p => p.phone_provided).length;
   const fresh = people.filter(p => p.new_friend && !p.in_group).length;
   const grouped = people.filter(p => p.in_group).length;
   const hidden = people.filter(p => (p.dismissed || p.status === "dismissed") && !p.in_group).length;
   const drafts = people.filter(p => (p.draft || "").trim()).length;
   const drafting = people.filter(p => ["pending", "running", "error"].includes(p.draft_status)).length;
-  let line = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + grouped + " in group · " + hidden + " dismissed · " + drafts + " drafts · " + phones + " phone provided";
+  let line = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + grouped + " in group · " + hidden + " dismissed · " + drafts + " drafts · " + phonesProvided + " phone provided";
   if (drafting) line += " · " + drafting + " auto-draft";
   const ad = data.auto_draft || {};
   if (ad.error) line += " · draft worker: " + ad.error;
