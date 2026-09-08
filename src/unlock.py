@@ -20,8 +20,23 @@ def _serial_of(device) -> str:
         getattr(device, "serial", None)
         or os.environ.get("SERIAL")
         or os.environ.get("PIXEL_SERIAL")
+        or os.environ.get("ARCHIE_SERIAL")
+        or os.environ.get("GALAXY_SERIAL")
         or ""
     ).strip()
+
+
+def _pin_for_device(device, serial: str | None, pin: str | None) -> str:
+    if pin is not None:
+        return pin.strip()
+    from src.phones import phone_by_serial, pin_for
+
+    row = phone_by_serial(serial or _serial_of(device))
+    if row:
+        found = pin_for(str(row["id"]))
+        if found:
+            return found
+    return _pin_from_env()
 
 
 def _adb_shell(device, *args: str, timeout: float = 8) -> str:
@@ -113,6 +128,9 @@ def hierarchy_looks_locked(xml: str) -> bool:
         or ">Enter PIN<" in blob
         or 'content-desc="Device locked"' in blob
         or 'content-desc="PIN area"' in blob
+        or "samsung_keyguard" in blob
+        or "com.android.systemui:id/sec_pin" in blob
+        or "id/pinEntry" in blob
     )
 
 
@@ -124,7 +142,13 @@ def _hierarchy_xml(device) -> str:
 
 def _pin_pad_ready(device) -> bool:
     xml = _hierarchy_xml(device)
-    return "pin_container" in xml or "Enter PIN" in xml or "keyguard_pin_view" in xml
+    return (
+        "pin_container" in xml
+        or "Enter PIN" in xml
+        or "keyguard_pin_view" in xml
+        or "sec_pin" in xml
+        or "pinEntry" in xml
+    )
 
 
 def _enter_pin(device, pin: str) -> None:
@@ -154,7 +178,7 @@ def wake_and_unlock(device=None, *, serial: str | None = None, pin: str | None =
     device = device or connect(serial)
     width = int(device.info["displayWidth"])
     height = int(device.info["displayHeight"])
-    pin = (pin if pin is not None else _pin_from_env()).strip()
+    pin = _pin_for_device(device, serial, pin)
 
     try:
         _adb_shell(device, "cmd", "statusbar", "collapse")

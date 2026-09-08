@@ -33,12 +33,24 @@ def photo_slug(name: str) -> str:
     return slug or "unknown"
 
 
-def photo_file(name: str) -> Path:
-    return avatars_dir() / f"{photo_slug(name)}.jpg"
+def photo_file(name: str, phone_id: str | None = None) -> Path:
+    from src.phones import DEFAULT_PHONE_ID, current_phone_id, normalize_phone_id
+
+    pid = normalize_phone_id(phone_id) if phone_id else current_phone_id()
+    if pid == "all":
+        pid = DEFAULT_PHONE_ID
+    nested = avatars_dir() / pid / f"{photo_slug(name)}.jpg"
+    nested.parent.mkdir(parents=True, exist_ok=True)
+    if nested.is_file() and nested.stat().st_size > 80:
+        return nested
+    flat = avatars_dir() / f"{photo_slug(name)}.jpg"
+    if pid == DEFAULT_PHONE_ID and flat.is_file() and flat.stat().st_size > 80:
+        return flat
+    return nested
 
 
-def photo_exists(name: str) -> bool:
-    path = photo_file(name)
+def photo_exists(name: str, phone_id: str | None = None) -> bool:
+    path = photo_file(name, phone_id)
     return path.is_file() and path.stat().st_size > 80
 
 
@@ -164,13 +176,13 @@ def photos_conflict(left: str, right: str) -> bool:
     return faces_differ(a, b)
 
 
-def adopt_photo(src_name: str, dest_name: str) -> bool:
+def adopt_photo(src_name: str, dest_name: str, phone_id: str | None = None) -> bool:
     """Move src's file onto dest when dest has none."""
-    if not photo_exists(src_name) or photo_exists(dest_name) or not dest_name:
+    if not photo_exists(src_name, phone_id) or photo_exists(dest_name, phone_id) or not dest_name:
         return False
-    dest = photo_file(dest_name)
+    dest = photo_file(dest_name, phone_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    photo_file(src_name).replace(dest)
+    photo_file(src_name, phone_id).replace(dest)
     return dest.is_file()
 
 
@@ -442,6 +454,12 @@ def _toolbar_profile_tap(xml: str, name: str) -> tuple[int, int] | None:
     except ET.ParseError:
         return None
     want = (name or "").strip().casefold()
+    max_h = 0
+    for node in root.iter():
+        box = _parse_bounds(node.attrib.get("bounds") or "")
+        if box:
+            max_h = max(max_h, box[3])
+    toolbar_cut = int(max_h * 0.12) if max_h else 0
     for node in root.iter():
         rid = node.attrib.get("resource-id") or ""
         text = (node.attrib.get("text") or "").strip()
@@ -451,7 +469,7 @@ def _toolbar_profile_tap(xml: str, name: str) -> tuple[int, int] | None:
                 return _center(box)
         if want and text.casefold() == want:
             box = _parse_bounds(node.attrib.get("bounds") or "")
-            if box and box[1] < 280:
+            if box and (not toolbar_cut or box[1] < toolbar_cut):
                 return _center(box)
     return None
 
@@ -507,7 +525,11 @@ def capture_profile_photo(device, name: str) -> bool:
     point = _toolbar_profile_tap(xml, name)
     if point is None:
         info = device.info or {}
-        point = (int(info.get("displayWidth") or 1080) // 2, int((info.get("displayHeight") or 2400) * 0.055))
+        width = int(info.get("displayWidth") or 0)
+        height = int(info.get("displayHeight") or 0)
+        if width < 1 or height < 1:
+            return False
+        point = (width // 2, int(height * 0.055))
     tap(device, point[0], point[1])
     wait_idle(device, 1.4)
     xml = dump_hierarchy(device)

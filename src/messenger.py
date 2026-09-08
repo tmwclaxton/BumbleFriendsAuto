@@ -66,7 +66,8 @@ def _advance_strip(device) -> None:
 def _tappable_friends(xml: str, device) -> list:
     width = int(device.info["displayWidth"])
     friends = list_new_friends(xml)
-    return [f for f in friends if 120 <= int(f.x) <= width - 120]
+    margin = max(48, int(width * 0.11))
+    return [f for f in friends if margin <= int(f.x) <= width - margin]
 
 
 def go_to_chats(device, package: str) -> str:
@@ -184,7 +185,7 @@ def send_opener(device, message: str) -> bool:
     return False
 
 
-def send_named_message(name: str, text: str, *, serial: str | None = None) -> tuple[bool, str]:
+def send_named_message(name: str, text: str, *, serial: str | None = None, phone_id: str | None = None) -> tuple[bool, str]:
     """Search-open a chat on the phone, send `text`, record it in SQLite."""
     text = text.strip()
     name = name.strip()
@@ -196,8 +197,11 @@ def send_named_message(name: str, text: str, *, serial: str | None = None) -> tu
 
     from src.unlock import screen_lock_state, wake_and_unlock
 
+    from src.phones import serial_for
+
     cfg = load_config()
     package = str(cfg["package"])
+    serial = serial or serial_for(phone_id)
     conn = db_connect(db_path_from_config(cfg))
     try:
         if any(
@@ -424,14 +428,16 @@ def send_new_friend_openers(cfg: dict, *, dry_run: bool = False, serial: str | N
     return sent, skipped
 
 
-def message_new_friends(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+def message_new_friends(*, serial: str | None = None, sleep_after: bool = True, phone_id: str | None = None) -> tuple[bool, str]:
     """Unlock, send the template opener to every empty New-friends match, sleep."""
+    from src.phones import serial_for
     from src.unlock import sleep_screen, wake_and_unlock
 
     cfg = load_config()
     msg = dict(cfg.get("messenger") or {})
     msg["max_messages"] = max(int(msg.get("max_messages") or 20), 80)
     cfg = {**cfg, "messenger": msg}
+    serial = serial or serial_for(phone_id)
     device = connect(serial)
     try:
         if not wake_and_unlock(device, serial=serial):

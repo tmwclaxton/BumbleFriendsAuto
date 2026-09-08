@@ -89,8 +89,11 @@ def _max_attempts(cfg: dict) -> int:
 
 
 def _process_one(conn, row, cfg: dict) -> None:
+    from src.phones import DEFAULT_PHONE_ID, phone_scope
+
     person_id = int(row["person_id"])
     name = str(row["name"])
+    phone_id = str(row["phone_id"] if "phone_id" in row.keys() else DEFAULT_PHONE_ID)
     pending_fp = str(row["draft_pending_fp"] or "")
     attempts = int(row["draft_attempts"] or 0) + 1
     if not pending_fp:
@@ -100,7 +103,8 @@ def _process_one(conn, row, cfg: dict) -> None:
     _bump(last_name=name, message=f"drafting {name}")
 
     # Stale check: live transcript must still end on this fingerprint
-    thread = [(str(m["side"]), str(m["body"])) for m in list_thread(conn, name)]
+    with phone_scope(phone_id):
+        thread = [(str(m["side"]), str(m["body"])) for m in list_thread(conn, name)]
     live_fp = incoming_turn_fingerprint(thread)
     if live_fp != pending_fp:
         fail_auto_draft(
@@ -126,7 +130,8 @@ def _process_one(conn, row, cfg: dict) -> None:
         return
 
     try:
-        text = generate_draft(conn, name, cfg)
+        with phone_scope(phone_id):
+            text = generate_draft(conn, name, cfg)
     except Exception as exc:
         log.warning("auto-draft failed for %s: %s", name, exc)
         max_a = _max_attempts(cfg)
@@ -145,7 +150,8 @@ def _process_one(conn, row, cfg: dict) -> None:
         return
 
     # Re-check fingerprint immediately before save
-    thread2 = [(str(m["side"]), str(m["body"])) for m in list_thread(conn, name)]
+    with phone_scope(phone_id):
+        thread2 = [(str(m["side"]), str(m["body"])) for m in list_thread(conn, name)]
     if incoming_turn_fingerprint(thread2) != pending_fp:
         conn.execute(
             """
@@ -159,7 +165,9 @@ def _process_one(conn, row, cfg: dict) -> None:
         _bump(skipped=int(_state["skipped"]) + 1, message=f"skipped race {name}")
         return
 
-    if not complete_auto_draft(conn, name, pending_fp=pending_fp, text=text):
+    with phone_scope(phone_id):
+        saved = complete_auto_draft(conn, name, pending_fp=pending_fp, text=text)
+    if not saved:
         fail_auto_draft(
             conn,
             person_id,

@@ -93,6 +93,20 @@ DEFAULTS: dict[str, Any] = {
         "delay_max": 5.0,
         "type_pause": 0.8,
     },
+    "phones": {
+        "toby": {
+            "label": "Toby",
+            "device": "pixel",
+            "serial": "",
+            "notes": "Pixel ~1080x2400",
+        },
+        "archie": {
+            "label": "Archie",
+            "device": "galaxy",
+            "serial": "",
+            "notes": "Rooted Galaxy",
+        },
+    },
 }
 
 

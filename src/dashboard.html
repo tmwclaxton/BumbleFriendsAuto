@@ -477,6 +477,13 @@
   }
   #queue .q-run { color: var(--you); }
   #queue .q-err { color: var(--need); }
+  .tag.toby { background: #1d3a5c; color: #9ecbff; }
+  .tag.archie { background: #3a2a12; color: #f0c674; }
+  #phone-filter { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+  #phone-filter button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 2px 10px; cursor: pointer; }
+  #phone-filter button.on { color: var(--text); border-color: var(--text); }
+  #phone-target-row { display: flex; align-items: center; gap: 8px; padding: 0 12px 10px; font-size: 12px; color: var(--muted); }
+  #phone-target-row select { font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
   #queue button {
     background: transparent;
     color: var(--muted);
@@ -497,6 +504,16 @@
   </header>
   <input id="filter" placeholder="Filter names" autocomplete="off"/>
   <div id="eth-filter"></div>
+  <div id="phone-filter"></div>
+  <div id="phone-target-row">
+    <span>Jobs on</span>
+    <select id="phone-target" title="Which phone inbox actions use">
+      <option value="all">Both phones</option>
+      <option value="toby">Toby / Pixel</option>
+      <option value="archie">Archie / Galaxy</option>
+    </select>
+    <button type="button" id="swipe-btn" title="Run a swipe session on the selected phone(s)">Swipe</button>
+  </div>
   <div id="eth-guess-row">
     <button type="button" id="eth-guess">Guess from photos</button>
   </div>
@@ -576,7 +593,9 @@ const emojiPanel = document.getElementById("emoji-panel");
 const statusEl = document.getElementById("status");
 const queueEl = document.getElementById("queue");
 let people = [];
+let phones = [];
 let ethnicityChoices = [];
+let phoneFilter = "";
 const FILTER_STORE = "bff-inbox-filters";
 
 function loadStoredFilters() {
@@ -609,24 +628,43 @@ let ethnicityGuess = {};
 let guessTimer = 0;
 let openerTemplate = "";
 let current = null;
+let currentPhone = "toby";
+
+function personKey(p) {
+  return String((p && p.phone_id) || "toby") + ":" + String((p && p.name) || "");
+}
+function findPerson(name, phone) {
+  const pid = phone || currentPhone || "toby";
+  return people.find(p => p.name === name && (p.phone_id || "toby") === pid) || people.find(p => p.name === name);
+}
+function phoneTarget() {
+  const el = document.getElementById("phone-target");
+  return (el && el.value) || "all";
+}
+function phoneTag(p) {
+  const id = (p && p.phone_id) || "toby";
+  const label = (p && p.phone_label) || (id === "archie" ? "Archie" : "Toby");
+  return `<span class="tag ${esc(id)}">${esc(label)}</span>`;
+}
 let lastFinished = 0;
 let seenFinished = null;
 let draftTimer = 0;
 
-function persistDraft(name, text) {
+function persistDraft(name, text, phone) {
   if (!name) return Promise.resolve();
-  const person = people.find(p => p.name === name);
+  const pid = phone || currentPhone || "toby";
+  const person = findPerson(name, pid);
   if (person) person.draft = text;
   return fetch("/api/draft", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name, text: String(text || "")}),
+    body: JSON.stringify({name, phone_id: pid, text: String(text || "")}),
     keepalive: true,
   }).catch(() => {});
 }
 
 function persistCurrentDraft() {
-  return persistDraft(current, draftEl.value);
+  return persistDraft(current, draftEl.value, currentPhone);
 }
 
 function schedulePersistDraft() {
@@ -645,10 +683,12 @@ async function loadPeople() {
   const res = await fetch("/api/people");
   const data = await res.json();
   people = data.people || [];
+  phones = data.phones || phones;
   openerTemplate = data.opener_template || "";
   ethnicityChoices = data.ethnicity_choices || ethnicityChoices;
   ethnicityGuess = data.ethnicity_guess || ethnicityGuess;
   renderEthFilter();
+  renderPhoneFilter();
   renderEthGuess(ethnicityGuess);
   const n = people.filter(p => p.status === "needs_reply" && !p.dismissed && !p.in_group).length;
   const phones = people.filter(p => p.phone_provided).length;
@@ -666,17 +706,23 @@ async function loadPeople() {
 }
 
 function chatFromUrl() {
-  return new URLSearchParams(location.search).get("chat") || "";
+  const q = new URLSearchParams(location.search);
+  return {name: q.get("chat") || "", phone: q.get("phone") || "toby"};
 }
 
-function setChatUrl(name, push) {
+function setChatUrl(name, phone, push) {
   const url = new URL(location.href);
-  if (name) url.searchParams.set("chat", name);
-  else url.searchParams.delete("chat");
+  if (name) {
+    url.searchParams.set("chat", name);
+    url.searchParams.set("phone", phone || "toby");
+  } else {
+    url.searchParams.delete("chat");
+    url.searchParams.delete("phone");
+  }
   const next = url.pathname + url.search + url.hash;
   if (next === location.pathname + location.search + location.hash) return;
-  if (push) history.pushState({chat: name}, "", next);
-  else history.replaceState({chat: name}, "", next);
+  if (push) history.pushState({chat: name, phone}, "", next);
+  else history.replaceState({chat: name, phone}, "", next);
 }
 
 function remainingLabel(iso) {
@@ -703,9 +749,10 @@ function faceHtml(p, name) {
   if (!p || !p.photo || !key) {
     return `<span class="face placeholder" aria-hidden="true">${initial}</span>`;
   }
+  const pid = (p && p.phone_id) || "toby";
   return `<span class="face-wrap">
     <span class="face placeholder" aria-hidden="true">${initial}</span>
-    <img class="face" src="/api/photo?name=${encodeURIComponent(key)}" alt="" width="36" height="36" onerror="this.remove()"/>
+    <img class="face" src="/api/photo?name=${encodeURIComponent(key)}&phone=${encodeURIComponent(pid)}" alt="" width="36" height="36" onerror="this.remove()"/>
   </span>`;
 }
 
@@ -718,12 +765,12 @@ function isInGroup(p) {
 }
 
 function rowHtml(p, inNew) {
-  const on = current === p.name ? " on" : "";
+  const on = current === p.name && currentPhone === (p.phone_id || "toby") ? " on" : "";
   const snip = esc(inNew ? remainingLabel(p.message_until) : (p.last_text || p.preview || ""));
   const st = p.new_friend ? "new" : (isInGroup(p) ? "in_group" : (isDismissed(p) ? "dismissed" : (p.status || "unknown")));
   const stLabel = p.new_friend ? "new friend" : (isInGroup(p) ? "in group" : st.replace("_"," "));
   const tag = inNew ? "" : `<span class="tag ${st}">${esc(stLabel)}</span>`;
-  const href = "?chat=" + encodeURIComponent(p.name);
+  const href = "?chat=" + encodeURIComponent(p.name) + "&phone=" + encodeURIComponent(p.phone_id || "toby");
   const phone = p.phone_provided
     ? '<span class="tag phone">phone provided</span>'
     : "";
@@ -744,10 +791,10 @@ function rowHtml(p, inNew) {
     ? `<span class="tag same-name">${esc(ethChoice ? ethChoice.label : p.ethnicity)}</span>`
     : "";
   const shown = p.display_name || p.name;
-  return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}">
+  return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}" data-phone="${esc(p.phone_id || "toby")}">
     ${faceHtml(p, p.name)}
     <div class="meta">
-      <div><span class="name">${esc(shown)}</span>${tag}${same}${eth}${draft}${drafting}${phone}</div>
+      <div><span class="name">${esc(shown)}</span>${phoneTag(p)}${tag}${same}${eth}${draft}${drafting}${phone}</div>
       <div class="snip">${snip}</div>
     </div>
   </a>`;
@@ -757,6 +804,23 @@ function matchEthnicity(p) {
   if (!ethnicityFilter.size) return true;
   const key = (p.ethnicity || "").trim() || "unknown";
   return ethnicityFilter.has(key);
+}
+
+function matchPhone(p) {
+  if (!phoneFilter) return true;
+  return (p.phone_id || "toby") === phoneFilter;
+}
+
+function renderPhoneFilter() {
+  const el = document.getElementById("phone-filter");
+  if (!el) return;
+  const chips = [{id: "", label: "All phones"}].concat(
+    (phones.length ? phones : [{id:"toby",label:"Toby"},{id:"archie",label:"Archie"}]).map(p => ({id: p.id, label: p.label}))
+  );
+  el.innerHTML = chips.map(c => {
+    const on = phoneFilter === c.id ? " on" : "";
+    return `<button type="button" data-phone-filter="${esc(c.id)}" class="${on}">${esc(c.label)}</button>`;
+  }).join("");
 }
 
 function renderEthFilter() {
@@ -771,7 +835,7 @@ function renderEthFilter() {
 
 function renderList() {
   const q = document.getElementById("filter").value.trim().toLowerCase();
-  const match = p => (!q || p.name.toLowerCase().includes(q)) && matchEthnicity(p);
+  const match = p => (!q || p.name.toLowerCase().includes(q)) && matchEthnicity(p) && matchPhone(p);
   const allFresh = people.filter(p => p.new_friend && !isDismissed(p) && !isInGroup(p));
   const fresh = allFresh.filter(match);
   const hiddenByFilter = allFresh.length - fresh.length;
@@ -821,7 +885,7 @@ function isDayLabel(body) {
 }
 
 function renderHead(name, status, phoneProvided) {
-  const known = people.find(p => p.name === name);
+  const known = findPerson(name, currentPhone);
   const grouped = isInGroup(known);
   const hidden = !grouped && (isDismissed(known) || status === "dismissed");
   const dismiss = status === "needs_reply" && !hidden && !grouped
@@ -851,7 +915,7 @@ function renderHead(name, status, phoneProvided) {
   const retryDraft = (ds === "error" || ds === "pending" || ds === "running")
     ? '<button type="button" id="retry-draft" title="' + esc((known && known.draft_error) || "Re-queue GPT Sol draft") + '">Retry draft</button>'
     : "";
-  headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${same} ${phone} ${grp} ${hid}</h2><div class="actions">
+  headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${phoneTag(known || {phone_id: currentPhone})} ${same} ${phone} ${grp} ${hid}</h2><div class="actions">
     <select id="ethnicity-set" aria-label="Ethnicity">${ethOpts}</select>${guessOne}
     <button type="button" id="refresh-chat">Refresh</button>${retryDraft}${groupBtn}${dismiss}
   </div>`;
@@ -859,23 +923,25 @@ function renderHead(name, status, phoneProvided) {
 
 async function openThread(name, opts) {
   const push = !opts || opts.push !== false;
-  const switching = current !== name;
+  const phone = (opts && opts.phone) || currentPhone || "toby";
+  const switching = current !== name || currentPhone !== phone;
   if (current && switching) await persistCurrentDraft();
   current = name;
-  setChatUrl(name, push);
+  currentPhone = phone;
+  setChatUrl(name, phone, push);
   renderList();
-  const known = people.find(p => p.name === name);
+  const known = findPerson(name, phone);
   renderHead(name, known && known.status, known && known.phone_provided);
   draftEl.disabled = false;
   sendEl.disabled = false;
   emojiBtn.disabled = false;
   if (switching) draftEl.value = (known && known.draft) || "";
-  const res = await fetch("/api/thread?name=" + encodeURIComponent(name));
+  const res = await fetch("/api/thread?name=" + encodeURIComponent(name) + "&phone=" + encodeURIComponent(phone));
   const data = await res.json();
-  if (current !== name) return;
+  if (current !== name || currentPhone !== phone) return;
   renderHead(name, data.status || (known && known.status), known && known.phone_provided);
   if (switching || !draftEl.value) draftEl.value = data.draft || "";
-  const person = people.find(p => p.name === name);
+  const person = findPerson(name, phone);
   if (person) {
     person.draft = data.draft || "";
     person.draft_status = data.draft_status || person.draft_status;
@@ -903,6 +969,13 @@ async function openThread(name, opts) {
   msgsEl.scrollTop = msgsEl.scrollHeight;
 }
 
+document.getElementById("phone-filter").addEventListener("click", e => {
+  const btn = e.target.closest("[data-phone-filter]");
+  if (!btn) return;
+  phoneFilter = btn.dataset.phoneFilter || "";
+  renderPhoneFilter();
+  renderList();
+});
 document.getElementById("eth-filter").addEventListener("click", e => {
   const btn = e.target.closest("[data-eth]");
   if (!btn) return;
@@ -920,14 +993,14 @@ headEl.addEventListener("change", async e => {
   const res = await fetch("/api/ethnicity", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: current, ethnicity: sel.value}),
+    body: JSON.stringify({name: current, phone_id: currentPhone, ethnicity: sel.value}),
   });
   const data = await res.json();
   if (!data.ok) {
     statusEl.textContent = "Failed: " + (data.error || res.status);
     return;
   }
-  const person = people.find(p => p.name === current);
+  const person = findPerson(current, currentPhone);
   if (person) {
     person.ethnicity = sel.value;
     person.ethnicity_source = sel.value ? "manual" : "";
@@ -945,14 +1018,14 @@ headEl.addEventListener("click", async e => {
     const res = await fetch("/api/draft/retry", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name: current}),
+      body: JSON.stringify({name: current, phone_id: currentPhone}),
     });
     const data = await res.json();
     if (!data.ok) {
       statusEl.textContent = "Failed: " + (data.error || res.status);
       return;
     }
-    const person = people.find(p => p.name === current);
+    const person = findPerson(current, currentPhone);
     if (person) {
       person.draft_status = "pending";
       person.draft_error = "";
@@ -999,7 +1072,7 @@ async function pollEthnicityGuess() {
     statusEl.textContent = data.message || (data.error || "Guess from photos finished");
     await loadPeople();
     if (current) {
-      const person = people.find(p => p.name === current);
+      const person = findPerson(current, currentPhone);
       renderHead(current, person && person.status, person && person.phone_provided);
     }
   }
@@ -1041,7 +1114,7 @@ headEl.addEventListener("click", async e => {
     const res = await fetch("/api/refresh", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name: current}),
+      body: JSON.stringify({name: current, phone_id: currentPhone}),
     });
     const data = await res.json();
     statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
@@ -1055,7 +1128,7 @@ headEl.addEventListener("click", async e => {
     const res = await fetch("/api/in-group", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name: current, in_group: filed}),
+      body: JSON.stringify({name: current, phone_id: currentPhone, in_group: filed}),
     });
     const data = await res.json();
     statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
@@ -1073,7 +1146,7 @@ headEl.addEventListener("click", async e => {
   const res = await fetch("/api/dismiss", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: current}),
+    body: JSON.stringify({name: current, phone_id: currentPhone}),
   });
   const data = await res.json();
   statusEl.textContent = data.ok ? "Needs reply dismissed" : ("Failed: " + (data.error || res.status));
@@ -1116,12 +1189,12 @@ document.querySelector("aside").addEventListener("click", e => {
   if (!link) return;
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
   e.preventDefault();
-  openThread(link.dataset.name);
+  openThread(link.dataset.name, {phone: link.dataset.phone || "toby"});
 });
 refreshNewBtn.addEventListener("click", async () => {
   refreshNewBtn.disabled = true;
   statusEl.textContent = "Queued New friends strip refresh";
-  const res = await fetch("/api/new-friends", {method: "POST"});
+  const res = await fetch("/api/new-friends", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({phone_id: phoneTarget()})});
   const data = await res.json();
   statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
   if (data.ok) pollQueue();
@@ -1135,7 +1208,7 @@ refreshAllBtn.addEventListener("click", async () => {
   )) return;
   refreshAllBtn.disabled = true;
   statusEl.textContent = "Queued full inbox refresh";
-  const res = await fetch("/api/recapture", {method: "POST"});
+  const res = await fetch("/api/recapture", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({phone_id: phoneTarget()})});
   const data = await res.json();
   statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
   if (data.ok) pollQueue();
@@ -1144,7 +1217,7 @@ refreshAllBtn.addEventListener("click", async () => {
 fastScanBtn.addEventListener("click", async () => {
   fastScanBtn.disabled = true;
   statusEl.textContent = "Queued fast reply scan";
-  const res = await fetch("/api/fast-scan", {method: "POST"});
+  const res = await fetch("/api/fast-scan", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({phone_id: phoneTarget()})});
   const data = await res.json();
   statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
   if (data.ok) pollQueue();
@@ -1163,7 +1236,7 @@ msgAllBtn.addEventListener("click", async () => {
   )) return;
   msgAllBtn.disabled = true;
   statusEl.textContent = "Queued opener to " + fresh.length + " new friends";
-  const res = await fetch("/api/message-new-friends", {method: "POST"});
+  const res = await fetch("/api/message-new-friends", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({phone_id: phoneTarget()})});
   const data = await res.json();
   statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
   if (data.ok) pollQueue();
@@ -1174,8 +1247,8 @@ document.getElementById("filter").addEventListener("input", () => {
   renderList();
 });
 window.addEventListener("popstate", () => {
-  const name = chatFromUrl();
-  if (name) openThread(name, {push: false});
+  const chat = chatFromUrl();
+  if (chat.name) openThread(chat.name, {push: false, phone: chat.phone});
 });
 
 document.getElementById("composer").addEventListener("submit", async e => {
@@ -1186,23 +1259,30 @@ document.getElementById("composer").addEventListener("submit", async e => {
   const res = await fetch("/api/reply", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: current, text}),
+    body: JSON.stringify({name: current, phone_id: currentPhone, text}),
   });
   const data = await res.json();
   statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
   if (data.ok) pollQueue();
 });
 
+function jobPhoneLabel(job) {
+  const id = job.phone_id || "toby";
+  const meta = phones.find(p => p.id === id);
+  return (meta && meta.label) || (id === "archie" ? "Archie" : "Toby");
+}
 function jobLabel(job) {
-  if (job.kind === "refresh") return "Refresh " + job.name;
-  if (job.kind === "recapture_all") return "Refresh all chats";
-  if (job.kind === "fast_scan") return "Fast reply scan";
-  if (job.kind === "message_new_friends") return "Send opener to new friends";
-  if (job.kind === "grab_photos") return "Grab photos";
-  if (job.kind === "refresh_new_friends") return "Refresh New friends strip";
-  if (job.kind === "add_contact") return "Add Pixel contact " + job.name;
+  const who = "[" + jobPhoneLabel(job) + "] ";
+  if (job.kind === "refresh") return who + "Refresh " + job.name;
+  if (job.kind === "recapture_all") return who + "Refresh all chats";
+  if (job.kind === "fast_scan") return who + "Fast reply scan";
+  if (job.kind === "message_new_friends") return who + "Send opener to new friends";
+  if (job.kind === "grab_photos") return who + "Grab photos";
+  if (job.kind === "refresh_new_friends") return who + "Refresh New friends strip";
+  if (job.kind === "swipe") return who + "Swipe";
+  if (job.kind === "add_contact") return who + "Add Pixel contact " + job.name;
   const snip = String(job.text || "").replace(/\s+/g, " ").slice(0, 42);
-  return "Reply to " + job.name + (snip ? " — " + snip : "");
+  return who + "Reply to " + job.name + (snip ? " — " + snip : "");
 }
 
 function jobState(job) {
@@ -1280,15 +1360,15 @@ async function pollQueue() {
         ? (job.message || "cancelled")
         : ("Failed: " + (job.error || "error"));
       if (job.kind === "reply" && job.text) {
-        if (job.status === "error" || job.status === "cancelled") persistDraft(job.name, job.text);
-        else if (job.status === "done") persistDraft(job.name, "");
-        if (job.name === current) {
+        if (job.status === "error" || job.status === "cancelled") persistDraft(job.name, job.text, job.phone_id);
+        else if (job.status === "done") persistDraft(job.name, "", job.phone_id);
+        if (job.name === current && (job.phone_id || "toby") === currentPhone) {
           draftEl.value = (job.status === "error" || job.status === "cancelled") ? job.text : "";
         }
       }
-      if ((job.status === "done" || job.status === "cancelled") && (job.name === current || job.kind === "message_new_friends" || job.kind === "recapture_all" || job.kind === "fast_scan" || job.kind === "grab_photos" || job.kind === "refresh_new_friends")) {
+      if ((job.status === "done" || job.status === "cancelled") && ((job.name === current && (job.phone_id || "toby") === currentPhone) || job.kind === "message_new_friends" || job.kind === "recapture_all" || job.kind === "fast_scan" || job.kind === "grab_photos" || job.kind === "refresh_new_friends" || job.kind === "swipe")) {
         await loadPeople();
-        if (current) await openThread(current, {push: false});
+        if (current) await openThread(current, {push: false, phone: currentPhone});
       }
     }
   } catch (err) {
@@ -1297,17 +1377,31 @@ async function pollQueue() {
 }
 
 loadPeople().then(() => {
-  const name = chatFromUrl();
-  if (name) return openThread(name, {push: false});
+  const chat = chatFromUrl();
+  if (chat.name) return openThread(chat.name, {push: false, phone: chat.phone});
+});
+document.getElementById("swipe-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("swipe-btn");
+  btn.disabled = true;
+  statusEl.textContent = "Queued swipe";
+  const res = await fetch("/api/swipe", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({phone_id: phoneTarget()}),
+  });
+  const data = await res.json();
+  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+  if (data.ok) pollQueue();
+  btn.disabled = false;
 });
 setInterval(pollQueue, 1000);
 setInterval(async () => {
   const openName = current;
-  const before = people.find(p => p.name === openName);
+  const before = findPerson(openName, currentPhone);
   const beforeDraft = before ? (before.draft || "") : "";
   await loadPeople();
   if (!openName || draftEl.disabled) return;
-  const after = people.find(p => p.name === openName);
+  const after = findPerson(openName, currentPhone);
   const afterDraft = after ? (after.draft || "") : "";
   if (afterDraft !== beforeDraft && draftEl.value === beforeDraft) {
     draftEl.value = afterDraft;

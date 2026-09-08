@@ -148,15 +148,26 @@ def _people_to_guess(
     *,
     name: str = "",
     force: bool = False,
-) -> list[str]:
+    phone_id: str | None = None,
+) -> list[tuple[str, str]]:
+    from src.phones import DEFAULT_PHONE_ID, current_phone_id
+
+    pid = (phone_id or "").strip() or None
     if name:
-        row = conn.execute(
-            "SELECT name, ethnicity, ethnicity_source FROM people WHERE name = ?",
-            (name,),
-        ).fetchone()
+        if pid:
+            row = conn.execute(
+                "SELECT name, phone_id, ethnicity, ethnicity_source FROM people WHERE name = ? AND phone_id = ?",
+                (name, pid),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT name, phone_id, ethnicity, ethnicity_source FROM people WHERE name = ?",
+                (name,),
+            ).fetchone()
         if row is None:
             return []
-        if not photo_exists(str(row["name"])):
+        person_phone = str(row["phone_id"] or DEFAULT_PHONE_ID)
+        if not photo_exists(str(row["name"]), person_phone):
             return []
         if _already_guessed(
             row["ethnicity"],
@@ -165,17 +176,22 @@ def _people_to_guess(
             allow_manual=force,
         ):
             return []
-        return [str(row["name"])]
-    names: list[str] = []
-    for row in conn.execute(
-        "SELECT name, ethnicity, ethnicity_source FROM people ORDER BY name COLLATE NOCASE"
-    ):
+        return [(str(row["name"]), person_phone)]
+    names: list[tuple[str, str]] = []
+    sql = "SELECT name, phone_id, ethnicity, ethnicity_source FROM people"
+    args: tuple = ()
+    if pid:
+        sql += " WHERE phone_id = ?"
+        args = (pid,)
+    sql += " ORDER BY name COLLATE NOCASE"
+    for row in conn.execute(sql, args):
         person = str(row["name"])
+        person_phone = str(row["phone_id"] or current_phone_id() or DEFAULT_PHONE_ID)
         if _already_guessed(row["ethnicity"], row["ethnicity_source"], force=force):
             continue
-        if not photo_exists(person):
+        if not photo_exists(person, person_phone):
             continue
-        names.append(person)
+        names.append((person, person_phone))
     return names
 
 
@@ -230,24 +246,26 @@ def _bump(**fields: object) -> None:
         _state.update(fields)
 
 
-def _run_guess(*, name: str = "", force: bool = False) -> None:
+def _run_guess(*, name: str = "", force: bool = False, phone_id: str | None = None) -> None:
+    from src.phones import phone_scope
+
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     tagged = skipped = failed = 0
     last = ""
     try:
-        targets = _people_to_guess(conn, name=name, force=force)
+        targets = _people_to_guess(conn, name=name, force=force, phone_id=phone_id)
         _bump(total=len(targets), message="guessing" if targets else "nothing to guess")
         if not targets:
             return
-        for i, person in enumerate(targets, start=1):
+        for i, (person, person_phone) in enumerate(targets, start=1):
             with _lock:
                 if _state["cancel"]:
                     _state["message"] = "cancelled"
                     break
             last = person
             _bump(done=i - 1, last_name=person, message=f"guessing {person}")
-            path = photo_file(person)
+            path = photo_file(person, person_phone)
             try:
                 guess = classify_photo(path, cfg)
             except Exception as exc:
@@ -256,7 +274,9 @@ def _run_guess(*, name: str = "", force: bool = False) -> None:
                 _bump(failed=failed, error=str(exc))
                 continue
             value = "" if guess == "unknown" else guess
-            if not set_ethnicity(conn, person, value, source="vision"):
+            with phone_scope(person_phone):
+                ok = set_ethnicity(conn, person, value, source="vision")
+            if not ok:
                 failed += 1
                 _bump(failed=failed)
                 continue
@@ -292,7 +312,7 @@ def _run_guess(*, name: str = "", force: bool = False) -> None:
                 )
 
 
-def start_guess(*, name: str = "", force: bool = False) -> dict:
+def start_guess(*, name: str = "", force: bool = False, phone_id: str | None = None) -> dict:
     """Start a background guess. Does not overwrite manual tags."""
     name = (name or "").strip()
     if not api_key():
@@ -327,7 +347,7 @@ def start_guess(*, name: str = "", force: bool = False) -> dict:
         return out
     threading.Thread(
         target=_run_guess,
-        kwargs={"name": name, "force": force},
+        kwargs={"name": name, "force": force, "phone_id": phone_id},
         name="ethnicity-vision",
         daemon=True,
     ).start()

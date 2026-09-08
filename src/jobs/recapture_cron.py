@@ -37,7 +37,7 @@ def main() -> int:
     url = f"http://127.0.0.1:{port}/api/recapture"
     req = urllib.request.Request(
         url,
-        data=b"{}",
+        data=b'{"phone_id":"all"}',
         headers={"Content-Type": "application/json", **_basic_header()},
         method="POST",
     )
@@ -49,11 +49,15 @@ def main() -> int:
     except urllib.error.URLError as exc:
         log.warning("dashboard not reachable (%s) — running recapture inline", exc)
 
+    from src.phones import phone_ids
     from src.sync_chats import recapture_inbox
 
-    ok, msg = recapture_inbox()
-    log.info("%s — %s", "ok" if ok else "fail", msg)
-    return 0 if ok else 1
+    failed = False
+    for pid in phone_ids() or ["toby"]:
+        ok, msg = recapture_inbox(phone_id=pid)
+        log.info("%s %s — %s", pid, "ok" if ok else "fail", msg)
+        failed = failed or not ok
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

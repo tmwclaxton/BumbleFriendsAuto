@@ -18,7 +18,8 @@ from starlette.routing import Route
 from src.config import load_config
 from src.dashboard import _load_html, _thread_payload, people_api_payload
 from src.mcp_server import mcp
-from src.phone_queue import cancel_job, cancel_queued, enqueue, ensure_worker, queue_snapshot
+from src.phone_queue import cancel_job, cancel_queued, enqueue, enqueue_many, ensure_worker, queue_snapshot
+from src.phones import DEFAULT_PHONE_ID
 from src.store import connect as db_connect, db_path_from_config
 
 log = logging.getLogger(__name__)
@@ -80,10 +81,11 @@ async def api_photo(request: Request) -> Response:
     from src.photos import photo_exists, photo_file
 
     name = (parse_qs(request.url.query).get("name") or [""])[0]
-    if not name or not photo_exists(name):
+    phone_id = (parse_qs(request.url.query).get("phone") or [DEFAULT_PHONE_ID])[0]
+    if not name or not photo_exists(name, phone_id):
         return Response(status_code=404)
     return FileResponse(
-        photo_file(name),
+        photo_file(name, phone_id),
         media_type="image/jpeg",
         headers={"Cache-Control": "public, max-age=3600"},
     )
@@ -91,10 +93,14 @@ async def api_photo(request: Request) -> Response:
 
 async def api_thread(request: Request) -> JSONResponse:
     name = (parse_qs(request.url.query).get("name") or [""])[0]
+    phone_id = (parse_qs(request.url.query).get("phone") or [DEFAULT_PHONE_ID])[0]
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
-        return JSONResponse(_thread_payload(conn, name))
+        from src.phones import phone_scope
+
+        with phone_scope(phone_id):
+            return JSONResponse(_thread_payload(conn, name, phone_id=phone_id))
     finally:
         conn.close()
 
@@ -118,14 +124,17 @@ async def api_dismiss(request: Request) -> JSONResponse:
     if isinstance(data, JSONResponse):
         return data
     name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip()
     if not name:
         return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    from src.phones import phone_scope
     from src.store import dismiss_needs_reply
 
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
-        ok = dismiss_needs_reply(conn, name)
+        with phone_scope(phone_id):
+            ok = dismiss_needs_reply(conn, name)
     finally:
         conn.close()
     if not ok:
@@ -138,16 +147,19 @@ async def api_in_group(request: Request) -> JSONResponse:
     if isinstance(data, JSONResponse):
         return data
     name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip()
     if not name:
         return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
     if "in_group" not in data:
         return JSONResponse({"ok": False, "error": "in_group required"}, status_code=400)
+    from src.phones import phone_scope
     from src.store import set_in_group
 
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
-        ok = set_in_group(conn, name, bool(data.get("in_group")))
+        with phone_scope(phone_id):
+            ok = set_in_group(conn, name, bool(data.get("in_group")))
     finally:
         conn.close()
     if not ok:
@@ -167,14 +179,17 @@ async def api_ethnicity(request: Request) -> JSONResponse:
     if isinstance(data, JSONResponse):
         return data
     name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip()
     if not name:
         return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    from src.phones import phone_scope
     from src.store import set_ethnicity
 
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
-        ok = set_ethnicity(conn, name, str(data.get("ethnicity") or ""), source="manual")
+        with phone_scope(phone_id):
+            ok = set_ethnicity(conn, name, str(data.get("ethnicity") or ""), source="manual")
     finally:
         conn.close()
     if not ok:
@@ -197,6 +212,7 @@ async def api_ethnicity_guess(request: Request) -> JSONResponse:
         start_guess(
             name=str(data.get("name") or ""),
             force=bool(data.get("force")),
+            phone_id=str(data.get("phone_id") or "").strip() or None,
         )
     )
 
@@ -215,42 +231,75 @@ async def api_refresh(request: Request) -> JSONResponse:
     name = str(data.get("name") or "").strip()
     if not name:
         return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
-    job = enqueue("refresh", name)
+    phone_id = str(data.get("phone_id") or "").strip() or None
+    job = enqueue("refresh", name, phone_id=phone_id)
     return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued refresh of {name}"})
 
 
-async def api_recapture(_: Request) -> JSONResponse:
-    job = enqueue("recapture_all", "")
+def _phone_from_body(data: dict) -> str:
+    return str(data.get("phone_id") or data.get("phone") or "all").strip() or "all"
+
+
+async def api_recapture(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    jobs = enqueue_many("recapture_all", phone_id=_phone_from_body(data))
     return JSONResponse(
-        {"ok": True, "queued": True, "job": job, "message": "queued full inbox recapture"}
+        {"ok": True, "queued": True, "jobs": jobs, "job": jobs[0], "message": f"queued recapture on {len(jobs)} phone(s)"}
     )
 
 
-async def api_fast_scan(_: Request) -> JSONResponse:
-    job = enqueue("fast_scan", "")
+async def api_fast_scan(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    jobs = enqueue_many("fast_scan", phone_id=_phone_from_body(data))
     return JSONResponse(
-        {"ok": True, "queued": True, "job": job, "message": "queued fast reply scan"}
+        {"ok": True, "queued": True, "jobs": jobs, "job": jobs[0], "message": f"queued fast scan on {len(jobs)} phone(s)"}
     )
 
 
-async def api_photos(_: Request) -> JSONResponse:
-    job = enqueue("grab_photos", "")
+async def api_photos(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    jobs = enqueue_many("grab_photos", phone_id=_phone_from_body(data))
     return JSONResponse(
-        {"ok": True, "queued": True, "job": job, "message": "queued inbox thumbnail grab"}
+        {"ok": True, "queued": True, "jobs": jobs, "job": jobs[0], "message": f"queued photo grab on {len(jobs)} phone(s)"}
     )
 
 
-async def api_message_new_friends(_: Request) -> JSONResponse:
-    job = enqueue("message_new_friends", "")
+async def api_message_new_friends(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    jobs = enqueue_many("message_new_friends", phone_id=_phone_from_body(data))
     return JSONResponse(
-        {"ok": True, "queued": True, "job": job, "message": "queued opener to all new friends"}
+        {"ok": True, "queued": True, "jobs": jobs, "job": jobs[0], "message": f"queued openers on {len(jobs)} phone(s)"}
     )
 
 
-async def api_new_friends(_: Request) -> JSONResponse:
-    job = enqueue("refresh_new_friends", "")
+async def api_new_friends(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    jobs = enqueue_many("refresh_new_friends", phone_id=_phone_from_body(data))
     return JSONResponse(
-        {"ok": True, "queued": True, "job": job, "message": "queued New friends strip refresh"}
+        {"ok": True, "queued": True, "jobs": jobs, "job": jobs[0], "message": f"queued strip refresh on {len(jobs)} phone(s)"}
+    )
+
+
+async def api_swipe(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    text = ""
+    if data.get("max_swipes") is not None and str(data.get("max_swipes")) != "":
+        text = json.dumps({"max_swipes": int(data["max_swipes"])})
+    jobs = enqueue_many("swipe", text=text, phone_id=_phone_from_body(data))
+    return JSONResponse(
+        {"ok": True, "queued": True, "jobs": jobs, "job": jobs[0], "message": f"queued swipe on {len(jobs)} phone(s)"}
     )
 
 
@@ -260,14 +309,17 @@ async def api_draft(request: Request) -> JSONResponse:
         return data
     name = str(data.get("name") or "").strip()
     text = str(data.get("text") or "")
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip()
     if not name:
         return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    from src.phones import phone_scope
     from src.store import set_draft
 
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
-        ok = set_draft(conn, name, text)
+        with phone_scope(phone_id):
+            ok = set_draft(conn, name, text)
     finally:
         conn.close()
     if not ok:
@@ -280,14 +332,17 @@ async def api_draft_retry(request: Request) -> JSONResponse:
     if isinstance(data, JSONResponse):
         return data
     name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip()
     if not name:
         return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    from src.phones import phone_scope
     from src.store import retry_auto_draft
 
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
-        ok = retry_auto_draft(conn, name)
+        with phone_scope(phone_id):
+            ok = retry_auto_draft(conn, name)
     finally:
         conn.close()
     if not ok:
@@ -320,7 +375,8 @@ async def api_reply(request: Request) -> JSONResponse:
     text = str(data.get("text") or "").strip()
     if not name or not text:
         return JSONResponse({"ok": False, "error": "name and text required"}, status_code=400)
-    job = enqueue("reply", name, text)
+    phone_id = str(data.get("phone_id") or "").strip() or None
+    job = enqueue("reply", name, text, phone_id=phone_id)
     return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued reply to {name}"})
 
 
@@ -349,6 +405,7 @@ def build_app() -> Starlette:
         Route("/api/photos", api_photos, methods=["POST"]),
         Route("/api/message-new-friends", api_message_new_friends, methods=["POST"]),
         Route("/api/new-friends", api_new_friends, methods=["POST"]),
+        Route("/api/swipe", api_swipe, methods=["POST"]),
         Route("/api/draft", api_draft, methods=["POST"]),
         Route("/api/draft/retry", api_draft_retry, methods=["POST"]),
         Route("/api/queue/cancel", api_cancel, methods=["POST"]),

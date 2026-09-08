@@ -161,10 +161,10 @@ def _list_rows(xml: str, *, min_top: int = 0, height: int | None = None, width: 
             if match:
                 height = max(height or 0, int(match.group(4)))
                 width = max(width or 0, int(match.group(3)))
-        height = height or 2400
-        width = width or 1080
+        height = height or 1
+        width = width or 1
     max_y1 = int(height * 0.94)
-    mid_x = int(width // 2) if width else 540
+    mid_x = int(width // 2) if width else 0
     min_row_h = max(80, int(height * 0.055))
     for item in root.iter():
         rid = item.attrib.get("resource-id") or ""
@@ -576,7 +576,13 @@ def extract_messages(xml: str, width: int, height: int | None = None) -> list[di
         root = ET.fromstring(xml)
     except ET.ParseError:
         return msgs
-    height = height or 2400
+    if height is None:
+        for node in root.iter():
+            bounds = node.attrib.get("bounds") or ""
+            match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+            if match:
+                height = max(height or 0, int(match.group(4)))
+        height = height or 1
     y_min = int(height * 0.12)
     y_max = int(height * 0.92)
     for node in root.iter():
@@ -1787,15 +1793,23 @@ def recapture_person(device, conn, package: str, name: str) -> bool:
     return True
 
 
-def refresh_named_chat(name: str, *, serial: str | None = None) -> tuple[bool, str]:
+def refresh_named_chat(name: str, *, serial: str | None = None, phone_id: str | None = None) -> tuple[bool, str]:
     """Open a named chat on the phone and replace the stored transcript."""
     name = name.strip()
     if not name:
         return False, "name required"
-    from src.unlock import wake_and_unlock
+    from src.phones import phone_scope, serial_for
 
     cfg = load_config()
     package = str(cfg["package"])
+    serial = serial or serial_for(phone_id)
+    with phone_scope(phone_id):
+        return _refresh_named_chat_body(name, cfg, package, serial)
+
+
+def _refresh_named_chat_body(name: str, cfg, package: str, serial: str | None) -> tuple[bool, str]:
+    from src.unlock import wake_and_unlock
+
     device = connect(serial)
     if not wake_and_unlock(device, serial=serial):
         return False, "phone still locked — unlock failed"
@@ -1946,7 +1960,7 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
         friends = [
             f
             for f in visible
-            if 120 <= int(f.x) <= width - 120 and f"{f.name}@{int(f.x) // 40}" not in attempted
+            if max(48, int(width * 0.11)) <= int(f.x) <= width - max(48, int(width * 0.11)) and f"{f.name}@{int(f.x) // 40}" not in attempted
         ]
         if not friends:
             _scroll_new_friends_strip(device, xml, width, height, toward_end=True)
@@ -1954,7 +1968,7 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
             friends = [
                 f
                 for f in list_new_friends(xml)
-                if 120 <= int(f.x) <= width - 120 and f"{f.name}@{int(f.x) // 40}" not in attempted
+                if max(48, int(width * 0.11)) <= int(f.x) <= width - max(48, int(width * 0.11)) and f"{f.name}@{int(f.x) // 40}" not in attempted
             ]
             if not friends:
                 stagnant_rounds += 1
@@ -2030,12 +2044,20 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
     return captured
 
 
-def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True, phone_id: str | None = None) -> tuple[bool, str]:
     """Unlock (if PIN set), open every Chats row, save transcripts, optionally sleep."""
-    from src.unlock import sleep_screen, wake_and_unlock
+    from src.phones import phone_scope, serial_for
 
     cfg = load_config()
     package = str(cfg["package"])
+    serial = serial or serial_for(phone_id)
+    with phone_scope(phone_id):
+        return _recapture_inbox_body(cfg, package, serial, sleep_after)
+
+
+def _recapture_inbox_body(cfg, package: str, serial: str | None, sleep_after: bool) -> tuple[bool, str]:
+    from src.unlock import sleep_screen, wake_and_unlock
+
     device = connect(serial)
     try:
         if not wake_and_unlock(device, serial=serial):
@@ -2105,7 +2127,7 @@ def recapture_inbox(*, serial: str | None = None, sleep_after: bool = True) -> t
                 log.warning("could not sleep screen after recapture")
 
 
-def fast_reply_scan(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+def fast_reply_scan(*, serial: str | None = None, sleep_after: bool = True, phone_id: str | None = None) -> tuple[bool, str]:
     """Find who needs a reply without opening every chat.
 
     Scrolls the inbox list once, reading each row's name / badge / preview.
@@ -2114,10 +2136,19 @@ def fast_reply_scan(*, serial: str | None = None, sleep_after: bool = True) -> t
     badge contradicts the stored last message. Everything else just gets a
     badge/status refresh from the list. Minutes instead of ~40.
     """
+    from src.phones import phone_scope, serial_for
     from src.unlock import sleep_screen, wake_and_unlock
 
     cfg = load_config()
     package = str(cfg["package"])
+    serial = serial or serial_for(phone_id)
+    with phone_scope(phone_id):
+        return _fast_reply_scan_body(cfg, package, serial, sleep_after)
+
+
+def _fast_reply_scan_body(cfg, package: str, serial: str | None, sleep_after: bool) -> tuple[bool, str]:
+    from src.unlock import sleep_screen, wake_and_unlock
+
     device = connect(serial)
     try:
         if not wake_and_unlock(device, serial=serial):
@@ -2169,13 +2200,15 @@ def fast_reply_scan(*, serial: str | None = None, sleep_after: bool = True) -> t
                 log.warning("could not sleep screen after fast scan")
 
 
-def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True, phone_id: str | None = None) -> tuple[bool, str]:
     """Scroll Chats + New friends and crop visible faces. Does not open threads."""
+    from src.phones import serial_for
     from src.photos import avatars_dir
     from src.unlock import sleep_screen, wake_and_unlock
 
     cfg = load_config()
     package = str(cfg["package"])
+    serial = serial or serial_for(phone_id)
     device = connect(serial)
     try:
         if not wake_and_unlock(device, serial=serial):
@@ -2207,12 +2240,14 @@ def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True) ->
                 log.warning("could not sleep screen after photo grab")
 
 
-def refresh_new_friends_strip(*, serial: str | None = None, sleep_after: bool = True) -> tuple[bool, str]:
+def refresh_new_friends_strip(*, serial: str | None = None, sleep_after: bool = True, phone_id: str | None = None) -> tuple[bool, str]:
     """Unlock, scan the New friends circles, open any not already stored, then sleep."""
+    from src.phones import serial_for
     from src.unlock import sleep_screen, wake_and_unlock
 
     cfg = load_config()
     package = str(cfg["package"])
+    serial = serial or serial_for(phone_id)
     device = connect(serial)
     try:
         if not wake_and_unlock(device, serial=serial):

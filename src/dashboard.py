@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from src.config import ROOT, load_config
-from src.phone_queue import cancel_job, cancel_queued, enqueue, ensure_worker, queue_snapshot
+from src.phone_queue import cancel_job, cancel_queued, enqueue, enqueue_many, ensure_worker, queue_snapshot
 from src.photos import photo_exists, photo_file
 from src.store import (
     connect as db_connect,
@@ -96,16 +96,19 @@ def _preview_already_in_thread(preview: str, msgs: list[dict]) -> bool:
     return False
 
 
-def _thread_payload(conn, name: str) -> dict:
+def _thread_payload(conn, name: str, phone_id: str | None = None) -> dict:
+    from src.phones import DEFAULT_PHONE_ID, current_phone_id
+
+    pid = phone_id or current_phone_id() or DEFAULT_PHONE_ID
     row = conn.execute(
         """
-        SELECT p.name, c.status, c.last_from, c.last_text, c.preview, c.draft, c.message_until,
+        SELECT p.name, p.phone_id, c.status, c.last_from, c.last_text, c.preview, c.draft, c.message_until,
                c.in_group, c.draft_status, c.draft_error, c.draft_attempts, c.draft_pending_fp
         FROM people p
         LEFT JOIN chats c ON c.person_id = p.id
-        WHERE p.name = ?
+        WHERE p.name = ? AND p.phone_id = ?
         """,
-        (name,),
+        (name, pid),
     ).fetchone()
     msgs = [
         {"side": r["side"], "body": r["body"], "from_preview": False}
@@ -171,14 +174,20 @@ def people_api_payload(conn) -> dict:
     )
     people = []
     new_friends: list[str] = []
+    from src.phones import public_phones
     from src.store import auto_draft_fields, namesake_meta
 
     labels = namesake_meta(conn)
+    phone_meta = {p["id"]: p for p in public_phones(cfg)}
     for row in list_people(conn):
         fresh = is_new_friend(row)
-        extra = labels.get(str(row["name"])) or {}
+        pid = str(row["phone_id"] if "phone_id" in row.keys() else "toby")
+        extra = labels.get(f"{pid}:{row['name']}") or labels.get(str(row["name"])) or {}
         item = {
             "name": row["name"],
+            "phone_id": pid,
+            "phone_label": (phone_meta.get(pid) or {}).get("label") or pid,
+            "phone_device": (phone_meta.get(pid) or {}).get("device") or "",
             "display_name": extra.get("display_name") or row["name"],
             "base_name": extra.get("base_name") or row["name"],
             "distinguish": extra.get("distinguish") or "",
@@ -194,7 +203,7 @@ def people_api_payload(conn) -> dict:
             "new_friend": fresh,
             "message_until": row["message_until"],
             "opener": format_opener(template, str(row["name"])) if fresh else None,
-            "photo": photo_exists(str(row["name"])),
+            "photo": photo_exists(str(row["name"]), pid),
             "dismissed": (row["status"] or "") == "dismissed",
             "in_group": bool(row["in_group"]),
             "ethnicity": row["ethnicity"] or "",
@@ -215,6 +224,7 @@ def people_api_payload(conn) -> dict:
         "ethnicity_choices": [{"id": cid, "label": label} for cid, label in ETHNICITY_CHOICES],
         "ethnicity_guess": guess_status(),
         "auto_draft": draft_status(),
+        "phones": list(phone_meta.values()),
     }
 
 
@@ -483,11 +493,11 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._json({"ok": False, "error": "name required"}, 400)
                 return
-            job = enqueue("refresh", name)
+            job = enqueue("refresh", name, phone_id=str(data.get("phone_id") or "") or None)
             self._json({"ok": True, "queued": True, "job": job, "message": f"queued refresh of {name}"})
             return
         if self.path == "/api/recapture":
-            job = enqueue("recapture_all", "")
+            job = enqueue_many("recapture_all", phone_id="all")[0]
             self._json(
                 {
                     "ok": True,
@@ -498,7 +508,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path == "/api/photos":
-            job = enqueue("grab_photos", "")
+            job = enqueue_many("grab_photos", phone_id="all")[0]
             self._json(
                 {
                     "ok": True,
@@ -509,7 +519,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path == "/api/message-new-friends":
-            job = enqueue("message_new_friends", "")
+            job = enqueue_many("message_new_friends", phone_id="all")[0]
             self._json(
                 {
                     "ok": True,
@@ -520,7 +530,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path == "/api/new-friends":
-            job = enqueue("refresh_new_friends", "")
+            job = enqueue_many("refresh_new_friends", phone_id="all")[0]
             self._json(
                 {
                     "ok": True,
@@ -598,7 +608,7 @@ class Handler(BaseHTTPRequestHandler):
         if not name or not text:
             self._json({"ok": False, "error": "name and text required"}, 400)
             return
-        job = enqueue("reply", name, text)
+        job = enqueue("reply", name, text, phone_id=str(data.get("phone_id") or "") or None)
         self._json({"ok": True, "queued": True, "job": job, "message": f"queued reply to {name}"})
 
 

@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Any
 
 from src.config import ROOT, load_config
+from src.phones import DEFAULT_PHONE_ID, current_phone_id, normalize_phone_id
 
 DEFAULT_DB = ROOT / "data" / "friends.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS people (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    name TEXT NOT NULL COLLATE NOCASE,
     location TEXT,
     distance TEXT,
     age INTEGER,
@@ -27,7 +28,9 @@ CREATE TABLE IF NOT EXISTS people (
     ethnicity_source TEXT,
     in_contacts INTEGER NOT NULL DEFAULT 0,
     first_seen_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL
+    last_seen_at TEXT NOT NULL,
+    phone_id TEXT NOT NULL DEFAULT 'toby',
+    UNIQUE (phone_id, name COLLATE NOCASE)
 );
 
 CREATE TABLE IF NOT EXISTS chats (
@@ -120,9 +123,96 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chats ADD COLUMN draft_next_attempt_at TEXT")
     if "draft_updated_at" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN draft_updated_at TEXT")
+    people_cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(people)")}
+    if "phone_id" not in people_cols:
+        conn.execute(
+            "ALTER TABLE people ADD COLUMN phone_id TEXT NOT NULL DEFAULT 'toby'"
+        )
+    _rebuild_people_unique(conn)
     _backfill_message_until(conn)
     _reapply_dismissals(conn)
     conn.commit()
+
+
+def _rebuild_people_unique(conn: sqlite3.Connection) -> None:
+    """Switch people uniqueness from name-only to (phone_id, name)."""
+    for idx in conn.execute("PRAGMA index_list(people)"):
+        if not idx[2]:
+            continue
+        cols = [str(r[2]) for r in conn.execute(f"PRAGMA index_info('{idx[1]}')")]
+        if cols == ["phone_id", "name"] or set(cols) == {"phone_id", "name"}:
+            return
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute(
+        """
+        CREATE TABLE people_new (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL COLLATE NOCASE,
+            location TEXT,
+            distance TEXT,
+            age INTEGER,
+            notes TEXT,
+            phone_provided INTEGER NOT NULL DEFAULT 0,
+            ethnicity TEXT,
+            ethnicity_source TEXT,
+            in_contacts INTEGER NOT NULL DEFAULT 0,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            phone_id TEXT NOT NULL DEFAULT 'toby',
+            UNIQUE (phone_id, name COLLATE NOCASE)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO people_new (
+            id, name, location, distance, age, notes, phone_provided, ethnicity,
+            ethnicity_source, in_contacts, first_seen_at, last_seen_at, phone_id
+        )
+        SELECT id, name, location, distance, age, notes, phone_provided, ethnicity,
+               ethnicity_source, in_contacts, first_seen_at, last_seen_at,
+               IFNULL(phone_id, 'toby')
+        FROM people
+        """
+    )
+    conn.execute("DROP TABLE people")
+    conn.execute("ALTER TABLE people_new RENAME TO people")
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _scope_phone(phone_id: str | None = None) -> str:
+    pid = normalize_phone_id(phone_id) if phone_id else current_phone_id()
+    if pid == "all":
+        pid = current_phone_id()
+    return pid or DEFAULT_PHONE_ID
+
+
+def find_person(
+    conn: sqlite3.Connection, name: str, phone_id: str | None = None
+) -> sqlite3.Row | None:
+    name = (name or "").strip()
+    if not name:
+        return None
+    pid = _scope_phone(phone_id)
+    row = conn.execute(
+        "SELECT * FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ?",
+        (name, pid),
+    ).fetchone()
+    if row is not None:
+        return row
+    rows = list(
+        conn.execute("SELECT * FROM people WHERE name = ? COLLATE NOCASE", (name,))
+    )
+    if len(rows) == 1:
+        return rows[0]
+    return None
+
+
+def person_phone_id(conn: sqlite3.Connection, name: str) -> str | None:
+    row = find_person(conn, name)
+    if row is None:
+        return None
+    return str(row["phone_id"] or DEFAULT_PHONE_ID)
 
 
 def _reapply_dismissals(conn: sqlite3.Connection) -> None:
@@ -251,11 +341,12 @@ def set_in_contacts(conn: sqlite3.Connection, name: str, in_contacts: bool = Tru
     name = (name or "").strip()
     if not name:
         return False
-    if conn.execute("SELECT id FROM people WHERE name = ?", (name,)).fetchone() is None:
+    row = find_person(conn, name)
+    if row is None:
         return False
     conn.execute(
-        "UPDATE people SET in_contacts = ? WHERE name = ?",
-        (1 if in_contacts else 0, name),
+        "UPDATE people SET in_contacts = ? WHERE id = ?",
+        (1 if in_contacts else 0, int(row["id"])),
     )
     conn.commit()
     return True
@@ -289,14 +380,18 @@ def upsert_person(
 ) -> int:
     name = name.strip()
     now = _now()
-    row = conn.execute("SELECT id FROM people WHERE name = ?", (name,)).fetchone()
+    pid = _scope_phone()
+    row = conn.execute(
+        "SELECT id FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ?",
+        (name, pid),
+    ).fetchone()
     if row is None:
         cur = conn.execute(
             """
-            INSERT INTO people (name, location, distance, age, notes, first_seen_at, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO people (name, phone_id, location, distance, age, notes, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (name, location, distance, age, notes, now, now),
+            (name, pid, location, distance, age, notes, now, now),
         )
         return int(cur.lastrowid)
     fields: list[str] = ["last_seen_at = ?"]
@@ -313,8 +408,8 @@ def upsert_person(
     if notes:
         fields.append("notes = ?")
         values.append(notes)
-    values.append(name)
-    conn.execute(f"UPDATE people SET {', '.join(fields)} WHERE name = ?", values)
+    values.append(int(row["id"]))
+    conn.execute(f"UPDATE people SET {', '.join(fields)} WHERE id = ?", values)
     return int(row["id"])
 
 
@@ -333,7 +428,13 @@ def next_duplicate_name(conn: sqlite3.Connection, base: str) -> str:
     n = 2
     while True:
         candidate = f"{base} {n}"
-        if conn.execute("SELECT 1 FROM people WHERE name = ? COLLATE NOCASE", (candidate,)).fetchone() is None:
+        if (
+            conn.execute(
+                "SELECT 1 FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ?",
+                (candidate, _scope_phone()),
+            ).fetchone()
+            is None
+        ):
             return candidate
         n += 1
 
@@ -341,8 +442,12 @@ def next_duplicate_name(conn: sqlite3.Connection, base: str) -> str:
 def name_aliases(conn: sqlite3.Connection, name: str) -> list[str]:
     base = base_person_name(name)
     rows = conn.execute(
-        "SELECT name FROM people WHERE name = ? COLLATE NOCASE OR name GLOB ?",
-        (base, f"{base} [0-9]*"),
+        """
+        SELECT name FROM people
+        WHERE phone_id = ?
+          AND (name = ? COLLATE NOCASE OR name GLOB ?)
+        """,
+        (_scope_phone(), base, f"{base} [0-9]*"),
     ).fetchall()
     return [str(r[0]) for r in rows]
 
@@ -432,9 +537,9 @@ def _chat_head(conn: sqlite3.Connection, name: str) -> dict[str, str]:
     row = conn.execute(
         """
         SELECT c.last_from, c.last_text, c.preview FROM chats c
-        JOIN people p ON p.id = c.person_id WHERE p.name = ?
+        JOIN people p ON p.id = c.person_id WHERE p.name = ? AND p.phone_id = ?
         """,
-        (name,),
+        (name, _scope_phone()),
     ).fetchone()
     if row is None:
         return {"last_from": "", "last_text": "", "preview": ""}
@@ -529,7 +634,10 @@ def _them_bodies(conn: sqlite3.Connection, name: str) -> set[str]:
 
 
 def _person_id(conn: sqlite3.Connection, name: str) -> int | None:
-    row = conn.execute("SELECT id FROM people WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+    row = conn.execute(
+        "SELECT id FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ?",
+        (name, _scope_phone()),
+    ).fetchone()
     return int(row["id"]) if row else None
 
 
@@ -630,24 +738,28 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
 
 def collapse_cloned_namesakes(conn: sqlite3.Connection) -> list[str]:
     """Merge ghost clones (same person stored as Name 2 / Name 3) but keep real namesakes."""
-    groups: dict[str, list[str]] = {}
-    for row in conn.execute("SELECT name FROM people"):
+    groups: dict[tuple[str, str], list[str]] = {}
+    for row in conn.execute("SELECT name, phone_id FROM people"):
         name = str(row["name"])
-        groups.setdefault(base_person_name(name), []).append(name)
+        pid = str(row["phone_id"] or DEFAULT_PHONE_ID)
+        groups.setdefault((pid, base_person_name(name)), []).append(name)
     log = []
-    for base, names in groups.items():
+    for (pid, base), names in groups.items():
         if len(names) < 2:
             continue
         names.sort(key=lambda n: (0 if n.casefold() == base.casefold() else 1, n))
         keep = names[0]
-        for other in names[1:]:
-            if not namesake_same_person(conn, keep, other):
-                continue
-            from src.photos import adopt_photo
+        from src.phones import phone_scope
 
-            absorb_person(conn, keep, other)
-            adopt_photo(other, keep)
-            log.append(f"{other} → {keep}")
+        with phone_scope(pid):
+            for other in names[1:]:
+                if not namesake_same_person(conn, keep, other):
+                    continue
+                from src.photos import adopt_photo
+
+                absorb_person(conn, keep, other)
+                adopt_photo(other, keep, phone_id=pid)
+                log.append(f"{pid}:{other} → {keep}")
     if log:
         _resync_chat_heads(conn)
         conn.commit()
@@ -682,15 +794,19 @@ def _resync_chat_heads(conn: sqlite3.Connection) -> None:
 
 def namesake_meta(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
     """How to tell same-name people apart in the inbox / MCP."""
-    groups: dict[str, list[str]] = {}
-    for row in conn.execute("SELECT name FROM people"):
+    groups: dict[tuple[str, str], list[str]] = {}
+    for row in conn.execute("SELECT name, phone_id FROM people"):
         name = str(row["name"])
-        groups.setdefault(base_person_name(name), []).append(name)
+        pid = str(row["phone_id"] or DEFAULT_PHONE_ID)
+        groups.setdefault((pid, base_person_name(name)), []).append(name)
     out: dict[str, dict[str, object]] = {}
-    for base, names in groups.items():
+    for (pid, base), names in groups.items():
         count = len(names)
         for name in names:
-            loc = conn.execute("SELECT location FROM people WHERE name = ?", (name,)).fetchone()
+            loc = conn.execute(
+                "SELECT location FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ?",
+                (name, pid),
+            ).fetchone()
             location = (loc["location"] or "").strip() if loc else ""
             them = [
                 str(r[0]).strip()
@@ -698,10 +814,10 @@ def namesake_meta(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
                     """
                     SELECT m.body FROM messages m
                     JOIN people p ON p.id = m.person_id
-                    WHERE p.name = ? AND m.side = 'them'
+                    WHERE p.name = ? AND p.phone_id = ? AND m.side = 'them'
                     ORDER BY m.id
                     """,
-                    (name,),
+                    (name, pid),
                 )
                 if not _is_thread_chrome(str(r[0])) and len(str(r[0]).strip()) > 2
             ]
@@ -712,21 +828,24 @@ def namesake_meta(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
                 chat = conn.execute(
                     """
                     SELECT c.last_text, c.preview FROM chats c
-                    JOIN people p ON p.id = c.person_id WHERE p.name = ?
+                    JOIN people p ON p.id = c.person_id WHERE p.name = ? AND p.phone_id = ?
                     """,
-                    (name,),
+                    (name, pid),
                 ).fetchone()
                 hint = ((chat["last_text"] or chat["preview"] or "") if chat else "").strip()
             hint = " ".join(hint.split())
             if len(hint) > 42:
                 hint = hint[:41].rstrip() + "…"
             display = name if count == 1 else (f"{base} · {hint}" if hint else name)
-            out[name] = {
+            payload = {
                 "base_name": base,
                 "display_name": display,
                 "distinguish": hint,
                 "same_name_count": count,
+                "phone_id": pid,
             }
+            out[f"{pid}:{name}"] = payload
+            out.setdefault(name, payload)
     return out
 
 
@@ -737,9 +856,9 @@ def person_them_bodies(conn: sqlite3.Connection, name: str) -> set[str]:
             """
             SELECT m.body FROM messages m
             JOIN people p ON p.id = m.person_id
-            WHERE p.name = ? AND m.side = 'them'
+            WHERE p.name = ? AND p.phone_id = ? AND m.side = 'them'
             """,
-            (name,),
+            (name, _scope_phone()),
         )
     }
 
@@ -751,9 +870,9 @@ def person_message_bodies(conn: sqlite3.Connection, name: str) -> set[str]:
             """
             SELECT m.body FROM messages m
             JOIN people p ON p.id = m.person_id
-            WHERE p.name = ?
+            WHERE p.name = ? AND p.phone_id = ?
             """,
-            (name,),
+            (name, _scope_phone()),
         )
     }
 
@@ -872,9 +991,9 @@ def dismiss_needs_reply(conn: sqlite3.Connection, name: str) -> bool:
         SELECT p.id, c.last_text, c.last_from, c.preview, c.badge
         FROM people p
         LEFT JOIN chats c ON c.person_id = p.id
-        WHERE p.name = ?
+        WHERE p.name = ? AND p.phone_id = ?
         """,
-        (name,),
+        (name, _scope_phone()),
     ).fetchone()
     if row is None:
         return False
@@ -909,7 +1028,7 @@ def set_in_group(conn: sqlite3.Connection, name: str, in_group: bool) -> bool:
     name = name.strip()
     if not name:
         return False
-    if conn.execute("SELECT id FROM people WHERE name = ?", (name,)).fetchone() is None:
+    if find_person(conn, name) is None:
         return False
     person_id = upsert_chat(conn, name)
     conn.execute(
@@ -931,7 +1050,7 @@ def set_ethnicity(
     name = name.strip()
     if not name:
         return False
-    if conn.execute("SELECT id FROM people WHERE name = ?", (name,)).fetchone() is None:
+    if find_person(conn, name) is None:
         return False
     from src.profile_filters import canonicalize
 
@@ -950,9 +1069,10 @@ def set_ethnicity(
         if src is None:
             src = "manual"
     upsert_chat(conn, name)
+    row = find_person(conn, name)
     conn.execute(
-        "UPDATE people SET ethnicity = ?, ethnicity_source = ? WHERE name = ?",
-        (value, src, name),
+        "UPDATE people SET ethnicity = ?, ethnicity_source = ? WHERE id = ?",
+        (value, src, int(row["id"])),
     )
     conn.commit()
     return True
@@ -1056,7 +1176,7 @@ def list_pending_auto_drafts(
     return list(
         conn.execute(
             """
-            SELECT p.id AS person_id, p.name, c.draft_pending_fp, c.draft_turn_fp,
+            SELECT p.id AS person_id, p.name, p.phone_id, c.draft_pending_fp, c.draft_turn_fp,
                    c.draft_status, c.draft_error, c.draft_attempts,
                    c.draft_next_attempt_at, c.status, c.in_group, c.draft
             FROM chats c
@@ -1117,9 +1237,9 @@ def complete_auto_draft(
         SELECT c.person_id, c.draft_pending_fp, c.draft_status
         FROM chats c
         JOIN people p ON p.id = c.person_id
-        WHERE p.name = ?
+        WHERE p.name = ? AND p.phone_id = ?
         """,
-        (name,),
+        (name, _scope_phone()),
     ).fetchone()
     if row is None:
         return False
@@ -1197,9 +1317,9 @@ def retry_auto_draft(conn: sqlite3.Connection, name: str) -> bool:
         SELECT c.person_id, c.draft_pending_fp, c.draft_turn_fp, c.status, c.in_group
         FROM chats c
         JOIN people p ON p.id = c.person_id
-        WHERE p.name = ?
+        WHERE p.name = ? AND p.phone_id = ?
         """,
-        (name,),
+        (name, _scope_phone()),
     ).fetchone()
     if row is None:
         return False
@@ -1255,10 +1375,10 @@ def list_thread(conn: sqlite3.Connection, name: str) -> list[sqlite3.Row]:
             SELECT m.side, m.body, m.captured_at
             FROM messages m
             JOIN people p ON p.id = m.person_id
-            WHERE p.name = ?
+            WHERE p.name = ? AND p.phone_id = ?
             ORDER BY m.id
             """,
-            (name,),
+            (name, _scope_phone()),
         )
     )
 
@@ -1347,7 +1467,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(
         conn.execute(
             """
-            SELECT p.name, p.location, p.distance, p.age, p.phone_provided, p.ethnicity,
+            SELECT p.name, p.phone_id, p.location, p.distance, p.age, p.phone_provided, p.ethnicity,
                    p.ethnicity_source, p.in_contacts,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
                    c.dismissed_reply_text, c.opener_sent, c.draft, c.message_until,

@@ -1,5 +1,18 @@
 # Optional ADB serial (Honor Pro or Pixel). Env SERIAL / PIXEL_SERIAL overrides.
 # serial: 29081FDH200GZ8
+#
+# Two phones share one inbox. Env SERIAL / ARCHIE_SERIAL / GALAXY_SERIAL win.
+phones:
+  toby:
+    label: Toby
+    device: pixel
+    # serial: 29081FDH200GZ8
+    notes: Pixel ~1080x2400
+  archie:
+    label: Archie
+    device: galaxy
+    # serial: set via ARCHIE_SERIAL
+    notes: Rooted Galaxy
 
 # Bumble Friends / BFF package (main Bumble dating app is com.bumble.app)
 package: com.bumblebff.app

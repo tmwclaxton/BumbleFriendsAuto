@@ -1,6 +1,17 @@
-# Local production config for the Pixel on admin.grantgunner.org
+# Local production config for the Pixel + Galaxy on admin.grantgunner.org
 serial: 29081FDH200GZ8
 package: com.bumblebff.app
+phones:
+  toby:
+    label: Toby
+    device: pixel
+    serial: 29081FDH200GZ8
+    notes: Pixel ~1080x2400
+  archie:
+    label: Archie
+    device: galaxy
+    serial: ce01171185a334920c
+    notes: Galaxy S7 SM-G930F (herolte) — set GALAXY_UNLOCK_PIN in .env
 bring_to_foreground: true
 db_path: data/friends.db
 
