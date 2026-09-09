@@ -1,0 +1,15 @@
+[Unit]
+Description=lgspipeline ADB server (USB Pixel + wireless Galaxy TLS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+Environment=ANDROID_ADB_SERVER_PORT=5037
+ExecStart=/home/gunnergrant/platform-tools/adb start-server
+ExecStartPost=-/home/gunnergrant/platform-tools/adb connect 192.168.0.168:49414
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

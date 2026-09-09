@@ -28,6 +28,7 @@ from src.store import (
     list_thread,
     set_draft,
     set_ethnicity,
+    set_archived,
     set_in_group,
 )
 
@@ -110,6 +111,7 @@ def list_inbox_people() -> dict:
                     "new_friend": is_new_friend(row),
                     "message_until": row["message_until"],
                     "in_group": bool(row["in_group"]),
+                    "archived": bool(row["archived"]) if "archived" in row.keys() else False,
                     "ethnicity": row["ethnicity"] or "",
                     "ethnicity_source": row["ethnicity_source"] or "",
                     "in_contacts": bool(row["in_contacts"]),
@@ -122,7 +124,7 @@ def list_inbox_people() -> dict:
 
 @mcp.tool()
 def list_needs_reply_people() -> dict:
-    """People marked needs_reply (Your turn / last message from them), excluding those filed as in the group chat. Fast — no phone."""
+    """People marked needs_reply (Your turn / last message from them), excluding archived chats. Fast — no phone."""
     conn = _db()
     try:
         rows = []
@@ -149,7 +151,7 @@ def list_needs_reply_people() -> dict:
 
 @mcp.tool()
 def mark_in_group(name: str, in_group: bool = True) -> dict:
-    """File someone under In group (added to WhatsApp) or put them back in the main inbox. Does not send, does not touch the phone."""
+    """Legacy flag only. Prefer archive_chat to hide someone from the inbox."""
     name = (name or "").strip()
     if not name:
         return {"ok": False, "error": "name required"}
@@ -164,7 +166,30 @@ def mark_in_group(name: str, in_group: bool = True) -> dict:
         "ok": True,
         "name": name,
         "in_group": bool(in_group),
-        "hint": "Filed under In group in the inbox." if in_group else "Back in the main inbox list.",
+        "hint": "Filed under the leftover in-group flag." if in_group else "Cleared the leftover in-group flag.",
+    }
+
+
+@mcp.tool()
+def archive_chat(name: str, archived: bool = True) -> dict:
+    """Archive a chat so it stays hidden even if they reply again. Unarchive with archived=false."""
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    conn = _db()
+    try:
+        ok = set_archived(conn, name, bool(archived))
+    finally:
+        conn.close()
+    if not ok:
+        return {"ok": False, "error": "person not found"}
+    return {
+        "ok": True,
+        "name": name,
+        "archived": bool(archived),
+        "hint": "Hidden under Archived. New replies will not resurface this chat."
+        if archived
+        else "Back in the main inbox list.",
     }
 
 
@@ -328,12 +353,20 @@ def add_to_crm(
     phone: str,
     phone_id: str = "toby",
     instagram: str = "",
+    tiktok: str = "",
     hometown: str = "",
+    email: str = "",
+    address: str = "",
+    age: int | None = None,
     ethnicity: str = "",
+    interested_event: str = "",
+    interests_skills: str = "",
     notes: str = "",
+    tags: str = "",
+    preferred_contact_method: str = "whatsapp",
     home_lgs_group_id: int | None = None,
 ) -> dict:
-    """Create or update a Let's Go Social CRM lead from a Bumble thread. Fast — no phone. Prefer prepare_contact first. Phone must come from the chat."""
+    """Create or update a Let's Go Social CRM contact from a Bumble thread. Fast — no phone. Prefer prepare_contact first. Phone must come from the chat."""
     from src.crm import create_lead
 
     inbox_name = (inbox_name or "").strip()
@@ -346,13 +379,24 @@ def add_to_crm(
             "name": name,
             "phone": phone,
             "instagram": instagram or None,
+            "tiktok": tiktok or None,
             "hometown": hometown or None,
+            "region": hometown or None,
+            "email": email or None,
+            "address": address or None,
+            "age": age,
             "ethnicity": ethnicity or None,
+            "interested_event": interested_event or None,
+            "interests_skills": interests_skills or None,
             "notes": notes or None,
-            "source": "bumble",
+            "tags": tags or None,
+            "preferred_contact_method": preferred_contact_method or None,
+            "consent_to_contact": True,
+            "source": "bumble_friends",
             "bumble_inbox_name": inbox_name,
             "bumble_phone_id": phone_id or "toby",
             "home_lgs_group_id": home_lgs_group_id,
+            "closest_lgs_group_id": home_lgs_group_id,
         }
     )
 

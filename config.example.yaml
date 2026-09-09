@@ -12,6 +12,8 @@ phones:
     label: Archie
     device: galaxy
     # serial: set via ARCHIE_SERIAL
+    # Wireless debugging (TLS). Port can change; serial stays the device id.
+    # adb: 192.168.0.168:49414
     notes: Rooted Galaxy
 
 # Bumble Friends / BFF package (main Bumble dating app is com.bumble.app)

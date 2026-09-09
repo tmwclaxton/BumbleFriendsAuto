@@ -2,6 +2,7 @@
 
 The fast scan scrolls the inbox list and opens only chats whose preview or
 'Your turn' badge disagree with the stored last message — minutes, not ~40.
+It also refreshes the New friends strip and rematches expired circles there.
 When the dashboard is already running, POST to its API so work shares the
 queue. Otherwise run fast_reply_scan directly (standalone cron container).
 """

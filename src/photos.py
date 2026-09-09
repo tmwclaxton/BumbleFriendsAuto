@@ -168,12 +168,118 @@ def match_face_to_namesakes(face, name: str, conn=None) -> str | None:
     return None
 
 
+def crop_open_chat_face(device, xml: str | None = None):
+    """Crop the circular avatar in an open conversation toolbar."""
+    xml = xml if xml is not None else dump_hierarchy(device)
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return None
+    title = None
+    avatar = None
+    for node in root.iter():
+        rid = node.attrib.get("resource-id") or ""
+        box = _parse_bounds(node.attrib.get("bounds") or "")
+        if box is None:
+            continue
+        if rid == "com.bumblebff.app:id/chatToolbar_title":
+            title = box
+        if any(
+            rid.endswith(suf)
+            for suf in (
+                "chatToolbar_avatar",
+                "conversation_contact",
+                "toolbar_avatar",
+                "profileImage",
+            )
+        ) or "avatar" in rid.lower():
+            if box[3] - box[1] >= 48:
+                avatar = box
+    if avatar is None and title is not None:
+        h = max(48, title[3] - title[1])
+        left = max(0, title[0] - h - 12)
+        avatar = (left, max(0, title[1] - 8), title[0] - 6, title[3] + 8)
+    if avatar is None:
+        return None
+    try:
+        img = _screenshot_pil(device)
+        return _crop_square(img, avatar, inset=0.08)
+    except Exception:
+        log.debug("open-chat face crop failed", exc_info=True)
+        return None
+
+
+def closest_alias_by_face(face, name: str, conn=None) -> tuple[str | None, float]:
+    """Nearest stored namesake photo to `face`. Distance 1e9 if nothing stored."""
+    if face is None:
+        return None, 1e9
+    best_name = None
+    best_dist = 1e9
+    for candidate in namesake_photo_names(name, conn=conn):
+        stored = load_photo(candidate)
+        if stored is None:
+            continue
+        try:
+            dist = face_distance(face, stored)
+        except Exception:
+            continue
+        if dist < best_dist:
+            best_dist = dist
+            best_name = candidate
+    return best_name, best_dist
+
+
+def open_chat_matches_stored_photo(device, name: str, xml: str | None = None, conn=None) -> bool:
+    """True when the open thread's toolbar face is this namesake's stored photo."""
+    face = crop_open_chat_face(device, xml)
+    if face is None:
+        return False
+    matched = match_face_to_namesakes(face, name, conn=conn)
+    if matched and matched.casefold() == name.casefold():
+        log.info("open-chat face matched namesake slot %s", matched)
+        return True
+    stored = load_photo(name)
+    if stored is None:
+        log.warning("open-chat face: no stored photo for %s", name)
+        return False
+    try:
+        own = face_distance(face, stored)
+    except Exception:
+        return False
+    alias, other = closest_alias_by_face(face, name, conn=conn)
+    log.info(
+        "open-chat face vs %s d=%.1f closest=%s d=%.1f matched=%s",
+        name,
+        own,
+        alias,
+        other,
+        matched,
+    )
+    if own <= _FACE_MATCH and (alias is None or alias.casefold() == name.casefold() or other - own >= 6):
+        log.info("open-chat face matches stored %s (d=%.1f)", name, own)
+        return True
+    return False
+
+
 def photos_conflict(left: str, right: str) -> bool:
     """True when both people have avatars and they are clearly different faces."""
     a, b = load_photo(left), load_photo(right)
     if a is None or b is None:
         return False
     return faces_differ(a, b)
+
+
+def notify_photo_saved(name: str, *, replaced: bool = False) -> None:
+    """Guess ethnicity from a newly stored avatar. Manual tags stay put."""
+    if not (name or "").strip():
+        return
+    try:
+        from src.ethnicity_vision import schedule_guess
+        from src.phones import current_phone_id
+
+        schedule_guess(name=name, phone_id=current_phone_id(), force=replaced)
+    except Exception:
+        log.debug("ethnicity guess after photo skip", exc_info=True)
 
 
 def adopt_photo(src_name: str, dest_name: str, phone_id: str | None = None) -> bool:
@@ -183,7 +289,10 @@ def adopt_photo(src_name: str, dest_name: str, phone_id: str | None = None) -> b
     dest = photo_file(dest_name, phone_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
     photo_file(src_name, phone_id).replace(dest)
-    return dest.is_file()
+    if dest.is_file():
+        notify_photo_saved(dest_name)
+        return True
+    return False
 
 
 def next_photo_slot(name: str, aliases: list[str] | None = None) -> str:
@@ -245,6 +354,7 @@ def save_face_image(face, name: str) -> bool:
         return False
     dest = photo_file(name)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    existed = dest.is_file() and dest.stat().st_size > 80
     try:
         from PIL import Image
 
@@ -253,7 +363,10 @@ def save_face_image(face, name: str) -> bool:
         )
     except Exception:
         return False
-    return dest.is_file() and dest.stat().st_size > 80
+    if dest.is_file() and dest.stat().st_size > 80:
+        notify_photo_saved(name, replaced=existed)
+        return True
+    return False
 
 
 def _screenshot_pil(device):
@@ -420,9 +533,11 @@ def grab_visible_list_avatars(device, xml: str | None = None) -> int:
                     continue
                 dest_path = photo_file(dest)
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
+                existed = dest_path.is_file() and dest_path.stat().st_size > 80
                 crop.save(dest_path, "JPEG", quality=82)
                 if dest_path.is_file() and dest_path.stat().st_size > 80:
                     saved += 1
+                    notify_photo_saved(dest, replaced=existed)
                     if dest != name:
                         log.info("list avatar %s stored as %s", name, dest)
             except Exception:
@@ -510,9 +625,11 @@ def capture_open_profile_photo(device, name: str, *, force: bool = False) -> boo
                     return True
         dest_path = photo_file(dest)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
+        existed = dest_path.is_file() and dest_path.stat().st_size > 80
         crop.save(dest_path, "JPEG", quality=82)
         if dest_path.is_file() and dest_path.stat().st_size > 80:
             log.info("saved profile photo for %s", dest)
+            notify_photo_saved(dest, replaced=existed or force)
             return True
     except Exception:
         log.warning("profile photo crop failed for %s", name)

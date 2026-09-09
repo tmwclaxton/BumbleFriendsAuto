@@ -22,7 +22,7 @@ from src.unlock import wake_and_unlock
 log = logging.getLogger(__name__)
 
 _IG_RE = re.compile(
-    r"(?:instagram\.com/|insta(?:gram)?\s*[:@]?\s*|@)([A-Za-z0-9._]{2,30})",
+    r"(?:instagram\.com/|(?<![A-Za-z])(?:ig|insta(?:gram)?)\s*(?:is|it['’]?s|handle|:|@)\s*@?|(?<![A-Za-z0-9._])@)([A-Za-z0-9._]{2,30})",
     re.I,
 )
 _URI_ID_RE = re.compile(r"/(\d+)\s*$")
@@ -56,8 +56,8 @@ def extract_instagrams(text: str) -> list[str]:
     out: list[str] = []
     skip = {"letsgosocialuk", "bumble", "instagram"}
     for match in _IG_RE.finditer(text or ""):
-        handle = match.group(1).strip("._").lower()
-        if len(handle) < 2 or handle in skip or handle in seen:
+        handle = match.group(1).strip(".").lower()
+        if len(handle) < 3 or handle in skip or handle in seen or handle in {"gram", "it", "its"}:
             continue
         seen.add(handle)
         out.append(handle)

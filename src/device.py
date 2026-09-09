@@ -33,6 +33,12 @@ def connect(serial: str | None = None) -> u2.Device:
 
         serial = str(load_config().get("serial") or "").strip() or None
     if serial:
+        from src.adb_wireless import transport_for_row
+        from src.phones import phone_by_serial
+
+        row = phone_by_serial(serial)
+        if row:
+            serial = transport_for_row(row) or serial
         device = u2.connect(serial)
     else:
         device = u2.connect()

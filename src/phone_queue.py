@@ -30,6 +30,8 @@ _INBOX_KINDS = {
     "swipe",
     "unmatch_expired",
     "rematch_expired",
+    "whatsapp_group",
+    "whatsapp_add",
 }
 
 _job_seq = 0
@@ -397,6 +399,34 @@ def _run_job(job: dict) -> tuple[bool, str]:
             phone=str(payload.get("phone") or ""),
             notes=str(payload.get("notes") or ""),
         )
+    if kind in {"whatsapp_group", "whatsapp_add"}:
+        if pid != DEFAULT_PHONE_ID:
+            return False, "WhatsApp groups run on the Pixel only"
+        from src.whatsapp import add_to_group, create_group
+
+        payload = {}
+        raw = str(job.get("text") or "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                payload = parsed
+        people = payload.get("people") if isinstance(payload.get("people"), list) else []
+        if kind == "whatsapp_group":
+            result = create_group(
+                title=str(payload.get("title") or name or ""),
+                people=people,
+                phone_id=pid,
+            )
+        else:
+            result = add_to_group(
+                group=str(payload.get("group") or name or ""),
+                people=people,
+                phone_id=pid,
+            )
+        return bool(result.get("ok")), json.dumps(result, ensure_ascii=False)
     return False, f"unknown action {kind}"
 
 

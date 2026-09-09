@@ -244,15 +244,21 @@ def validate_draft(text: str) -> str:
     return raw
 
 
-def _chat_completion(messages: list[dict[str, Any]], cfg: dict | None = None) -> str:
+def _chat_completion(
+    messages: list[dict[str, Any]],
+    cfg: dict | None = None,
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 220,
+) -> str:
     cfg = cfg if cfg is not None else load_config()
     key = api_key(cfg)
     if not key:
         raise RuntimeError("NANOGPT_API_KEY is not set")
     payload = {
         "model": chat_model(cfg),
-        "temperature": 0.7,
-        "max_tokens": 220,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "messages": messages,
     }
     req = urllib.request.Request(

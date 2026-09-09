@@ -97,15 +97,31 @@ async def api_photo(request: Request) -> Response:
 
 
 async def api_thread(request: Request) -> JSONResponse:
-    name = (parse_qs(request.url.query).get("name") or [""])[0]
-    phone_id = (parse_qs(request.url.query).get("phone") or [DEFAULT_PHONE_ID])[0]
+    qs = parse_qs(request.url.query)
+    name = (qs.get("name") or [""])[0].strip()
+    phone_id = (qs.get("phone") or [DEFAULT_PHONE_ID])[0].strip() or DEFAULT_PHONE_ID
+    number = (qs.get("number") or [""])[0].strip()
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
         from src.phones import phone_scope
+        from src.store import find_person, find_person_by_phone_digits
 
+        if name and find_person(conn, name) is None and number:
+            name = ""
+        if not name and number:
+            person = find_person_by_phone_digits(conn, number)
+            if person is None:
+                return JSONResponse({"ok": False, "error": "thread not found"}, status_code=404)
+            name = str(person["name"])
+            phone_id = str(person["phone_id"] or phone_id)
+        if not name:
+            return JSONResponse({"ok": False, "error": "name or number required"}, status_code=400)
         with phone_scope(phone_id):
-            return JSONResponse(_thread_payload(conn, name, phone_id=phone_id))
+            payload = _thread_payload(conn, name, phone_id=phone_id)
+        payload["ok"] = True
+        payload["phone_id"] = phone_id
+        return JSONResponse(payload)
     finally:
         conn.close()
 
@@ -175,6 +191,38 @@ async def api_in_group(request: Request) -> JSONResponse:
             "ok": True,
             "in_group": filed,
             "message": f"{name} {'added to group' if filed else 'removed from group'}",
+        }
+    )
+
+
+async def api_archive(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    if "archived" not in data:
+        return JSONResponse({"ok": False, "error": "archived required"}, status_code=400)
+    from src.phones import phone_scope
+    from src.store import set_archived
+
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            ok = set_archived(conn, name, bool(data.get("archived")))
+    finally:
+        conn.close()
+    if not ok:
+        return JSONResponse({"ok": False, "error": "person not found"}, status_code=404)
+    hidden = bool(data.get("archived"))
+    return JSONResponse(
+        {
+            "ok": True,
+            "archived": hidden,
+            "message": f"{name} {'archived' if hidden else 'unarchived'}",
         }
     )
 
@@ -591,6 +639,58 @@ async def api_cancel_all(_request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "cancelled": n})
 
 
+async def api_whatsapp_groups(_request: Request) -> JSONResponse:
+    from src.whatsapp import listed_groups
+
+    return JSONResponse({"ok": True, "groups": listed_groups()})
+
+
+async def api_whatsapp_group(request: Request) -> JSONResponse:
+    from src.whatsapp import parse_people
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    people = parse_people(data.get("people"))
+    if not people:
+        return JSONResponse({"ok": False, "error": "people with phone numbers required"}, status_code=400)
+    title = str(data.get("title") or data.get("name") or "").strip()
+    if not title:
+        return JSONResponse({"ok": False, "error": "group title required"}, status_code=400)
+    job = enqueue(
+        "whatsapp_group",
+        title,
+        json.dumps({"title": title, "people": people}),
+        phone_id="toby",
+    )
+    return JSONResponse(
+        {"ok": True, "queued": True, "job": job, "message": f"queued WhatsApp group {title!r}"}
+    )
+
+
+async def api_whatsapp_add(request: Request) -> JSONResponse:
+    from src.whatsapp import parse_people
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    people = parse_people(data.get("people"))
+    if not people:
+        return JSONResponse({"ok": False, "error": "people with phone numbers required"}, status_code=400)
+    group = str(data.get("group") or "").strip()
+    if not group:
+        return JSONResponse({"ok": False, "error": "existing group name required"}, status_code=400)
+    job = enqueue(
+        "whatsapp_add",
+        group,
+        json.dumps({"group": group, "people": people}),
+        phone_id="toby",
+    )
+    return JSONResponse(
+        {"ok": True, "queued": True, "job": job, "message": f"queued add to WhatsApp group {group!r}"}
+    )
+
+
 async def api_reply(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
@@ -622,6 +722,7 @@ def build_app() -> Starlette:
         Route("/api/queue", api_queue),
         Route("/api/dismiss", api_dismiss, methods=["POST"]),
         Route("/api/in-group", api_in_group, methods=["POST"]),
+        Route("/api/archive", api_archive, methods=["POST"]),
         Route("/api/ethnicity", api_ethnicity, methods=["POST"]),
         Route("/api/ethnicity/guess", api_ethnicity_guess, methods=["GET", "POST"]),
         Route("/api/ethnicity/guess/cancel", api_ethnicity_guess_cancel, methods=["POST"]),
@@ -650,6 +751,9 @@ def build_app() -> Starlette:
         Route("/api/draft/retry", api_draft_retry, methods=["POST"]),
         Route("/api/queue/cancel", api_cancel, methods=["POST"]),
         Route("/api/queue/cancel-all", api_cancel_all, methods=["POST"]),
+        Route("/api/whatsapp/groups", api_whatsapp_groups),
+        Route("/api/whatsapp/group", api_whatsapp_group, methods=["POST"]),
+        Route("/api/whatsapp/group/add", api_whatsapp_add, methods=["POST"]),
         Route("/api/reply", api_reply, methods=["POST"]),
         # FastMCP already registers path /mcp — do not Mount("/mcp") or it becomes /mcp/mcp.
         *list(mcp_app.routes),

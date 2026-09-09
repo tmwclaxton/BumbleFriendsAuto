@@ -68,6 +68,7 @@ def _defaults() -> dict[str, dict[str, Any]]:
                 or os.environ.get("GALAXY_SERIAL")
                 or ""
             ).strip(),
+            "adb": (os.environ.get("ARCHIE_ADB") or os.environ.get("GALAXY_ADB") or "").strip(),
             "unlock_pin": (
                 os.environ.get("ARCHIE_UNLOCK_PIN")
                 or os.environ.get("GALAXY_UNLOCK_PIN")
@@ -98,6 +99,9 @@ def list_phones(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         "toby": (os.environ.get("SERIAL") or os.environ.get("PIXEL_SERIAL") or "").strip(),
         "archie": (os.environ.get("ARCHIE_SERIAL") or os.environ.get("GALAXY_SERIAL") or "").strip(),
     }
+    env_adb = {
+        "archie": (os.environ.get("ARCHIE_ADB") or os.environ.get("GALAXY_ADB") or "").strip(),
+    }
     env_pins = {
         "toby": (
             os.environ.get("TOBY_UNLOCK_PIN")
@@ -120,9 +124,12 @@ def list_phones(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
             row["serial"] = env_serials[pid]
         if env_pins.get(pid):
             row["unlock_pin"] = env_pins[pid]
+        if env_adb.get(pid):
+            row["adb"] = env_adb[pid]
         row.setdefault("label", pid.title())
         row.setdefault("device", "pixel" if pid == "toby" else "galaxy")
         row.setdefault("serial", "")
+        row.setdefault("adb", "")
         row.setdefault("unlock_pin", "")
         row.setdefault("notes", "")
         out.append(row)
@@ -163,7 +170,9 @@ def phone_by_serial(serial: str | None, cfg: dict[str, Any] | None = None) -> di
     if not want:
         return None
     for row in list_phones(cfg):
-        if str(row.get("serial") or "").strip() == want:
+        serial = str(row.get("serial") or "").strip()
+        adb = str(row.get("adb") or "").strip()
+        if serial == want or adb == want:
             return row
     return None
 
@@ -185,7 +194,7 @@ def public_phones(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
             "id": str(p["id"]),
             "label": str(p.get("label") or p["id"]),
             "device": str(p.get("device") or ""),
-            "ready": bool(str(p.get("serial") or "").strip()),
+            "ready": bool(str(p.get("serial") or p.get("adb") or "").strip()),
         }
         for p in list_phones(cfg)
     ]

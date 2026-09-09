@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS chats (
     draft TEXT,
     message_until TEXT,
     in_group INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
 
@@ -107,6 +108,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chats ADD COLUMN message_until TEXT")
     if "in_group" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN in_group INTEGER NOT NULL DEFAULT 0")
+    if "archived" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
     if "draft_turn_fp" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN draft_turn_fp TEXT")
     if "draft_pending_fp" not in chat_cols:
@@ -339,6 +342,44 @@ def extract_phones(text: str) -> list[str]:
     return out
 
 
+def phone_match_keys(phone: str) -> set[str]:
+    digits = re.sub(r"\D+", "", phone or "")
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if not digits:
+        return set()
+    keys = {digits}
+    if digits.startswith("44") and len(digits) >= 12:
+        keys.add("0" + digits[2:])
+    if digits.startswith("0") and len(digits) >= 10:
+        keys.add("44" + digits[1:])
+    if len(digits) >= 10:
+        keys.add(digits[-10:])
+    return keys
+
+
+def find_person_by_phone_digits(conn: sqlite3.Connection, raw: str) -> sqlite3.Row | None:
+    """First person whose stored messages include this number."""
+    want = phone_match_keys(raw)
+    if not want:
+        return None
+    people = conn.execute(
+        "SELECT id, name, phone_id FROM people ORDER BY id"
+    ).fetchall()
+    for person in people:
+        blob = " ".join(
+            str(row["body"] or "")
+            for row in conn.execute(
+                "SELECT body FROM messages WHERE person_id = ?",
+                (int(person["id"]),),
+            )
+        )
+        for found in extract_phones(blob):
+            if want & phone_match_keys(found):
+                return person
+    return None
+
+
 def set_in_contacts(conn: sqlite3.Connection, name: str, in_contacts: bool = True) -> bool:
     name = (name or "").strip()
     if not name:
@@ -472,6 +513,73 @@ def name_aliases(conn: sqlite3.Connection, name: str) -> list[str]:
 def _norm_msg(text: str) -> str:
     t = (text or "").replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
     return " ".join(t.split()).casefold()
+
+
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002700-\U000027BF"
+    "\U00002600-\U000026FF"
+    "\U0001F1E6-\U0001F1FF"
+    "]+"
+)
+_BUMBLE_DOTS_RE = re.compile(r"\.{2,}")
+
+
+def _has_emoji(text: str) -> bool:
+    return bool(_EMOJI_RE.search(text or ""))
+
+
+def _emoji_words(text: str) -> str:
+    """Word tokens only — Bumble dumps 👀 as ``..``, which this drops."""
+    t = (text or "").replace("\u2019", "'").replace("\u2018", "'")
+    return " ".join(re.findall(r"[^\W_]+(?:'[^\W_]+)*", t, flags=re.UNICODE)).casefold()
+
+
+def keep_richer_body(captured: str, stored: str) -> str:
+    """Prefer the copy that still has emoji when Bumble's dump turned them into dots."""
+    cap, sto = (captured or "").strip(), (stored or "").strip()
+    if not sto:
+        return cap
+    if not cap:
+        return sto
+    if _emoji_words(cap) != _emoji_words(sto):
+        return cap
+    cap_emoji, sto_emoji = _has_emoji(cap), _has_emoji(sto)
+    if sto_emoji and not cap_emoji:
+        return sto
+    if cap_emoji and not sto_emoji:
+        return cap
+    if sto_emoji and cap_emoji and len(_EMOJI_RE.findall(sto)) > len(_EMOJI_RE.findall(cap)):
+        return sto
+    if _BUMBLE_DOTS_RE.search(cap) and sto_emoji:
+        return sto
+    return cap
+
+
+def merge_thread_keep_emoji(
+    old: list[tuple[str, str]],
+    new: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Keep stored emoji when a recapture is the same bubble with ``..`` placeholders."""
+    unused = list(enumerate(old))
+    out: list[tuple[str, str]] = []
+    for side, body in new:
+        hit: tuple[int, str] | None = None
+        words = _emoji_words(body)
+        for i, (os, ob) in unused:
+            if os != side:
+                continue
+            if words and _emoji_words(ob) == words:
+                hit = (i, ob)
+                break
+        if hit is None:
+            out.append((side, body))
+            continue
+        idx, stored = hit
+        unused = [(i, pair) for i, pair in unused if i != idx]
+        out.append((side, keep_richer_body(body, stored)))
+    return out
 
 
 def _generic_opener(text: str) -> bool:
@@ -688,7 +796,8 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                 UPDATE chats SET last_from = ?, last_text = ?, preview = ?, badge = ?,
                     status = ?, opener_sent = MAX(opener_sent, ?),
                     message_until = COALESCE(message_until, ?), draft = COALESCE(draft, ?),
-                    in_group = MAX(IFNULL(in_group, 0), ?)
+                    in_group = MAX(IFNULL(in_group, 0), ?),
+                    archived = MAX(IFNULL(archived, 0), ?)
                 WHERE person_id = ?
                 """,
                 (
@@ -701,12 +810,13 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                     drop_chat["message_until"],
                     drop_chat["draft"],
                     int(drop_chat["in_group"] or 0) if "in_group" in drop_chat.keys() else 0,
+                    int(drop_chat["archived"] or 0) if "archived" in drop_chat.keys() else 0,
                     keep_id,
                 ),
             )
     else:
         drop_chat = conn.execute(
-            "SELECT draft, in_group FROM chats WHERE person_id = ?",
+            "SELECT draft, in_group, archived FROM chats WHERE person_id = ?",
             (drop_id,),
         ).fetchone()
         if drop_chat and drop_chat["draft"]:
@@ -715,6 +825,8 @@ def absorb_person(conn: sqlite3.Connection, keep_name: str, drop_name: str) -> N
                 conn.execute("UPDATE chats SET draft = ? WHERE person_id = ?", (drop_chat["draft"], keep_id))
         if drop_chat and int(drop_chat["in_group"] or 0):
             conn.execute("UPDATE chats SET in_group = 1 WHERE person_id = ?", (keep_id,))
+        if drop_chat and "archived" in drop_chat.keys() and int(drop_chat["archived"] or 0):
+            conn.execute("UPDATE chats SET archived = 1 WHERE person_id = ?", (keep_id,))
     drop_person = conn.execute(
         "SELECT location, distance, age, phone_provided, ethnicity, ethnicity_source FROM people WHERE id = ?",
         (drop_id,),
@@ -973,6 +1085,8 @@ def person_is_expired_new(row: sqlite3.Row | dict | None) -> bool:
 
     if int(_get("in_group") or 0):
         return False
+    if int(_get("archived") or 0):
+        return False
     if str(_get("status") or "") == "dismissed" or int(_get("dismissed") or 0):
         return False
     text = f"{_get('last_text') or ''} {_get('preview') or ''}".strip()
@@ -1017,6 +1131,8 @@ def list_expired_names(
         if not person_is_expired(row):
             continue
         if int(row["in_group"] or 0):
+            continue
+        if "archived" in row.keys() and int(row["archived"] or 0):
             continue
         if str(row["phone_id"] or DEFAULT_PHONE_ID) != pid:
             continue
@@ -1194,6 +1310,22 @@ def set_in_group(conn: sqlite3.Connection, name: str, in_group: bool) -> bool:
     return True
 
 
+def set_archived(conn: sqlite3.Connection, name: str, archived: bool) -> bool:
+    """Hide the chat until someone unarchives it. New replies do not bring it back."""
+    name = name.strip()
+    if not name:
+        return False
+    if find_person(conn, name) is None:
+        return False
+    person_id = upsert_chat(conn, name)
+    conn.execute(
+        "UPDATE chats SET archived = ?, updated_at = ? WHERE person_id = ?",
+        (1 if archived else 0, _now(), person_id),
+    )
+    conn.commit()
+    return True
+
+
 def set_ethnicity(
     conn: sqlite3.Connection,
     name: str,
@@ -1266,12 +1398,14 @@ def enqueue_auto_draft_if_needed(
     """
     row = conn.execute(
         """
-        SELECT status, in_group, draft_turn_fp, draft_pending_fp, draft_status
+        SELECT status, in_group, archived, draft_turn_fp, draft_pending_fp, draft_status
         FROM chats WHERE person_id = ?
         """,
         (person_id,),
     ).fetchone()
     if row is None:
+        return False
+    if "archived" in row.keys() and int(row["archived"] or 0):
         return False
     if (row["status"] or "") != "needs_reply":
         return False
@@ -1307,6 +1441,15 @@ def replace_thread(
     messages: list[tuple[str, str]],
 ) -> None:
     """Replace stored transcript with a chronological (oldest-first) capture."""
+    prev = [
+        (str(r["side"]), str(r["body"]))
+        for r in conn.execute(
+            "SELECT side, body FROM messages WHERE person_id = ? ORDER BY id",
+            (person_id,),
+        )
+    ]
+    if prev:
+        messages = merge_thread_keep_emoji(prev, messages)
     conn.execute("DELETE FROM messages WHERE person_id = ?", (person_id,))
     now = _now()
     cleaned: list[tuple[str, str]] = []
@@ -1318,6 +1461,12 @@ def replace_thread(
         conn.execute(
             "INSERT INTO messages (person_id, side, body, captured_at) VALUES (?, ?, ?, ?)",
             (person_id, side, body, f"{now}#{seq:04d}"),
+        )
+    if cleaned:
+        last_side, last_body = cleaned[-1]
+        conn.execute(
+            "UPDATE chats SET last_from = ?, last_text = ? WHERE person_id = ?",
+            (last_side, last_body, person_id),
         )
     enqueue_auto_draft_if_needed(conn, person_id, cleaned)
 
@@ -1340,6 +1489,7 @@ def list_pending_auto_drafts(
               AND c.draft_pending_fp IS NOT NULL
               AND trim(c.draft_pending_fp) != ''
               AND IFNULL(c.status, '') != 'dismissed'
+              AND IFNULL(c.archived, 0) = 0
               AND (
                     (c.draft_status = 'pending'
                      AND (c.draft_next_attempt_at IS NULL OR c.draft_next_attempt_at <= ?))
@@ -1469,7 +1619,7 @@ def retry_auto_draft(conn: sqlite3.Connection, name: str) -> bool:
         return False
     row = conn.execute(
         """
-        SELECT c.person_id, c.draft_pending_fp, c.draft_turn_fp, c.status, c.in_group
+        SELECT c.person_id, c.draft_pending_fp, c.draft_turn_fp, c.status, c.in_group, c.archived
         FROM chats c
         JOIN people p ON p.id = c.person_id
         WHERE p.name = ? AND p.phone_id = ?
@@ -1477,6 +1627,8 @@ def retry_auto_draft(conn: sqlite3.Connection, name: str) -> bool:
         (name, _scope_phone()),
     ).fetchone()
     if row is None:
+        return False
+    if "archived" in row.keys() and int(row["archived"] or 0):
         return False
     fp = (row["draft_pending_fp"] or "").strip()
     if not fp:
@@ -1600,6 +1752,8 @@ def is_new_friend(row: sqlite3.Row | dict) -> bool:
         return False
     if int(_get("in_group") or 0):
         return False
+    if int(_get("archived") or 0):
+        return False
     if int(_get("opener_sent") or 0):
         return False
     blob = f"{_get('status') or ''} {_get('last_text') or ''} {_get('preview') or ''}"
@@ -1626,7 +1780,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    p.ethnicity_source, p.in_contacts, p.lgs_lead_id,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
                    c.dismissed_reply_text, c.opener_sent, c.draft, c.message_until,
-                   c.in_group,
+                   c.in_group, c.archived,
                    c.draft_status, c.draft_error, c.draft_attempts, c.draft_pending_fp,
                    c.updated_at,
                    (SELECT COUNT(*) FROM messages m WHERE m.person_id = p.id) AS message_count
@@ -1668,7 +1822,9 @@ def list_needs_reply(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             SELECT p.name, c.badge, c.last_from, c.last_text, c.preview, c.draft, c.updated_at
             FROM chats c
             JOIN people p ON p.id = c.person_id
-            WHERE c.status = 'needs_reply' AND IFNULL(c.in_group, 0) = 0
+            WHERE c.status = 'needs_reply'
+              AND IFNULL(c.in_group, 0) = 0
+              AND IFNULL(c.archived, 0) = 0
             ORDER BY p.name COLLATE NOCASE
             """
         )

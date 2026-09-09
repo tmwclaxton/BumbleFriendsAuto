@@ -112,22 +112,13 @@
     color: #e0b4d4;
     border-color: #6a4a62;
   }
-  #eth-guess, #guess-eth {
-    background: transparent;
-    color: var(--muted);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 4px 8px;
-    font: 11px/1.3 inherit;
-    cursor: pointer;
-  }
-  #eth-guess:hover, #guess-eth:hover { color: var(--text); }
-  #eth-guess:disabled, #guess-eth:disabled { opacity: 0.55; cursor: default; }
   .workspace {
     display: grid;
-    grid-template-columns: minmax(300px, 1fr) minmax(300px, 1fr) minmax(420px, 1.35fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr);
+    min-width: 0;
     min-height: 0;
     height: 100%;
+    overflow: hidden;
   }
   .workspace.toby-collapsed {
     grid-template-columns: 44px minmax(300px, 1fr) minmax(420px, 1.35fr);
@@ -235,6 +226,7 @@
     white-space: nowrap;
   }
   #crm-one:hover { background: #243548; }
+  #crm-wa-pick[hidden] { display: none; }
   #crm-modal {
     position: fixed;
     inset: 0;
@@ -247,7 +239,7 @@
   }
   #crm-modal.open { display: flex; }
   #crm-modal .sheet {
-    width: min(440px, 100%);
+    width: min(560px, 100%);
     max-height: 90vh;
     overflow: auto;
     background: var(--panel);
@@ -272,7 +264,24 @@
     padding: 7px 8px;
     font: 13px inherit;
   }
-  #crm-modal textarea { min-height: 72px; resize: vertical; }
+  #crm-modal textarea { min-height: 64px; resize: vertical; }
+  #crm-modal label.consent {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 0 0;
+    color: inherit;
+    font-size: 13px;
+  }
+  #crm-modal label.consent input { width: auto; }
+  #crm-form .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 10px;
+  }
+  @media (max-width: 520px) {
+    #crm-form .pair { grid-template-columns: 1fr; }
+  }
   #crm-modal .row-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
   #crm-modal button { font: 12px inherit; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
   #crm-cancel { background: transparent; color: inherit; border: 1px solid var(--line); }
@@ -459,6 +468,7 @@
   .same-name { background: #2a2430; color: #e0b4d4; }
   .dismissed { background: #2a2724; color: #b8a99a; }
   .in_group { background: #17332c; color: var(--wait); }
+  .archived { background: #24222a; color: #b7b0c4; }
   .section-head {
     display: flex;
     align-items: center;
@@ -553,6 +563,17 @@
   .group-wrap .section-head { color: var(--wait); }
   .group-wrap .row { border-bottom-color: #24332e; }
   .group-wrap .row:last-child { border-bottom: 0; }
+  .archive-wrap {
+    margin: 10px 8px 12px;
+    background: #141318;
+    border: 1px solid #353240;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .archive-wrap[hidden] { display: none; }
+  .archive-wrap .section-head { color: #b7b0c4; }
+  .archive-wrap .row { border-bottom-color: #2c2a34; }
+  .archive-wrap .row:last-child { border-bottom: 0; }
   .dismissed-wrap {
     margin: 10px 8px 12px;
     background: #161412;
@@ -582,20 +603,39 @@
   main {
     display: flex;
     flex-direction: column;
+    min-width: 0;
     min-height: 0;
     height: 100%;
     overflow: hidden;
   }
   #thread-head {
-    padding: 16px 20px;
+    padding: 12px 16px;
     border-bottom: 1px solid var(--line);
-    min-height: 64px;
+    min-height: 0;
+    min-width: 0;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: 8px 12px;
   }
-  #thread-head h2 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 8px; }
+  #thread-head h2 {
+    margin: 0;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    min-width: 0;
+    flex: 1 1 180px;
+  }
+  #thread-head .head-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: min(100%, 42ch);
+  }
   #dismiss-reply {
     flex-shrink: 0;
     background: #3a2218;
@@ -607,21 +647,32 @@
     cursor: pointer;
   }
   #dismiss-reply:hover { background: #4a2c20; }
-  #toggle-group {
+  #archive-chat {
     flex-shrink: 0;
-    background: #17332c;
-    color: var(--wait);
-    border: 1px solid #3d6b5c;
+    background: #24222a;
+    color: #b7b0c4;
+    border: 1px solid #5a5568;
     border-radius: 8px;
     padding: 6px 10px;
     font: 12px/1.2 inherit;
     cursor: pointer;
   }
-  #toggle-group:hover { background: #1f443a; }
-  #toggle-group.on {
-    background: #1f443a;
+  #archive-chat:hover { background: #322f3c; }
+  #archive-chat.on { background: #3a3648; color: #ddd8ea; }
+  #thread-head .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 0;
+    flex: 1 1 220px;
   }
-  #thread-head .actions { display: flex; gap: 8px; align-items: center; }
+  #thread-head .actions button,
+  #thread-head .actions select {
+    max-width: 100%;
+  }
+  #ethnicity-set { min-width: 0; max-width: 150px; }
   #refresh-chat {
     flex-shrink: 0;
     background: var(--panel);
@@ -760,6 +811,24 @@
     .workspace.archie-collapsed { grid-template-columns: 1fr 44px; }
     .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 44px 44px; }
     main { grid-column: 1 / -1; min-height: 42vh; border-top: 1px solid var(--line); }
+    #thread-head { padding: 10px 12px; }
+    #thread-head h2 { font-size: 16px; }
+    #thread-head .actions { justify-content: flex-start; flex-basis: 100%; }
+    #thread-head .head-title { max-width: 100%; white-space: normal; }
+  }
+  @media (max-width: 720px) {
+    .workspace {
+      grid-template-columns: 1fr;
+      grid-template-rows: minmax(28vh, 1fr) minmax(42vh, 1.4fr);
+    }
+    .workspace.toby-collapsed,
+    .workspace.archie-collapsed,
+    .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 1fr; }
+    .phone-col.collapsed { display: none; }
+    main { grid-column: auto; min-height: 0; }
+    #composer { flex-wrap: wrap; }
+    #composer textarea { min-width: 0; flex: 1 1 160px; }
+    .bubble { max-width: 88%; }
   }
   #swipe-btn {
     color: var(--you);
@@ -768,6 +837,8 @@
     border-radius: 6px;
     padding: 2px 8px;
     font: inherit;
+    background: transparent;
+    cursor: pointer;
   }
   #swipe-btn:hover { background: #24242c; }
   #queue button {
@@ -805,11 +876,10 @@
       </select>
     </div>
     <div class="top-actions">
-      <button type="button" id="fast-scan" title="Scroll the inbox list and open only chats whose latest message changed or whose Your turn badge disagrees with storage.">Fast scan</button>
+      <button type="button" id="fast-scan" title="Scroll the inbox list and open only chats whose latest message changed or whose Your turn badge disagrees with storage. Also refreshes the New friends strip and rematches expired circles.">Fast scan</button>
       <button type="button" id="refresh-all" title="Open every chat and refresh stored transcripts. Can take ~40 minutes.">Refresh all</button>
       <button type="button" id="refresh-new" title="Look at the New friends circles on the phone.">Refresh strip</button>
       <button type="button" id="msg-all" title="Send the opener only to New friends, not existing chats.">Send openers</button>
-      <button type="button" id="eth-guess">Guess from photos</button>
       <button type="button" id="show-prompt" title="Show the system + user prompt Sol gets for drafts">AI prompt</button>
       <a id="swipe-btn" href="/swipe" title="Open the swipe desk">Swipe desk</a>
     </div>
@@ -842,13 +912,13 @@
     </div>
     <div class="chats-head section-head"><span>Chats</span></div>
     <div class="chat-list" data-chat-list></div>
-    <div class="group-wrap" hidden>
-      <div class="section-head"><span data-group-label>In group</span></div>
-      <div data-group-list></div>
-    </div>
     <div class="dismissed-wrap" hidden>
       <div class="section-head"><span data-dismissed-label>Dismissed</span></div>
       <div data-dismissed-list></div>
+    </div>
+    <div class="archive-wrap" hidden>
+      <div class="section-head"><span data-archive-label>Archived</span></div>
+      <div data-archive-list></div>
     </div>
   </div>
 </section>
@@ -878,13 +948,13 @@
     </div>
     <div class="chats-head section-head"><span>Chats</span></div>
     <div class="chat-list" data-chat-list></div>
-    <div class="group-wrap" hidden>
-      <div class="section-head"><span data-group-label>In group</span></div>
-      <div data-group-list></div>
-    </div>
     <div class="dismissed-wrap" hidden>
       <div class="section-head"><span data-dismissed-label>Dismissed</span></div>
       <div data-dismissed-list></div>
+    </div>
+    <div class="archive-wrap" hidden>
+      <div class="section-head"><span data-archive-label>Archived</span></div>
+      <div data-archive-list></div>
     </div>
   </div>
 </section>
@@ -921,22 +991,120 @@
     <h3>Add to CRM</h3>
     <p class="new-hint" id="crm-hint">Prefill from the chat, then edit anything that looks off.</p>
     <form id="crm-form">
-      <label for="crm-name">Name</label>
-      <input id="crm-name" name="name" required autocomplete="off"/>
-      <label for="crm-phone">Phone</label>
-      <input id="crm-phone" name="phone" required autocomplete="off"/>
-      <label for="crm-instagram">Instagram</label>
-      <input id="crm-instagram" name="instagram" autocomplete="off"/>
-      <label for="crm-hometown">Hometown / area</label>
-      <input id="crm-hometown" name="hometown" autocomplete="off"/>
-      <label for="crm-ethnicity">Ethnicity</label>
-      <select id="crm-ethnicity" name="ethnicity"></select>
-      <label for="crm-group">Home group</label>
-      <select id="crm-group" name="home_lgs_group_id">
-        <option value="">None yet</option>
-      </select>
+      <div class="pair">
+        <div>
+          <label for="crm-name">Name</label>
+          <input id="crm-name" name="name" required autocomplete="off"/>
+        </div>
+        <div>
+          <label for="crm-phone">Phone</label>
+          <input id="crm-phone" name="phone" required autocomplete="off"/>
+        </div>
+      </div>
+      <div class="pair">
+        <div>
+          <label for="crm-email">Email</label>
+          <input id="crm-email" name="email" type="email" autocomplete="off"/>
+        </div>
+        <div>
+          <label for="crm-method">Preferred contact</label>
+          <select id="crm-method" name="preferred_contact_method">
+            <option value="">Not set</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="phone">Phone</option>
+            <option value="text">Text</option>
+            <option value="email">Email</option>
+            <option value="in_person">In person</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+      </div>
+      <div class="pair">
+        <div>
+          <label for="crm-region">Region</label>
+          <input id="crm-region" name="region" autocomplete="off"/>
+        </div>
+        <div>
+          <label for="crm-group">Closest LGS</label>
+          <select id="crm-group" name="closest_lgs_group_id">
+            <option value="">None yet</option>
+          </select>
+        </div>
+      </div>
+      <label for="crm-address">Address</label>
+      <input id="crm-address" name="address" autocomplete="off"/>
+      <div class="pair">
+        <div>
+          <label for="crm-status">Status</label>
+          <select id="crm-status" name="status">
+            <option value="prospect">Prospect</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+        </div>
+        <div>
+          <label for="crm-source">Source</label>
+          <select id="crm-source" name="source">
+            <option value="bumble_friends">Bumble Friends</option>
+            <option value="event">Event</option>
+            <option value="referral">Referral</option>
+            <option value="outreach">Outreach</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+      </div>
+      <div class="pair">
+        <div>
+          <label for="crm-instagram">Instagram</label>
+          <input id="crm-instagram" name="instagram" autocomplete="off"/>
+        </div>
+        <div>
+          <label for="crm-tiktok">TikTok</label>
+          <input id="crm-tiktok" name="tiktok" autocomplete="off"/>
+        </div>
+      </div>
+      <div class="pair">
+        <div>
+          <label for="crm-age">Age</label>
+          <input id="crm-age" name="age" type="number" min="16" max="80" inputmode="numeric" autocomplete="off"/>
+        </div>
+        <div>
+          <label for="crm-ethnicity">Ethnicity</label>
+          <select id="crm-ethnicity" name="ethnicity"></select>
+        </div>
+      </div>
+      <label for="crm-event">Event they are coming to</label>
+      <input id="crm-event" name="interested_event" autocomplete="off"/>
+      <div class="pair">
+        <div>
+          <label for="crm-follow">Next follow-up</label>
+          <input id="crm-follow" name="next_follow_up_at" type="date"/>
+        </div>
+        <div>
+          <label for="crm-tags">Tags</label>
+          <input id="crm-tags" name="tags" placeholder="escape room, drives" autocomplete="off"/>
+        </div>
+      </div>
+      <label for="crm-interests">Interests and skills</label>
+      <textarea id="crm-interests" name="interests_skills"></textarea>
       <label for="crm-notes">Notes</label>
       <textarea id="crm-notes" name="notes"></textarea>
+      <label class="consent">
+        <input type="checkbox" id="crm-consent" name="consent_to_contact" checked/>
+        Consent to contact recorded
+      </label>
+      <label class="consent">
+        <input type="checkbox" id="crm-attach-logs" checked/>
+        Attach Bumble logs on Let's Go Social
+      </label>
+      <label class="consent">
+        <input type="checkbox" id="crm-wa"/>
+        Also add to a WhatsApp group on the Pixel
+      </label>
+      <div id="crm-wa-pick" hidden>
+        <label for="crm-wa-group">WhatsApp group</label>
+        <select id="crm-wa-group"></select>
+      </div>
       <div class="row-btns">
         <button type="button" id="crm-cancel">Cancel</button>
         <button type="submit" id="crm-save">Save to Let's Go Social</button>
@@ -1014,8 +1182,6 @@ const storedFilters = loadStoredFilters();
 let ethnicityFilter = new Set(storedFilters.eth);
 document.getElementById("filter").value = storedFilters.name;
 updateFiltersBtn();
-let ethnicityGuess = {};
-let guessTimer = 0;
 let openerTemplate = "";
 let current = null;
 let currentPhone = "toby";
@@ -1098,10 +1264,8 @@ async function loadPeople() {
   phones = data.phones || phones;
   openerTemplate = data.opener_template || "";
   ethnicityChoices = data.ethnicity_choices || ethnicityChoices;
-  ethnicityGuess = data.ethnicity_guess || ethnicityGuess;
   renderEthFilter();
-  renderEthGuess(ethnicityGuess);
-  const n = people.filter(p => p.status === "needs_reply" && !p.dismissed && !p.in_group).length;
+  const n = people.filter(p => p.status === "needs_reply" && !p.dismissed && !p.archived).length;
   const drafts = people.filter(p => (p.draft || "").trim()).length;
   const drafting = people.filter(p => ["pending", "running", "error"].includes(p.draft_status)).length;
   let line = people.length + " people · " + n + " need a reply · " + drafts + " drafts";
@@ -1164,11 +1328,11 @@ function faceHtml(p, name) {
 }
 
 function isDismissed(p) {
-  return !!(p && (p.dismissed || p.status === "dismissed") && !p.in_group);
+  return !!(p && (p.dismissed || p.status === "dismissed") && !isArchived(p));
 }
 
-function isInGroup(p) {
-  return !!(p && p.in_group);
+function isArchived(p) {
+  return !!(p && p.archived);
 }
 
 function isExpired(p) {
@@ -1180,7 +1344,7 @@ function isExpired(p) {
 }
 
 function isExpiredNew(p) {
-  if (!isExpired(p) || isInGroup(p) || isDismissed(p)) return false;
+  if (!isExpired(p) || isArchived(p) || isDismissed(p)) return false;
   const text = (p.last_text || p.preview || "").trim();
   if (/conversation expired/i.test(text)) return false;
   return !text || /hours left|no messages|match expired/i.test(text) || !!p.message_until;
@@ -1189,8 +1353,8 @@ function isExpiredNew(p) {
 function rowHtml(p, inNew) {
   const on = current === p.name && currentPhone === (p.phone_id || "toby") ? " on" : "";
   const snip = esc(inNew ? remainingLabel(p.message_until) : (p.last_text || p.preview || ""));
-  const st = p.new_friend ? "new" : (isInGroup(p) ? "in_group" : (isDismissed(p) ? "dismissed" : (p.status || "unknown")));
-  const stLabel = p.new_friend ? "new friend" : (isInGroup(p) ? "in group" : st.replace("_"," "));
+  const st = p.new_friend ? "new" : (isArchived(p) ? "archived" : (isDismissed(p) ? "dismissed" : (p.status || "unknown")));
+  const stLabel = p.new_friend ? "new friend" : (isArchived(p) ? "archived" : st.replace("_"," "));
   const tag = inNew ? "" : `<span class="tag ${st}">${esc(stLabel)}</span>`;
   const href = "?chat=" + encodeURIComponent(p.name) + "&phone=" + encodeURIComponent(p.phone_id || "toby");
   const extras = [];
@@ -1246,14 +1410,14 @@ function renderPhoneColumn(pid) {
   const q = document.getElementById("filter").value.trim().toLowerCase();
   const pool = people.filter(p => (p.phone_id || "toby") === pid);
   const match = p => (!q || p.name.toLowerCase().includes(q)) && matchEthnicity(p);
-  const allFresh = pool.filter(p => p.new_friend && !isDismissed(p) && !isInGroup(p));
+  const allFresh = pool.filter(p => p.new_friend && !isDismissed(p) && !isArchived(p));
   const fresh = allFresh.filter(match);
   const expiredNew = pool.filter(p => isExpiredNew(p) && match(p));
-  const expiredAll = pool.filter(p => isExpired(p) && !isInGroup(p));
-  const grouped = pool.filter(p => isInGroup(p) && match(p));
-  const hidden = pool.filter(p => isDismissed(p) && !isInGroup(p) && match(p));
-  const rest = pool.filter(p => !p.new_friend && !isExpiredNew(p) && !isDismissed(p) && !isInGroup(p) && match(p));
-  const need = pool.filter(p => p.status === "needs_reply" && !p.dismissed && !p.in_group).length;
+  const expiredAll = pool.filter(p => isExpired(p) && !isArchived(p));
+  const archived = pool.filter(p => isArchived(p) && match(p));
+  const hidden = pool.filter(p => isDismissed(p) && !isArchived(p) && match(p));
+  const rest = pool.filter(p => !p.new_friend && !isExpiredNew(p) && !isDismissed(p) && !isArchived(p) && match(p));
+  const need = pool.filter(p => p.status === "needs_reply" && !p.dismissed && !p.archived).length;
   col.querySelector("[data-col-meta]").textContent =
     pool.length + " people · " + need + " need reply · " + allFresh.length + " new · " + expiredAll.length + " expired";
   const unmatchBtns = col.querySelectorAll("[data-unmatch-expired]");
@@ -1290,16 +1454,6 @@ function renderPhoneColumn(pid) {
       ? expiredNew.map(p => rowHtml(p, false)).join("")
       : '<p class="empty-new">No first-message matches.</p>';
   }
-  const groupWrap = col.querySelector(".group-wrap");
-  const groupList = col.querySelector("[data-group-list]");
-  if (grouped.length) {
-    groupWrap.hidden = false;
-    col.querySelector("[data-group-label]").textContent = "In group · " + grouped.length;
-    groupList.innerHTML = grouped.map(p => rowHtml(p, false)).join("");
-  } else {
-    groupWrap.hidden = true;
-    groupList.innerHTML = "";
-  }
   const dismissedWrap = col.querySelector(".dismissed-wrap");
   const dismissedList = col.querySelector("[data-dismissed-list]");
   if (hidden.length) {
@@ -1309,6 +1463,16 @@ function renderPhoneColumn(pid) {
   } else {
     dismissedWrap.hidden = true;
     dismissedList.innerHTML = "";
+  }
+  const archiveWrap = col.querySelector(".archive-wrap");
+  const archiveList = col.querySelector("[data-archive-list]");
+  if (archived.length) {
+    archiveWrap.hidden = false;
+    col.querySelector("[data-archive-label]").textContent = "Archived · " + archived.length;
+    archiveList.innerHTML = archived.map(p => rowHtml(p, false)).join("");
+  } else {
+    archiveWrap.hidden = true;
+    archiveList.innerHTML = "";
   }
   col.querySelector(".chats-head").hidden = !rest.length && !q;
   col.querySelector("[data-chat-list]").innerHTML = rest.map(p => rowHtml(p, false)).join("");
@@ -1327,9 +1491,9 @@ function isDayLabel(body) {
 
 function renderHead(name, status, phoneProvided) {
   const known = findPerson(name, currentPhone);
-  const grouped = isInGroup(known);
-  const hidden = !grouped && (isDismissed(known) || status === "dismissed");
-  const dismiss = status === "needs_reply" && !hidden && !grouped
+  const archived = isArchived(known);
+  const hidden = !archived && (isDismissed(known) || status === "dismissed");
+  const dismiss = status === "needs_reply" && !hidden && !archived
     ? '<button type="button" id="dismiss-reply">Dismiss needs reply</button>'
     : "";
   const unmatch = isExpired(known) || status === "expired"
@@ -1347,10 +1511,10 @@ function renderHead(name, status, phoneProvided) {
     ? `<span class="tag same-name">${known.same_name_count} named ${esc(known.base_name || name)}</span>`
     : "";
   const hid = hidden ? '<span class="tag dismissed">dismissed</span>' : "";
-  const grp = grouped ? '<span class="tag in_group">in group</span>' : "";
-  const groupBtn = grouped
-    ? '<button type="button" id="toggle-group" class="on" data-in-group="0">Not in group</button>'
-    : '<button type="button" id="toggle-group" data-in-group="1">Added to group</button>';
+  const archivedTag = archived ? '<span class="tag archived">archived</span>' : "";
+  const archiveBtn = archived
+    ? '<button type="button" id="archive-chat" class="on" data-archived="0">Unarchive</button>'
+    : '<button type="button" id="archive-chat" data-archived="1">Archive</button>';
   const currentEth = (known && known.ethnicity) || "";
   const ethOpts = ['<option value="">Ethnicity…</option>']
     .concat(ethnicityChoices.map(c => {
@@ -1358,16 +1522,13 @@ function renderHead(name, status, phoneProvided) {
       return `<option value="${esc(c.id)}"${sel}>${esc(c.label)}</option>`;
     }))
     .join("");
-  const guessOne = known && known.photo
-    ? '<button type="button" id="guess-eth">Guess photo</button>'
-    : "";
   const ds = (known && known.draft_status) || "";
   const retryDraft = (ds === "error" || ds === "pending" || ds === "running")
     ? '<button type="button" id="retry-draft" title="' + esc((known && known.draft_error) || "Re-queue GPT Sol draft") + '">Retry draft</button>'
     : "";
-  headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${phoneTag(known || {phone_id: currentPhone})} ${same} ${phone} ${grp} ${hid}</h2><div class="actions">
-    <select id="ethnicity-set" aria-label="Ethnicity">${ethOpts}</select>${guessOne}
-    <button type="button" id="refresh-chat">Refresh</button>${retryDraft}${groupBtn}${dismiss}${crm}${unmatch}${rematch}
+  headEl.innerHTML = `<h2>${faceHtml(known, name)}<span class="head-title">${esc(title)}</span> ${phoneTag(known || {phone_id: currentPhone})} ${same} ${phone} ${archivedTag} ${hid}</h2><div class="actions">
+    <select id="ethnicity-set" aria-label="Ethnicity">${ethOpts}</select>
+    <button type="button" id="refresh-chat">Refresh</button>${retryDraft}${archiveBtn}${dismiss}${crm}${unmatch}${rematch}
   </div>`;
 }
 
@@ -1493,75 +1654,7 @@ headEl.addEventListener("click", async e => {
   }
 });
 
-function renderEthGuess(state) {
-  const btn = document.getElementById("eth-guess");
-  if (!btn) return;
-  ethnicityGuess = state || {};
-  if (ethnicityGuess.running) {
-    btn.disabled = false;
-    btn.dataset.stop = "1";
-    btn.textContent = "Stop guess " + (ethnicityGuess.done || 0) + "/" + (ethnicityGuess.total || 0);
-    if (ethnicityGuess.last_name) {
-      statusEl.textContent = "Guessing ethnicity from photo: " + ethnicityGuess.last_name;
-    }
-    scheduleGuessPoll();
-    return;
-  }
-  btn.disabled = false;
-  btn.dataset.stop = "";
-  btn.textContent = "Guess from photos";
-}
-
-function scheduleGuessPoll() {
-  clearTimeout(guessTimer);
-  guessTimer = setTimeout(pollEthnicityGuess, 1500);
-}
-
-async function pollEthnicityGuess() {
-  const res = await fetch("/api/ethnicity/guess");
-  const data = await res.json();
-  const wasRunning = !!ethnicityGuess.running;
-  renderEthGuess(data);
-  if (wasRunning && !data.running) {
-    statusEl.textContent = data.message || (data.error || "Guess from photos finished");
-    await loadPeople();
-    if (current) {
-      const person = findPerson(current, currentPhone);
-      renderHead(current, person && person.status, person && person.phone_provided);
-    }
-  }
-}
-
-async function startEthnicityGuess(name) {
-  const res = await fetch("/api/ethnicity/guess", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(name ? {name, force: true} : {}),
-  });
-  const data = await res.json();
-  if (!data.ok) {
-    statusEl.textContent = "Failed: " + (data.error || res.status);
-    return;
-  }
-  statusEl.textContent = data.message || "Guessing ethnicity from photos";
-  renderEthGuess(data);
-}
-
-document.getElementById("eth-guess").addEventListener("click", async () => {
-  if (document.getElementById("eth-guess").dataset.stop === "1") {
-    await fetch("/api/ethnicity/guess/cancel", {method: "POST"});
-    return;
-  }
-  startEthnicityGuess("");
-});
-
 headEl.addEventListener("click", async e => {
-  const guessBtn = e.target.closest("#guess-eth");
-  if (guessBtn && current) {
-    guessBtn.disabled = true;
-    await startEthnicityGuess(current);
-    return;
-  }
   const refreshBtn = e.target.closest("#refresh-chat");
   if (refreshBtn && current) {
     statusEl.textContent = "Queued refresh of " + current;
@@ -1575,14 +1668,14 @@ headEl.addEventListener("click", async e => {
     pollQueue();
     return;
   }
-  const groupBtn = e.target.closest("#toggle-group");
-  if (groupBtn && current) {
-    groupBtn.disabled = true;
-    const filed = groupBtn.dataset.inGroup === "1";
-    const res = await fetch("/api/in-group", {
+  const archiveBtn = e.target.closest("#archive-chat");
+  if (archiveBtn && current) {
+    archiveBtn.disabled = true;
+    const hiddenChat = archiveBtn.dataset.archived === "1";
+    const res = await fetch("/api/archive", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({name: current, phone_id: currentPhone, in_group: filed}),
+      body: JSON.stringify({name: current, phone_id: currentPhone, archived: hiddenChat}),
     });
     const data = await res.json();
     statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
@@ -1590,7 +1683,7 @@ headEl.addEventListener("click", async e => {
       await loadPeople();
       await openThread(current, {push: false});
     } else {
-      groupBtn.disabled = false;
+      archiveBtn.disabled = false;
     }
     return;
   }
@@ -1723,7 +1816,7 @@ document.querySelector(".workspace").addEventListener("click", e => {
   if (bulkUnmatch) {
     const pid = bulkUnmatch.dataset.unmatchExpired;
     const newOnly = bulkUnmatch.dataset.newOnly === "1";
-    const n = people.filter(p => (p.phone_id || "toby") === pid && (newOnly ? isExpiredNew(p) : (isExpired(p) && !isInGroup(p)))).length;
+    const n = people.filter(p => (p.phone_id || "toby") === pid && (newOnly ? isExpiredNew(p) : (isExpired(p) && !isArchived(p)))).length;
     if (!n) return;
     if (!confirm(
       "Unmatch " + n + (newOnly ? " expired new friend" : " expired connection") + (n === 1 ? "" : "s") +
@@ -1747,7 +1840,7 @@ document.querySelector(".workspace").addEventListener("click", e => {
   if (bulkRematch) {
     const pid = bulkRematch.dataset.rematchExpired;
     const newOnly = bulkRematch.dataset.newOnly === "1";
-    const n = people.filter(p => (p.phone_id || "toby") === pid && (newOnly ? isExpiredNew(p) : (isExpired(p) && !isInGroup(p)))).length;
+    const n = people.filter(p => (p.phone_id || "toby") === pid && (newOnly ? isExpiredNew(p) : (isExpired(p) && !isArchived(p)))).length;
     if (!n) return;
     if (!confirm(
       "Rematch " + n + (newOnly ? " expired new friend" : " expired connection") + (n === 1 ? "" : "s") +
@@ -1913,6 +2006,34 @@ document.getElementById("composer").addEventListener("submit", async e => {
   if (data.ok) pollQueue();
 });
 
+function matchWhatsAppGroup(groups, hint) {
+  const blob = String(hint || "").toLowerCase().replace(/’/g, "'");
+  if (/london/.test(blob)) return groups.find(g => /london/i.test(g)) || "";
+  if (/buck|wycombe|high wycombe/.test(blob)) return groups.find(g => /buck/i.test(g)) || "";
+  return "";
+}
+function pickCrmWhatsAppGroup(lgsLabel, region) {
+  const sel = document.getElementById("crm-wa-group");
+  const groups = [...sel.options].map(o => o.value).filter(Boolean);
+  const picked = matchWhatsAppGroup(groups, (lgsLabel || "") + " " + (region || ""));
+  if (picked) sel.value = picked;
+}
+async function fillCrmWhatsAppGroups(lgsGroups, groupId, region) {
+  const sel = document.getElementById("crm-wa-group");
+  let names = [];
+  try {
+    const res = await fetch("/api/whatsapp/groups");
+    const data = await res.json();
+    names = data.groups || [];
+  } catch (err) {
+    names = [];
+  }
+  sel.innerHTML = names.map(g => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
+  const lgs = (lgsGroups || []).find(g => String(g.id) === String(groupId));
+  const hint = ((lgs && (lgs.name + " " + (lgs.town || ""))) || "") + " " + (region || "");
+  const picked = matchWhatsAppGroup(names, hint) || names[0] || "";
+  if (picked) sel.value = picked;
+}
 const crmModal = document.getElementById("crm-modal");
 function closeCrmModal() {
   crmModal.classList.remove("open");
@@ -1927,26 +2048,54 @@ async function openCrmModal() {
     statusEl.textContent = "CRM draft failed: " + (data.error || res.status);
     return;
   }
+  const existing = data.existing_contact || data.existing_lead || {};
   document.getElementById("crm-hint").textContent = data.lgs_lead_id
-    ? "Already in CRM — edit and save to update the same number."
-    : (data.groups_error ? ("CRM groups unavailable: " + data.groups_error) : "Prefill from the chat, then edit anything that looks off.");
-  document.getElementById("crm-name").value = data.suggested_contact_name || data.display_name || current;
-  document.getElementById("crm-phone").value = (data.phone_candidates && data.phone_candidates[0]) || "";
-  document.getElementById("crm-instagram").value = (data.instagram_candidates && data.instagram_candidates[0]) || "";
-  document.getElementById("crm-hometown").value = data.location || "";
-  document.getElementById("crm-notes").value = data.suggested_notes || "";
+    ? "Already in CRM — chat details are filled in; edit and save to update the same number."
+    : (data.groups_error ? ("CRM groups unavailable: " + data.groups_error) : "Filled from the chat. Check anything that looks off.");
+  document.getElementById("crm-name").value = existing.name || data.suggested_contact_name || data.display_name || current;
+  document.getElementById("crm-phone").value = existing.phone || data.phone || (data.phone_candidates && data.phone_candidates[0]) || "";
+  document.getElementById("crm-email").value = existing.email || data.email || "";
+  document.getElementById("crm-method").value = existing.preferred_contact_method || data.preferred_contact_method || "";
+  document.getElementById("crm-region").value = existing.region || existing.hometown || data.region || data.hometown || data.location || "";
+  document.getElementById("crm-address").value = existing.address || data.address || "";
+  document.getElementById("crm-status").value = existing.status || data.status || "prospect";
+  document.getElementById("crm-source").value = existing.source || data.source || "bumble_friends";
+  document.getElementById("crm-instagram").value = existing.instagram || data.instagram || (data.instagram_candidates && data.instagram_candidates[0]) || "";
+  document.getElementById("crm-tiktok").value = existing.tiktok || data.tiktok || "";
+  document.getElementById("crm-age").value = existing.age || data.age || "";
+  document.getElementById("crm-event").value = existing.interested_event || data.interested_event || "";
+  document.getElementById("crm-follow").value = existing.next_follow_up_at || data.next_follow_up_at || "";
+  const tags = existing.tags || data.tags || [];
+  document.getElementById("crm-tags").value = Array.isArray(tags) ? tags.join(", ") : String(tags || "");
+  document.getElementById("crm-interests").value = existing.interests_skills || data.interests_skills || "";
+  document.getElementById("crm-notes").value = existing.notes || data.suggested_notes || "";
+  document.getElementById("crm-consent").checked = existing.consent_to_contact != null
+    ? !!existing.consent_to_contact
+    : !!data.consent_to_contact;
+  document.getElementById("crm-attach-logs").checked = existing.attach_bumble_logs != null
+    ? !!existing.attach_bumble_logs
+    : data.attach_bumble_logs !== false;
   const eth = document.getElementById("crm-ethnicity");
+  const ethVal = existing.ethnicity || data.ethnicity || "";
   eth.innerHTML = ['<option value="">Unknown</option>']
     .concat(ethnicityChoices.map(c => {
-      const sel = c.id === (data.ethnicity || "") ? " selected" : "";
+      const sel = c.id === ethVal ? " selected" : "";
       return `<option value="${esc(c.id)}"${sel}>${esc(c.label)}</option>`;
     })).join("");
   const group = document.getElementById("crm-group");
   const groups = data.groups || [];
+  const groupId = (existing.closest_lgs_group && existing.closest_lgs_group.id)
+    || (existing.home_group && existing.home_group.id)
+    || data.closest_lgs_group_id
+    || data.home_lgs_group_id;
   group.innerHTML = '<option value="">None yet</option>' + groups.map(g =>
     `<option value="${esc(g.id)}">${esc(g.name)}${g.town ? " · " + esc(g.town) : ""}</option>`
   ).join("");
-  if (groups.length === 1) group.value = String(groups[0].id);
+  if (groupId) group.value = String(groupId);
+  else if (groups.length === 1) group.value = String(groups[0].id);
+  document.getElementById("crm-wa").checked = false;
+  document.getElementById("crm-wa-pick").hidden = true;
+  await fillCrmWhatsAppGroups(groups, group.value, document.getElementById("crm-region").value);
   crmModal.hidden = false;
   crmModal.classList.add("open");
   statusEl.textContent = "";
@@ -1955,21 +2104,44 @@ document.getElementById("crm-cancel").addEventListener("click", closeCrmModal);
 crmModal.addEventListener("click", e => {
   if (e.target === crmModal) closeCrmModal();
 });
+document.getElementById("crm-wa").addEventListener("change", () => {
+  document.getElementById("crm-wa-pick").hidden = !document.getElementById("crm-wa").checked;
+});
+document.getElementById("crm-group").addEventListener("change", () => {
+  const sel = document.getElementById("crm-group");
+  const opt = sel.selectedOptions[0];
+  pickCrmWhatsAppGroup(opt ? opt.textContent : "", document.getElementById("crm-region").value);
+});
 document.getElementById("crm-form").addEventListener("submit", async e => {
   e.preventDefault();
   const save = document.getElementById("crm-save");
   save.disabled = true;
+  const groupId = document.getElementById("crm-group").value
+    ? Number(document.getElementById("crm-group").value)
+    : null;
   const payload = {
     name: document.getElementById("crm-name").value.trim(),
     phone: document.getElementById("crm-phone").value.trim(),
+    email: document.getElementById("crm-email").value.trim(),
+    address: document.getElementById("crm-address").value.trim(),
+    region: document.getElementById("crm-region").value.trim(),
+    hometown: document.getElementById("crm-region").value.trim(),
     instagram: document.getElementById("crm-instagram").value.trim(),
-    hometown: document.getElementById("crm-hometown").value.trim(),
+    tiktok: document.getElementById("crm-tiktok").value.trim(),
+    age: document.getElementById("crm-age").value ? Number(document.getElementById("crm-age").value) : null,
     ethnicity: document.getElementById("crm-ethnicity").value,
+    interested_event: document.getElementById("crm-event").value.trim(),
+    interests_skills: document.getElementById("crm-interests").value.trim(),
     notes: document.getElementById("crm-notes").value.trim(),
-    home_lgs_group_id: document.getElementById("crm-group").value
-      ? Number(document.getElementById("crm-group").value)
-      : null,
-    source: "bumble",
+    tags: document.getElementById("crm-tags").value.trim(),
+    status: document.getElementById("crm-status").value,
+    source: document.getElementById("crm-source").value || "bumble_friends",
+    preferred_contact_method: document.getElementById("crm-method").value,
+    consent_to_contact: document.getElementById("crm-consent").checked,
+    attach_bumble_logs: document.getElementById("crm-attach-logs").checked,
+    next_follow_up_at: document.getElementById("crm-follow").value || null,
+    closest_lgs_group_id: groupId,
+    home_lgs_group_id: groupId,
     bumble_inbox_name: current,
     bumble_phone_id: currentPhone,
   };
@@ -1979,15 +2151,43 @@ document.getElementById("crm-form").addEventListener("submit", async e => {
     body: JSON.stringify(payload),
   });
   const data = await res.json();
-  save.disabled = false;
-  statusEl.textContent = data.ok
-    ? ((data.created ? "Added " : "Updated ") + payload.name + " in Let's Go Social")
-    : ("CRM save failed: " + (data.error || res.status));
-  if (data.ok) {
-    closeCrmModal();
-    await loadPeople();
-    if (current) await openThread(current, {push: false, phone: currentPhone});
+  if (!data.ok) {
+    save.disabled = false;
+    statusEl.textContent = "CRM save failed: " + (data.error || res.status);
+    return;
   }
+  let message = (data.created ? "Added " : "Updated ") + payload.name + " in Let's Go Social";
+  if (document.getElementById("crm-wa").checked) {
+    const waGroup = document.getElementById("crm-wa-group").value.trim();
+    if (!payload.phone) {
+      message += " — tick needs a phone to add them on WhatsApp";
+    } else if (!waGroup) {
+      message += " — pick a WhatsApp group";
+    } else {
+      try {
+        const waRes = await fetch("/api/whatsapp/group/add", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            group: waGroup,
+            people: [{name: payload.name, phone: payload.phone}],
+          }),
+        });
+        const wa = await waRes.json();
+        message += wa.ok
+          ? " · queued add to " + waGroup
+          : " · WhatsApp add failed: " + (wa.error || waRes.status);
+        if (wa.ok) pollQueue();
+      } catch (err) {
+        message += " · could not queue the WhatsApp add";
+      }
+    }
+  }
+  save.disabled = false;
+  statusEl.textContent = message;
+  closeCrmModal();
+  await loadPeople();
+  if (current) await openThread(current, {push: false, phone: currentPhone});
 });
 
 function jobPhoneLabel(job) {
@@ -2017,6 +2217,8 @@ function jobLabel(job) {
     return who + "Rematch expired" + extra;
   }
   if (job.kind === "add_contact") return who + "Add Pixel contact " + job.name;
+  if (job.kind === "whatsapp_group") return who + "WhatsApp group " + job.name;
+  if (job.kind === "whatsapp_add") return who + "Add to WhatsApp " + job.name;
   const snip = String(job.text || "").replace(/\s+/g, " ").slice(0, 42);
   return who + "Reply to " + job.name + (snip ? " — " + snip : "");
 }

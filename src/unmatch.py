@@ -384,6 +384,89 @@ def _open_expired_strip_match(device, package: str, name: str) -> bool:
     return False
 
 
+def rematch_visible_strip_expired(device, package: str, conn=None) -> tuple[int, list[str]]:
+    """Rematch every expired circle currently in the New friends strip.
+
+    Walks the live strip (not the SQLite expired list) so we only tap people
+    Bumble is still offering Rematch for. Stops if Premium is required.
+    """
+    from src.chats import list_new_friends
+    from src.phone_queue import check_cancel
+    from src.store import mark_person_rematched
+    from src.sync_chats import (
+        _STRIP_RID,
+        _go_top_of_inbox,
+        _scroll_new_friends_strip,
+        _screen_size,
+    )
+
+    width, height = _screen_size(device)
+    xml = _go_top_of_inbox(device, package, width, height)
+    rv = device(resourceId=_STRIP_RID)
+    if rv.exists:
+        try:
+            rv.fling.horiz.toBeginning()
+            wait_idle(device, 0.6)
+        except Exception:
+            _scroll_new_friends_strip(device, xml, width, height, toward_end=False)
+            _scroll_new_friends_strip(device, xml, width, height, toward_end=False)
+
+    rematched: list[str] = []
+    attempted: set[str] = set()
+    stagnant = 0
+    last_key: tuple[str, ...] | None = None
+    for _ in range(50):
+        check_cancel()
+        xml = dump_hierarchy(device)
+        friends = list_new_friends(xml)
+        pending = [f for f in friends if f.expired and f.name not in attempted]
+        if pending:
+            friend = pending[0]
+            attempted.add(friend.name)
+            log.info("strip rematch %s @ (%s,%s)", friend.name, friend.x, friend.y)
+            tap(device, friend.x, friend.y)
+            wait_idle(device, 1.2)
+            ok, detail = rematch_on_screen(device)
+            if ok:
+                _refresh_photo_after_rematch(device, friend.name)
+                if conn is not None:
+                    try:
+                        mark_person_rematched(conn, friend.name)
+                    except Exception:
+                        log.debug("mark rematched %s skipped", friend.name, exc_info=True)
+                rematched.append(friend.name)
+                log.info("rematched strip %s", friend.name)
+            else:
+                log.warning("strip rematch skip %s (%s)", friend.name, detail)
+                device.press("back")
+                wait_idle(device, 0.4)
+                if detail in {"premium paywall", "rematch needs Premium"}:
+                    recover_to_list(device, package)
+                    break
+            recover_to_list(device, package)
+            xml = _go_top_of_inbox(device, package, width, height)
+            if rv.exists:
+                try:
+                    rv.fling.horiz.toBeginning()
+                    wait_idle(device, 0.5)
+                except Exception:
+                    pass
+            stagnant = 0
+            last_key = None
+            continue
+        key = tuple(f"{f.name}:{int(f.expired)}" for f in friends)
+        if key == last_key:
+            stagnant += 1
+        else:
+            stagnant = 0
+            last_key = key
+        if stagnant >= 5:
+            break
+        _scroll_new_friends_strip(device, xml, width, height, toward_end=True)
+    log.info("strip rematch done: %d/%d — %s", len(rematched), len(attempted), ", ".join(rematched) or "-")
+    return len(rematched), rematched
+
+
 def rematch_named(
     name: str,
     *,

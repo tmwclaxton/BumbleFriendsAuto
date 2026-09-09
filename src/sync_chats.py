@@ -20,10 +20,12 @@ from src.chats import (
 )
 from src.config import load_config
 from src.device import bring_app_foreground, connect, dump_hierarchy, wait_idle
+from src.input_ime import automation_keyboard
 from src.gestures import _adb_swipe, tap
 from src.messenger import leave_chat
 from src.screen import find_tab_point
 from src.store import (
+    _emoji_words,
     _is_thread_chrome,
     _norm_msg,
     _them_bodies,
@@ -371,15 +373,19 @@ def _search_field(device):
 
 
 def _set_search_query(device, field, query: str) -> None:
-    """Type through Android input so Bumble actually refreshes search results."""
-    field.click()
-    wait_idle(device, 0.2)
-    field.set_text("")
-    wait_idle(device, 0.2)
-    encoded = (query or "").replace(" ", "%s")
-    if encoded:
-        device.shell(f"input text {shlex.quote(encoded)}")
-    device.shell("input keyevent 66")
+    """Type through AdbKeyboard so Gboard does not swallow search input."""
+    with automation_keyboard(device):
+        field.click()
+        wait_idle(device, 0.2)
+        try:
+            field.set_text("")
+        except Exception:
+            pass
+        wait_idle(device, 0.2)
+        encoded = (query or "").replace(" ", "%s")
+        if encoded:
+            device.shell(f"input text {shlex.quote(encoded)}")
+        device.shell("input keyevent 66")
 
 
 _INBOX_FILTERS = ("Recent", "Unread", "Nearby")
@@ -576,6 +582,46 @@ def _message_side(x1: int, x2: int, text: str, width: int) -> str:
     return "them" if left_frac < 0.28 else "you"
 
 
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002700-\U000027BF"
+    "\U00002600-\U000026FF"
+    "\U0001F1E6-\U0001F1FF"
+    "]+"
+)
+
+
+def _has_emoji(text: str) -> bool:
+    return bool(_EMOJI_RE.search(text or ""))
+
+
+def _bubble_text(node: ET.Element) -> str:
+    """Prefer content-desc / child emoji when Bumble's ``text`` is ``..``."""
+    text = (node.attrib.get("text") or "").strip()
+    desc = (node.attrib.get("content-desc") or "").strip()
+    if _has_emoji(desc) and (not text or _emoji_words(desc) == _emoji_words(text)):
+        return desc
+    extras: list[str] = []
+    for child in node.iter():
+        if child is node:
+            continue
+        cd = (child.attrib.get("content-desc") or "").strip()
+        ct = (child.attrib.get("text") or "").strip()
+        if _has_emoji(cd):
+            extras.append(cd)
+        elif _has_emoji(ct):
+            extras.append(ct)
+    if extras and ".." in text:
+        out = text
+        for em in extras:
+            if ".." not in out:
+                break
+            out = out.replace("..", em, 1)
+        return out
+    return text
+
+
 def extract_messages(xml: str, width: int, height: int | None = None) -> list[dict]:
     msgs: list[dict] = []
     try:
@@ -592,7 +638,7 @@ def extract_messages(xml: str, width: int, height: int | None = None) -> list[di
     y_min = int(height * 0.12)
     y_max = int(height * 0.92)
     for node in root.iter():
-        text = (node.attrib.get("text") or "").strip()
+        text = _bubble_text(node)
         rid = node.attrib.get("resource-id") or ""
         if not text or text in _SKIP_EXACT or _DATE_LABEL.match(text):
             continue
@@ -667,9 +713,18 @@ def verify_open_thread(conn, device, name: str, width: int, height: int) -> bool
         for m in extract_messages(xml, width, height)
         if _norm_msg(m.get("text"))
     }
+    if _visible_matches_person(conn, name, visible):
+        log.info("namesake verify: unique stored text on screen for %s", name)
+        return True
     if not visible:
-        log.warning("namesake verify: nothing readable on screen for %s", name)
-        return False
+        log.warning("namesake verify: nothing readable on screen for %s — trying face", name)
+        try:
+            from src.photos import open_chat_matches_stored_photo
+
+            return open_chat_matches_stored_photo(device, name, xml, conn=conn)
+        except Exception:
+            log.debug("namesake face verify failed", exc_info=True)
+            return False
 
     def _evidence(alias: str) -> set[str]:
         return {
@@ -683,17 +738,36 @@ def verify_open_thread(conn, device, name: str, width: int, height: int) -> bool
     scores = {a: len(_evidence(a) & visible) for a in aliases}
     best = max(scores.values(), default=0)
     if best == 0:
-        log.warning("namesake verify: no stored bubbles visible for %s", name)
-        return False
+        log.warning("namesake verify: no stored bubbles visible for %s — trying face", name)
+        try:
+            from src.photos import open_chat_matches_stored_photo
+
+            return open_chat_matches_stored_photo(device, name, xml, conn=conn)
+        except Exception:
+            log.debug("namesake face verify failed", exc_info=True)
+            return False
     winners = [a for a, s in scores.items() if s == best]
     if len(winners) > 1:
-        log.warning("namesake verify: tie %s for %s", winners, name)
-        return False
+        log.warning("namesake verify: tie %s for %s — trying face", winners, name)
+        try:
+            from src.photos import open_chat_matches_stored_photo
+
+            return open_chat_matches_stored_photo(device, name, xml, conn=conn)
+        except Exception:
+            log.debug("namesake face verify failed", exc_info=True)
+            return False
     if winners[0].casefold() == name.casefold():
         return True
     log.warning(
-        "namesake verify: open thread is %s, wanted %s — refusing", winners[0], name
+        "namesake verify: open thread is %s, wanted %s — trying face", winners[0], name
     )
+    try:
+        from src.photos import open_chat_matches_stored_photo
+
+        if open_chat_matches_stored_photo(device, name, xml, conn=conn):
+            return True
+    except Exception:
+        log.debug("namesake face verify failed", exc_info=True)
     return False
 
 
@@ -1142,6 +1216,85 @@ def _face_for_row(device, xml: str, row: dict):
         return None
 
 
+def _stored_chat_needles(name: str) -> list[str]:
+    """last_text / preview / recent bodies used to spot a namesake list row."""
+    needles: list[str] = []
+    try:
+        from src.config import load_config
+        from src.store import connect as db_connect, db_path_from_config, list_thread
+
+        conn = db_connect(db_path_from_config(load_config()))
+        try:
+            chat = conn.execute(
+                """
+                SELECT c.last_text, c.preview FROM chats c
+                JOIN people p ON p.id = c.person_id WHERE p.name = ?
+                """,
+                (name,),
+            ).fetchone()
+            if chat:
+                for raw in (chat["last_text"], chat["preview"]):
+                    text = str(raw or "").strip()
+                    if len(text) >= 6:
+                        needles.append(text)
+            for row in list_thread(conn, name)[-8:]:
+                text = str(row["body"] or "").strip()
+                if len(text) >= 6 and not _is_thread_chrome(text) and not _OPENER.search(text):
+                    needles.append(text)
+        finally:
+            conn.close()
+    except Exception:
+        return needles
+    seen: set[str] = set()
+    out: list[str] = []
+    for text in needles:
+        key = _norm_msg(text)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(text)
+    return out
+
+
+def _row_matching_stored_preview(name: str, rows: list[dict]):
+    needles = _stored_chat_needles(name)
+    if not needles:
+        return None
+    for row in rows:
+        preview = str(row.get("preview") or "").strip()
+        if not preview:
+            continue
+        if any(_preview_matches_stored(preview, needle) for needle in needles):
+            return row
+    return None
+
+
+def _visible_matches_person(conn, name: str, visible: set[str]) -> bool:
+    """True when on-screen bubbles uniquely fit this namesake's stored text."""
+    aliases = name_aliases(conn, name)
+    own_needles = [_norm_msg(t) for t in _stored_chat_needles(name)]
+    own_needles = [t for t in own_needles if t]
+    if not own_needles:
+        return False
+
+    def _hit(needles: list[str]) -> bool:
+        for vis in visible:
+            for needle in needles:
+                if _preview_matches_stored(vis, needle) or needle in vis or vis in needle:
+                    return True
+        return False
+
+    if not _hit(own_needles):
+        return False
+    for alias in aliases:
+        if alias.casefold() == name.casefold():
+            continue
+        other = [_norm_msg(t) for t in _stored_chat_needles(alias)]
+        other = [t for t in other if t and t not in own_needles]
+        if other and _hit(other):
+            return False
+    return True
+
+
 def _pick_row_for_namesake(device, xml: str, name: str, rows: list[dict]):
     """When two list rows share a first name, pick the one whose face matches `name`."""
     want = name.strip().casefold()
@@ -1153,11 +1306,57 @@ def _pick_row_for_namesake(device, xml: str, name: str, rows: list[dict]):
     ]
     if not candidates:
         return None
-    if len(candidates) == 1:
-        return candidates[0]
-    from src.photos import crop_list_face, load_photo, match_face_to_namesakes
+    from src.photos import crop_list_face, face_distance, load_photo, match_face_to_namesakes
 
     stored = load_photo(name)
+    numbered = want != phone
+    preview_hit = _row_matching_stored_preview(name, candidates)
+    if preview_hit is not None:
+        log.info(
+            "namesake row for %s by preview %r",
+            name,
+            str(preview_hit.get("preview") or "")[:40],
+        )
+        return preview_hit
+    if len(candidates) == 1 and not (numbered and stored is not None):
+        return candidates[0]
+    if stored is not None:
+        best_row = None
+        best_dist = 1e9
+        for row in candidates:
+            face = crop_list_face(
+                device,
+                xml,
+                str(row["name"]),
+                y=int(row["y"]) if row.get("y") is not None else None,
+                x=int(row["x"]) if row.get("x") is not None else None,
+            )
+            if face is None:
+                continue
+            try:
+                dist = face_distance(face, stored)
+            except Exception:
+                continue
+            if dist < best_dist:
+                best_dist = dist
+                best_row = row
+            log.info(
+                "namesake row face %s @ y=%s d=%.1f vs %s",
+                row.get("name"),
+                row.get("y"),
+                dist,
+                name,
+            )
+        if best_row is not None and best_dist <= 28.0:
+            log.info("namesake row for %s by photo d=%.1f", name, best_dist)
+            return best_row
+        if numbered:
+            log.warning(
+                "namesake row photo miss for %s (best d=%s)",
+                name,
+                f"{best_dist:.1f}" if best_row is not None else "none",
+            )
+            return None
     if stored is None:
         try:
             from src.config import load_config
@@ -1628,8 +1827,12 @@ def _ensure_search(device, package: str) -> None:
     wait_idle(device, 1.4)
 
 
-def open_chat_via_search(device, package: str, name: str) -> str | None:
-    """Open a named inbox thread via Chats search. Returns toolbar title or None."""
+def open_chat_via_search(device, package: str, name: str, *, accept=None) -> str | None:
+    """Open a named inbox thread via Chats search. Returns toolbar title or None.
+
+    When `accept` is set for a numbered namesake, each same-name search hit is
+    opened until `accept()` returns True (face / stored-text verify).
+    """
     width, height = _screen_size(device)
     _ensure_search(device, package)
     field = _search_field(device)
@@ -1646,8 +1849,72 @@ def open_chat_via_search(device, package: str, name: str) -> str | None:
         device.press("back")
         wait_idle(device, 0.4)
         return None
-    rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
-    match = _pick_row_for_namesake(device, xml, name, rows)
+    phone = query.strip().casefold()
+    numbered = name.strip().casefold() != phone
+    tried: set[tuple[str, int]] = set()
+
+    def _search_rows() -> list[dict]:
+        xml = dump_hierarchy(device)
+        return _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
+
+    def _max_rows(rows: list[dict]) -> list[dict]:
+        return [
+            r
+            for r in rows
+            if str(r["name"]).strip().casefold() in {name.strip().casefold(), phone}
+        ]
+
+    def _reopen_search() -> None:
+        leave_chat(device)
+        recover_to_list(device, package)
+        _ensure_search(device, package)
+        field = _search_field(device)
+        if field is None:
+            return
+        _set_search_query(device, field, query)
+        wait_idle(device, 1.4)
+
+    if accept is not None and numbered:
+        for _ in range(5):
+            rows = _search_rows()
+            hits = _max_rows(rows)
+            for row in hits:
+                log.info(
+                    "search namesake %s y=%s preview=%r",
+                    row.get("name"),
+                    row.get("y"),
+                    str(row.get("preview") or "")[:48],
+                )
+                key = (_norm_msg(str(row.get("preview") or "")), int(row["y"]) // 80)
+                if key in tried:
+                    continue
+                tried.add(key)
+                tap(device, int(row["x"]), int(row["y"]))
+                wait_idle(device, 1.6)
+                xml = _wait_thread(device)
+                partner = chat_partner_name(xml)
+                if partner and _same_person(partner, name) and accept():
+                    return partner
+                log.warning("search hit was not %s (opened %s)", name, partner)
+                _reopen_search()
+            if not hits:
+                break
+            _scroll_inbox(device, width, height, older=True, distance=int(height * 0.18), duration_ms=240)
+            wait_idle(device, 0.6)
+        log.warning("search tried %s namesake hits for %s — none accepted", len(tried), name)
+        return None
+
+    match = None
+    rows: list[dict] = []
+    for _ in range(6):
+        rows = _search_rows()
+        match = _pick_row_for_namesake(device, dump_hierarchy(device), name, rows)
+        if match is not None:
+            break
+        if not _max_rows(rows):
+            break
+        _scroll_inbox(device, width, height, older=True, distance=int(height * 0.18), duration_ms=240)
+        wait_idle(device, 0.6)
     if match is None:
         device.press("back")
         wait_idle(device, 0.5)
@@ -1725,13 +1992,25 @@ def open_chat_from_list(
             wait_idle(device, 0.7)
             log.info("list-tap %s @ y=%s y1=%s", name, hit["y"], hit["y1"])
             tap_name = base_person_name(name)
-            name_node = device(resourceId="com.bumblebff.app:id/personName", text=tap_name)
-            if not name_node.exists(timeout=0.4):
-                name_node = device(resourceId="com.bumblebff.app:id/connectionsItem_personName", text=tap_name)
-            if name_node.exists(timeout=1.0):
-                name_node.click()
+            same_name = [
+                r
+                for r in rows
+                if str(r["name"]).strip().casefold() in {want, phone}
+            ]
+            # text=Max always hits the first namesake on screen.
+            if want != phone or len(same_name) > 1:
+                tap(device, int(hit["x"]), int(hit["y"]))
             else:
-                tap(device, int(width * 0.38), int(hit["y1"]) + max(40, int(height * 0.025)))
+                name_node = device(resourceId="com.bumblebff.app:id/personName", text=tap_name)
+                if not name_node.exists(timeout=0.4):
+                    name_node = device(
+                        resourceId="com.bumblebff.app:id/connectionsItem_personName",
+                        text=tap_name,
+                    )
+                if name_node.exists(timeout=1.0):
+                    name_node.click()
+                else:
+                    tap(device, int(width * 0.38), int(hit["y1"]) + max(40, int(height * 0.025)))
             wait_idle(device, 1.6)
             xml = _wait_thread(device)
             partner = chat_partner_name(xml)
@@ -2148,8 +2427,9 @@ def fast_reply_scan(*, serial: str | None = None, sleep_after: bool = True, phon
     Scrolls the inbox list once, reading each row's name / badge / preview.
     A chat is only opened when the visible preview differs from the stored
     last message, the row is new or an ambiguous namesake, or the 'Your turn'
-    badge contradicts the stored last message. Everything else just gets a
-    badge/status refresh from the list. Minutes instead of ~40.
+    badge contradicts the stored last message. Then refreshes the New friends
+    strip, rematches expired circles there, and captures new strip chats.
+    Minutes instead of ~40.
     """
     from src.phones import phone_scope, serial_for
     from src.unlock import sleep_screen, wake_and_unlock
@@ -2178,6 +2458,17 @@ def _fast_reply_scan_body(cfg, package: str, serial: str | None, sleep_after: bo
             _set_inbox_filter(device, "Recent")
             stats: dict = {}
             n = capture_all_chats(device, conn, package, fast=True, stats=stats)
+            rematch_n = 0
+            try:
+                from src.unmatch import rematch_visible_strip_expired
+
+                rematch_n, rematch_names = rematch_visible_strip_expired(device, package, conn)
+                if rematch_names:
+                    log.info("fast scan rematched strip: %s", ", ".join(rematch_names))
+            except Exception:
+                log.exception("fast scan strip rematch failed")
+            strip_names = collect_new_friend_names(device, package)
+            n_new = capture_new_friend_chats(device, conn, package)
             merged_after = collapse_cloned_namesakes(conn)
             if merged_after:
                 log.info("collapsed %d cloned namesake(s) after fast scan: %s", len(merged_after), ", ".join(merged_after))
@@ -2188,7 +2479,10 @@ def _fast_reply_scan_body(cfg, package: str, serial: str | None, sleep_after: bo
             mismatches = stats.get("mismatches") or []
         finally:
             conn.close()
-        msg = f"fast scan: opened {n} changed chat(s), {needs} need reply"
+        msg = (
+            f"fast scan: opened {n} changed chat(s), strip {len(strip_names)} "
+            f"({n_new} new), rematched {rematch_n}, {needs} need reply"
+        )
         if reasons:
             why = {}
             for r in reasons.values():
@@ -2284,14 +2578,24 @@ def _refresh_new_friends_strip_body(cfg, package: str, serial: str | None, sleep
         bring_app_foreground(device, package)
         wait_idle(device, 1.0)
         _set_inbox_filter(device, "Recent")
-        names = collect_new_friend_names(device, package)
         conn = db_connect(db_path_from_config(cfg))
         try:
+            rematch_n, rematch_names = 0, []
+            try:
+                from src.unmatch import rematch_visible_strip_expired
+
+                rematch_n, rematch_names = rematch_visible_strip_expired(device, package, conn)
+            except Exception:
+                log.exception("strip rematch failed")
+            names = collect_new_friend_names(device, package)
             n = capture_new_friend_chats(device, conn, package)
         finally:
             conn.close()
         listed = ", ".join(names) if names else "none"
-        msg = f"new-friend strip: {len(names)} circles, captured {n} chats ({listed})"
+        extra = f", rematched {rematch_n}" if rematch_n else ""
+        if rematch_names:
+            extra += f" ({', '.join(rematch_names)})"
+        msg = f"new-friend strip: {len(names)} circles, captured {n} chats ({listed}){extra}"
         log.info(msg)
         return True, msg
     except Exception as exc:

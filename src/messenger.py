@@ -23,6 +23,7 @@ from src.chats import (
 from src.config import load_config
 from src.device import bring_app_foreground, connect, dump_hierarchy, wait_idle
 from src.gestures import _adb_swipe, sleep_between_swipes, tap
+from src.input_ime import type_into
 from src.screen import find_tab_point
 
 log = logging.getLogger(__name__)
@@ -161,7 +162,7 @@ def send_opener(device, message: str) -> bool:
 
     field.click()
     wait_idle(device, 0.4)
-    field.set_text(message)
+    type_into(device, field, message)
     wait_idle(device, 0.8)
 
     xml = dump_hierarchy(device)
@@ -229,18 +230,18 @@ def send_named_message(name: str, text: str, *, serial: str | None = None, phone
 
     def _verified_open() -> str | None:
         """Open the chat and confirm it is really `name`'s thread."""
-        partner = open_chat_via_search(device, package, name)
-        if partner:
+        def _accept() -> bool:
             conn = db_connect(db_path_from_config(cfg))
             try:
-                ok = verify_open_thread(conn, device, name, width, height)
+                return verify_open_thread(conn, device, name, width, height)
             finally:
                 conn.close()
-            if ok:
-                return partner
-            log.warning("search opened the wrong namesake for %s — refusing row", name)
-            leave_chat(device)
-            recover_to_list(device, package)
+
+        partner = open_chat_via_search(device, package, name, accept=_accept)
+        if partner:
+            return partner
+        log.warning("search could not verify a namesake row for %s", name)
+        recover_to_list(device, package)
         partner = open_chat_from_list(device, package, name)
         if partner:
             conn = db_connect(db_path_from_config(cfg))

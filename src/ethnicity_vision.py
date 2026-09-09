@@ -50,6 +50,9 @@ _state: dict = {
     "message": "",
     "error": None,
 }
+_pending: set[tuple[str, str, bool]] = set()
+_want_backfill = False
+_backfill_force = False
 
 
 def api_key(cfg: dict | None = None) -> str:
@@ -246,44 +249,83 @@ def _bump(**fields: object) -> None:
         _state.update(fields)
 
 
-def _run_guess(*, name: str = "", force: bool = False, phone_id: str | None = None) -> None:
+def _take_work() -> tuple[bool, bool, list[tuple[str, str, bool]]]:
+    global _want_backfill, _backfill_force
+    with _lock:
+        backfill = bool(_want_backfill)
+        force = bool(_backfill_force)
+        if backfill:
+            _want_backfill = False
+            _backfill_force = False
+        pending = list(_pending)
+        _pending.clear()
+    return backfill, force, pending
+
+
+def _run_guess() -> None:
     from src.phones import phone_scope
 
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     tagged = skipped = failed = 0
     last = ""
+    seen: set[tuple[str, str]] = set()
+    processed = 0
     try:
-        targets = _people_to_guess(conn, name=name, force=force, phone_id=phone_id)
-        _bump(total=len(targets), message="guessing" if targets else "nothing to guess")
-        if not targets:
-            return
-        for i, (person, person_phone) in enumerate(targets, start=1):
+        while True:
             with _lock:
                 if _state["cancel"]:
                     _state["message"] = "cancelled"
                     break
-            last = person
-            _bump(done=i - 1, last_name=person, message=f"guessing {person}")
-            path = photo_file(person, person_phone)
-            try:
-                guess = classify_photo(path, cfg)
-            except Exception as exc:
-                log.warning("ethnicity vision failed for %s: %s", person, exc)
-                failed += 1
-                _bump(failed=failed, error=str(exc))
+            backfill, backfill_force, pending = _take_work()
+            batch: list[tuple[str, str]] = []
+            if backfill:
+                batch.extend(_people_to_guess(conn, force=backfill_force))
+            for person, person_phone, force in pending:
+                batch.extend(
+                    _people_to_guess(
+                        conn,
+                        name=person,
+                        force=force,
+                        phone_id=person_phone or None,
+                    )
+                )
+            fresh = [(p, ph) for p, ph in batch if (p, ph) not in seen]
+            if not fresh:
+                if processed == 0:
+                    _bump(total=0, message="nothing to guess")
+                break
+            seen.update(fresh)
+            _bump(total=len(seen), message="guessing")
+            for person, person_phone in fresh:
+                with _lock:
+                    if _state["cancel"]:
+                        _state["message"] = "cancelled"
+                        break
+                last = person
+                _bump(last_name=person, message=f"guessing {person}")
+                path = photo_file(person, person_phone)
+                try:
+                    guess = classify_photo(path, cfg)
+                except Exception as exc:
+                    log.warning("ethnicity vision failed for %s: %s", person, exc)
+                    failed += 1
+                    processed += 1
+                    _bump(done=processed, failed=failed, error=str(exc))
+                    continue
+                value = "" if guess == "unknown" else guess
+                with phone_scope(person_phone):
+                    ok = set_ethnicity(conn, person, value, source="vision")
+                processed += 1
+                if not ok:
+                    failed += 1
+                    _bump(done=processed, failed=failed)
+                    continue
+                tagged += 1
+                _bump(done=processed, tagged=tagged, last_name=person)
+            else:
                 continue
-            value = "" if guess == "unknown" else guess
-            with phone_scope(person_phone):
-                ok = set_ethnicity(conn, person, value, source="vision")
-            if not ok:
-                failed += 1
-                _bump(failed=failed)
-                continue
-            tagged += 1
-            _bump(done=i, tagged=tagged, last_name=person)
-        else:
-            _bump(done=len(targets))
+            break
     except Exception as exc:
         log.exception("ethnicity vision job failed")
         _bump(error=str(exc), message="failed")
@@ -291,6 +333,7 @@ def _run_guess(*, name: str = "", force: bool = False, phone_id: str | None = No
         conn.close()
         with _lock:
             cancelled = bool(_state["cancel"])
+            leftover = bool(_pending) or bool(_want_backfill)
             _state["running"] = False
             _state["cancel"] = False
             _state["tagged"] = tagged
@@ -310,10 +353,37 @@ def _run_guess(*, name: str = "", force: bool = False, phone_id: str | None = No
                     f"guessed {tagged} from photos"
                     + (f", {failed} failed" if failed else "")
                 )
+        if leftover and not cancelled:
+            _kick_worker()
 
 
-def start_guess(*, name: str = "", force: bool = False, phone_id: str | None = None) -> dict:
-    """Start a background guess. Does not overwrite manual tags."""
+def _kick_worker() -> bool:
+    with _lock:
+        if _state["running"]:
+            return False
+        if not _pending and not _want_backfill:
+            return False
+        _state.update(
+            {
+                "running": True,
+                "cancel": False,
+                "done": 0,
+                "total": 0,
+                "tagged": 0,
+                "skipped": 0,
+                "failed": 0,
+                "last_name": "",
+                "message": "starting",
+                "error": None,
+            }
+        )
+    threading.Thread(target=_run_guess, name="ethnicity-vision", daemon=True).start()
+    return True
+
+
+def schedule_guess(*, name: str = "", force: bool = False, phone_id: str | None = None) -> dict:
+    """Queue a guess. Empty name = everyone still missing a tag. Never overwrites manual tags."""
+    global _want_backfill, _backfill_force
     name = (name or "").strip()
     if not api_key():
         snap = guess_status()
@@ -321,40 +391,34 @@ def start_guess(*, name: str = "", force: bool = False, phone_id: str | None = N
         snap["error"] = "NANOGPT_API_KEY is not set"
         return snap
     with _lock:
-        if _state["running"]:
-            snap = dict(_state)
-            running = True
+        if name:
+            _pending.add((name, (phone_id or "").strip(), bool(force)))
         else:
-            running = False
-            _state.update(
-                {
-                    "running": True,
-                    "cancel": False,
-                    "done": 0,
-                    "total": 0,
-                    "tagged": 0,
-                    "skipped": 0,
-                    "failed": 0,
-                    "last_name": "",
-                    "message": "starting",
-                    "error": None,
-                }
-            )
-    if running:
+            _want_backfill = True
+            if force:
+                _backfill_force = True
+        already = bool(_state["running"])
+    if already:
         out = guess_status()
-        out["ok"] = False
-        out["error"] = "guess already running"
+        out["ok"] = True
+        out["queued"] = True
+        out["message"] = "Queued ethnicity guess from photos" + (f" for {name}" if name else "")
         return out
-    threading.Thread(
-        target=_run_guess,
-        kwargs={"name": name, "force": force, "phone_id": phone_id},
-        name="ethnicity-vision",
-        daemon=True,
-    ).start()
+    _kick_worker()
     out = guess_status()
     out["ok"] = True
     out["message"] = "Guessing ethnicity from photos" + (f" for {name}" if name else "")
     return out
+
+
+def start_guess(*, name: str = "", force: bool = False, phone_id: str | None = None) -> dict:
+    """Start a background guess. Does not overwrite manual tags."""
+    return schedule_guess(name=name, force=force, phone_id=phone_id)
+
+
+def ensure_backfill() -> dict:
+    """Guess anyone who already has a photo but no ethnicity tag."""
+    return schedule_guess()
 
 
 def main() -> None:

@@ -103,7 +103,7 @@ def _thread_payload(conn, name: str, phone_id: str | None = None) -> dict:
     row = conn.execute(
         """
         SELECT p.name, p.phone_id, c.status, c.last_from, c.last_text, c.preview, c.draft, c.message_until,
-               c.in_group, c.draft_status, c.draft_error, c.draft_attempts, c.draft_pending_fp
+               c.in_group, c.archived, c.draft_status, c.draft_error, c.draft_attempts, c.draft_pending_fp
         FROM people p
         LEFT JOIN chats c ON c.person_id = p.id
         WHERE p.name = ? AND p.phone_id = ?
@@ -123,11 +123,13 @@ def _thread_payload(conn, name: str, phone_id: str | None = None) -> dict:
     if row is None:
         return {
             "name": name,
+            "phone_id": pid,
             "messages": msgs,
             "status": "unknown",
             "draft": "",
             "message_until": None,
             "in_group": False,
+            "archived": False,
             "draft_status": "idle",
             "draft_error": "",
             "draft_attempts": 0,
@@ -152,11 +154,13 @@ def _thread_payload(conn, name: str, phone_id: str | None = None) -> dict:
 
     return {
         "name": row["name"] or name,
+        "phone_id": row["phone_id"] if "phone_id" in row.keys() else pid,
         "messages": msgs,
         "status": row["status"] or "unknown",
         "draft": row["draft"] or "",
         "message_until": row["message_until"],
         "in_group": bool(row["in_group"]),
+        "archived": bool(row["archived"]) if "archived" in row.keys() else False,
         **auto_draft_fields(row),
     }
 
@@ -175,7 +179,7 @@ def people_api_payload(conn) -> dict:
     people = []
     new_friends: list[str] = []
     from src.phones import public_phones
-    from src.store import auto_draft_fields, namesake_meta
+    from src.store import auto_draft_fields, extract_phones, namesake_meta
 
     labels = namesake_meta(conn)
     phone_meta = {p["id"]: p for p in public_phones(cfg)}
@@ -208,8 +212,14 @@ def people_api_payload(conn) -> dict:
             "photo": photo_exists(str(row["name"]), pid),
             "dismissed": (row["status"] or "") == "dismissed",
             "in_group": bool(row["in_group"]),
+            "archived": bool(row["archived"]) if "archived" in row.keys() else False,
             "ethnicity": row["ethnicity"] or "",
             "ethnicity_source": row["ethnicity_source"] or "",
+            "phones": list(dict.fromkeys(
+                phone
+                for blob in (row["last_text"], row["preview"])
+                for phone in extract_phones(blob or "")
+            )),
             **auto_draft_fields(row),
         }
         people.append(item)
@@ -358,10 +368,27 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if parsed.path == "/api/thread":
-            name = (parse_qs(parsed.query).get("name") or [""])[0]
+            qs = parse_qs(parsed.query)
+            name = (qs.get("name") or [""])[0]
+            phone_id = (qs.get("phone") or [""])[0].strip() or None
+            number = (qs.get("number") or [""])[0].strip() or None
             conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
             try:
-                self._json(_thread_payload(conn, name))
+                if not name and number:
+                    from src.store import find_person_by_phone_digits
+
+                    person = find_person_by_phone_digits(conn, number)
+                    if person is None:
+                        self.send_error(404)
+                        return
+                    name = str(person["name"])
+                    phone_id = str(person["phone_id"] or phone_id or "")
+                from src.phones import phone_scope
+
+                with phone_scope(phone_id):
+                    payload = _thread_payload(conn, name, phone_id)
+                payload["phone_id"] = phone_id or payload.get("phone_id") or ""
+                self._json(payload)
             finally:
                 conn.close()
             return
@@ -375,6 +402,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/health":
             self._json({"ok": True})
+            return
+        if parsed.path == "/api/whatsapp/groups":
+            from src.whatsapp import listed_groups
+
+            self._json({"ok": True, "groups": listed_groups()})
             return
         self.send_error(404)
 
@@ -441,6 +473,38 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "in_group": filed,
                     "message": f"{name} {'added to group' if filed else 'removed from group'}",
+                }
+            )
+            return
+        if self.path == "/api/archive":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            if not name:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            if "archived" not in data:
+                self._json({"ok": False, "error": "archived required"}, 400)
+                return
+            from src.phones import phone_scope
+            from src.store import set_archived
+
+            conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
+            try:
+                with phone_scope(str(data.get("phone_id") or "") or None):
+                    ok = set_archived(conn, name, bool(data.get("archived")))
+            finally:
+                conn.close()
+            if not ok:
+                self._json({"ok": False, "error": "person not found"}, 404)
+                return
+            hidden = bool(data.get("archived"))
+            self._json(
+                {
+                    "ok": True,
+                    "archived": hidden,
+                    "message": f"{name} {'archived' if hidden else 'unarchived'}",
                 }
             )
             return
@@ -599,6 +663,55 @@ class Handler(BaseHTTPRequestHandler):
             n = cancel_queued()
             self._json({"ok": True, "cancelled": n})
             return
+        if self.path in {"/api/whatsapp/group", "/api/whatsapp/group/add"}:
+            data = self._read_json()
+            if data is None:
+                return
+            from src.whatsapp import parse_people
+
+            people = parse_people(data.get("people"))
+            if not people:
+                self._json({"ok": False, "error": "people with phone numbers required"}, 400)
+                return
+            title = str(data.get("title") or data.get("name") or "").strip()
+            group = str(data.get("group") or "").strip()
+            if self.path == "/api/whatsapp/group":
+                if not title:
+                    self._json({"ok": False, "error": "group title required"}, 400)
+                    return
+                job = enqueue(
+                    "whatsapp_group",
+                    title,
+                    json.dumps({"title": title, "people": people}),
+                    phone_id="toby",
+                )
+                self._json(
+                    {
+                        "ok": True,
+                        "queued": True,
+                        "job": job,
+                        "message": f"queued WhatsApp group {title!r}",
+                    }
+                )
+                return
+            if not group:
+                self._json({"ok": False, "error": "existing group name required"}, 400)
+                return
+            job = enqueue(
+                "whatsapp_add",
+                group,
+                json.dumps({"group": group, "people": people}),
+                phone_id="toby",
+            )
+            self._json(
+                {
+                    "ok": True,
+                    "queued": True,
+                    "job": job,
+                    "message": f"queued add to WhatsApp group {group!r}",
+                }
+            )
+            return
         if self.path != "/api/reply":
             self.send_error(404)
             return
@@ -621,9 +734,20 @@ class InboxServer(ThreadingHTTPServer):
 
 def _serve_worker(host: str, port: int, db_path: Path) -> int:
     ensure_worker()
+    try:
+        from src.adb_wireless import ensure_all_wireless
+
+        ensure_all_wireless()
+    except Exception:
+        log.warning("wireless adb attach skipped", exc_info=True)
     from src.draft_worker import ensure_draft_worker
+    from src.ethnicity_vision import ensure_backfill
 
     ensure_draft_worker()
+    try:
+        ensure_backfill()
+    except Exception:
+        log.warning("ethnicity photo backfill skipped", exc_info=True)
     # Combined ASGI app (dashboard + MCP) when available; else classic HTTP only.
     if os.environ.get("BFF_COMBINED_SERVER", "1") == "1":
         try:
