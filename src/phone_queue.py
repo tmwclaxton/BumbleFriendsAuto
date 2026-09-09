@@ -20,7 +20,7 @@ from src.store import connect as db_connect, db_path_from_config, find_person
 
 log = logging.getLogger(__name__)
 
-_PERSON_KINDS = {"reply", "refresh", "add_contact"}
+_PERSON_KINDS = {"reply", "refresh", "add_contact", "unmatch", "rematch"}
 _INBOX_KINDS = {
     "recapture_all",
     "fast_scan",
@@ -28,6 +28,8 @@ _INBOX_KINDS = {
     "grab_photos",
     "refresh_new_friends",
     "swipe",
+    "unmatch_expired",
+    "rematch_expired",
 }
 
 _job_seq = 0
@@ -292,6 +294,17 @@ def _next_queued(phone_id: str) -> dict | None:
     return None
 
 
+def _job_flag(job: dict, key: str) -> bool:
+    raw = str(job.get("text") or "").strip()
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    return bool(isinstance(data, dict) and data.get(key))
+
+
 def _run_job(job: dict) -> tuple[bool, str]:
     kind = job["kind"]
     name = job.get("name") or ""
@@ -325,18 +338,43 @@ def _run_job(job: dict) -> tuple[bool, str]:
         from src.sync_chats import refresh_new_friends_strip
 
         return refresh_new_friends_strip(serial=serial, phone_id=pid)
+    if kind == "unmatch":
+        from src.unmatch import unmatch_named
+
+        return unmatch_named(name, serial=serial, phone_id=pid)
+    if kind == "unmatch_expired":
+        from src.unmatch import unmatch_expired
+
+        return unmatch_expired(
+            serial=serial, phone_id=pid, new_friends_only=_job_flag(job, "new_friends_only")
+        )
+    if kind == "rematch":
+        from src.unmatch import rematch_named
+
+        return rematch_named(name, serial=serial, phone_id=pid)
+    if kind == "rematch_expired":
+        from src.unmatch import rematch_expired
+
+        return rematch_expired(
+            serial=serial, phone_id=pid, new_friends_only=_job_flag(job, "new_friends_only")
+        )
     if kind == "swipe":
+        from src.swipe_desk import apply_prefs_to_cfg
         from src.swiper import run_session
 
         cfg = load_config()
+        extra: dict = {}
         raw = str(job.get("text") or "").strip()
         if raw:
             try:
-                extra = json.loads(raw)
+                parsed = json.loads(raw)
             except json.JSONDecodeError:
-                extra = {}
-            if isinstance(extra, dict) and extra.get("max_swipes"):
-                cfg = {**cfg, "max_swipes": int(extra["max_swipes"])}
+                parsed = {}
+            if isinstance(parsed, dict):
+                extra = parsed
+        extra.setdefault("phone_id", pid)
+        cfg = apply_prefs_to_cfg(cfg, extra)
+        cfg["phone_id"] = pid
         code = run_session(cfg, serial=serial)
         return code == 0, f"swipe session exit {code}"
     if kind == "add_contact":
@@ -470,6 +508,8 @@ def job_poll_payload(job: dict | None) -> dict:
                 "grab_photos",
                 "refresh_new_friends",
                 "swipe",
+                "unmatch_expired",
+                "rematch_expired",
             }
             else 6
         )

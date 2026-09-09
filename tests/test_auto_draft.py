@@ -219,6 +219,38 @@ class ValidateDraftTests(unittest.TestCase):
         self.assertEqual(validate_draft('```\nSweett\n```'), "Sweett")
 
 
+class PromptBuildTests(unittest.TestCase):
+    def test_composer_revision_is_appended(self):
+        from src.draft_llm import build_user_prompt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.db"
+            conn = connect(db)
+            upsert_chat(conn, "Ravi", last_from="them", last_text="Yes", badge="Your turn")
+            replace_thread(
+                conn,
+                conn.execute("SELECT id FROM people WHERE name='Ravi'").fetchone()[0],
+                [("you", "Hi wee group?"), ("them", "Yes")],
+            )
+            conn.commit()
+            user = build_user_prompt(
+                conn,
+                "Ravi",
+                {
+                    "events": "Bucks Saturday",
+                    "run_prompt": "Short.",
+                    "person_note": "hub: bucks",
+                    "person_note_path": "LGS/People/Ravi.md",
+                },
+                composer_text="make it shorter and ask for their number",
+            )
+            self.assertIn("Current composer text", user)
+            self.assertIn("make it shorter and ask for their number", user)
+            self.assertIn("Ravi: Yes", user)
+            self.assertIn("Toby's recent first words", user)
+            conn.close()
+
+
 class ObsidianContextMockTests(unittest.TestCase):
     def test_generate_draft_uses_mock_providers(self):
         from src import draft_llm

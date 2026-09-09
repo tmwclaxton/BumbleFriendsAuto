@@ -286,8 +286,10 @@ def start_add_to_contacts(
     """Queue writing a contact onto the Pixel Contacts app. You must pick contact_name and phone from the thread (prepare_contact / get_thread) — do not invent a number. Returns job_id; poll get_job. Does not send a Bumble message."""
     import json
 
+    from src.contacts import with_lgs_suffix
+
     inbox_name = (inbox_name or "").strip()
-    contact_name = (contact_name or "").strip()
+    contact_name = with_lgs_suffix(contact_name)
     phone = (phone or "").strip()
     notes = (notes or "").strip()
     if not inbox_name:
@@ -317,6 +319,42 @@ def start_add_to_contacts(
         "suggested_wait_seconds": 8,
         "hint": "Poll get_job until done/error/cancelled. This writes the Pixel address book only.",
     }
+
+
+@mcp.tool()
+def add_to_crm(
+    inbox_name: str,
+    name: str,
+    phone: str,
+    phone_id: str = "toby",
+    instagram: str = "",
+    hometown: str = "",
+    ethnicity: str = "",
+    notes: str = "",
+    home_lgs_group_id: int | None = None,
+) -> dict:
+    """Create or update a Let's Go Social CRM lead from a Bumble thread. Fast — no phone. Prefer prepare_contact first. Phone must come from the chat."""
+    from src.crm import create_lead
+
+    inbox_name = (inbox_name or "").strip()
+    name = (name or "").strip()
+    phone = (phone or "").strip()
+    if not inbox_name or not name or not phone:
+        return {"ok": False, "error": "inbox_name, name, and phone required"}
+    return create_lead(
+        {
+            "name": name,
+            "phone": phone,
+            "instagram": instagram or None,
+            "hometown": hometown or None,
+            "ethnicity": ethnicity or None,
+            "notes": notes or None,
+            "source": "bumble",
+            "bumble_inbox_name": inbox_name,
+            "bumble_phone_id": phone_id or "toby",
+            "home_lgs_group_id": home_lgs_group_id,
+        }
+    )
 
 
 @mcp.tool()

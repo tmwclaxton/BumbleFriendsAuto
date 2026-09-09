@@ -55,7 +55,11 @@ obsidian:
   run_prompt_note: LGS/Run prompt.md
   people_folder: LGS/People
 
-# Auto-draft replies with GPT Sol when a new incoming turn is captured.
+# Let's Go Social CRM (pipeline leads). Prefer LGS_API_URL / LGS_PIPELINE_TOKEN env.
+lgs:
+  api_url: http://127.0.0.1:8099
+  pipeline_token: ""
+
 draft:
   enabled: true
   max_attempts: 5

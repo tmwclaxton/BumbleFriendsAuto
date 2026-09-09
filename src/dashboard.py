@@ -198,6 +198,8 @@ def people_api_payload(conn) -> dict:
             "preview": row["preview"],
             "location": row["location"],
             "phone_provided": bool(row["phone_provided"]),
+            "lgs_lead_id": row["lgs_lead_id"] if "lgs_lead_id" in row.keys() else None,
+            "in_contacts": bool(row["in_contacts"]) if "in_contacts" in row.keys() else False,
             "draft": row["draft"] or "",
             "opener_sent": bool(row["opener_sent"]),
             "new_friend": fresh,

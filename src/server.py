@@ -64,6 +64,11 @@ async def homepage(_: Request) -> Response:
     return HTMLResponse(_load_html().decode("utf-8"))
 
 
+async def swipe_page(_: Request) -> Response:
+    path = Path(__file__).with_name("swipe.html")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
 async def api_health(_: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
@@ -290,17 +295,183 @@ async def api_new_friends(request: Request) -> JSONResponse:
     )
 
 
+def _bulk_expired_text(data: dict) -> str:
+    if bool(data.get("new_friends_only")):
+        return json.dumps({"new_friends_only": True})
+    return ""
+
+
+async def api_unmatch(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    phone_id = str(data.get("phone_id") or "").strip() or None
+    job = enqueue("unmatch", name, phone_id=phone_id)
+    return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued unmatch of {name}"})
+
+
+async def api_unmatch_expired(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    new_only = bool(data.get("new_friends_only"))
+    jobs = enqueue_many(
+        "unmatch_expired",
+        text=_bulk_expired_text(data),
+        phone_id=_phone_from_body(data),
+    )
+    scope = " expired new friends" if new_only else " expired"
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "jobs": jobs,
+            "job": jobs[0],
+            "message": f"queued unmatch{scope} on {len(jobs)} phone(s)",
+        }
+    )
+
+
+async def api_rematch(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    phone_id = str(data.get("phone_id") or "").strip() or None
+    job = enqueue("rematch", name, phone_id=phone_id)
+    return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued rematch of {name}"})
+
+
+async def api_rematch_expired(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    new_only = bool(data.get("new_friends_only"))
+    jobs = enqueue_many(
+        "rematch_expired",
+        text=_bulk_expired_text(data),
+        phone_id=_phone_from_body(data),
+    )
+    scope = " expired new friends" if new_only else " expired"
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "jobs": jobs,
+            "job": jobs[0],
+            "message": f"queued rematch{scope} on {len(jobs)} phone(s)",
+        }
+    )
+
+
+async def api_crm_draft(request: Request) -> JSONResponse:
+    name = (parse_qs(request.url.query).get("name") or [""])[0]
+    phone_id = (parse_qs(request.url.query).get("phone") or [DEFAULT_PHONE_ID])[0]
+    from src.crm import crm_draft
+
+    return JSONResponse(crm_draft(name, phone_id=phone_id))
+
+
+async def api_crm_lead(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    from src.crm import create_lead
+
+    result = create_lead(data)
+    status = 200
+    if not result.get("ok"):
+        status = int(result.get("status") or 502)
+        if status < 400:
+            status = 502
+    elif result.get("created"):
+        status = 201
+    return JSONResponse(result, status_code=status)
+
+
 async def api_swipe(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
         data = {}
-    text = ""
-    if data.get("max_swipes") is not None and str(data.get("max_swipes")) != "":
-        text = json.dumps({"max_swipes": int(data["max_swipes"])})
+    extra = dict(data) if isinstance(data, dict) else {}
+    extra.pop("phone_id", None)
+    extra.pop("phone", None)
+    text = json.dumps(extra) if extra else ""
     jobs = enqueue_many("swipe", text=text, phone_id=_phone_from_body(data))
     return JSONResponse(
         {"ok": True, "queued": True, "jobs": jobs, "job": jobs[0], "message": f"queued swipe on {len(jobs)} phone(s)"}
     )
+
+
+async def api_swipe_prefs(request: Request) -> JSONResponse:
+    from src.swipe_desk import load_prefs, save_prefs
+
+    if request.method == "GET":
+        return JSONResponse({"ok": True, "prefs": load_prefs()})
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    return JSONResponse({"ok": True, "prefs": save_prefs(data)})
+
+
+async def api_swipe_desk(_: Request) -> JSONResponse:
+    from src.swipe_desk import snapshot
+
+    return JSONResponse(snapshot())
+
+
+async def api_swipe_start(request: Request) -> JSONResponse:
+    from src.swipe_desk import job_payload, save_prefs
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    prefs = save_prefs(data)
+    jobs = enqueue_many("swipe", text=job_payload(prefs), phone_id=prefs["phone_id"])
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "prefs": prefs,
+            "jobs": jobs,
+            "job": jobs[0],
+            "message": f"queued swipe on {prefs['phone_id']}",
+        }
+    )
+
+
+async def api_swipe_decide(request: Request) -> JSONResponse:
+    from src.swipe_desk import snapshot, submit_decision
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    ok = submit_decision(str(data.get("action") or ""))
+    return JSONResponse({"ok": ok, **snapshot()}, status_code=200 if ok else 400)
+
+
+async def api_swipe_stop(_: Request) -> JSONResponse:
+    from src.phone_queue import queue_snapshot
+    from src.swipe_desk import snapshot, submit_decision
+
+    submit_decision("stop")
+    for job in queue_snapshot():
+        if job.get("kind") == "swipe" and job.get("status") in {"queued", "running"}:
+            cancel_job(int(job["id"]))
+    return JSONResponse({"ok": True, **snapshot()})
+
+
+async def api_swipe_card(_: Request) -> Response:
+    from src.swipe_desk import CARD_PATH
+
+    if not CARD_PATH.is_file() or CARD_PATH.stat().st_size < 80:
+        return Response(status_code=404)
+    return FileResponse(CARD_PATH, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 async def api_draft(request: Request) -> JSONResponse:
@@ -325,6 +496,59 @@ async def api_draft(request: Request) -> JSONResponse:
     if not ok:
         return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
     return JSONResponse({"ok": True})
+
+
+async def api_draft_prompt(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip()
+    composer = str(data.get("text") or "")
+    from src.draft_llm import preview_draft_prompt
+    from src.phones import phone_scope
+
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            return JSONResponse(preview_draft_prompt(conn, name, composer_text=composer, cfg=cfg))
+    except Exception as exc:
+        log.warning("draft prompt preview failed: %s", exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    finally:
+        conn.close()
+
+
+async def api_draft_generate(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip()
+    composer = str(data.get("text") or "")
+    if not name:
+        return JSONResponse({"ok": False, "error": "open a chat first"}, status_code=400)
+    from src.draft_llm import generate_draft
+    from src.phones import phone_scope
+    from src.store import set_draft
+
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            text = generate_draft(conn, name, cfg, composer_text=composer)
+            set_draft(conn, name, text)
+    except Exception as exc:
+        log.warning("manual draft failed for %s: %s", name, exc)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+    finally:
+        conn.close()
+    return JSONResponse({
+        "ok": True,
+        "text": text,
+        "mode": "revise" if composer.strip() else "generate",
+    })
 
 
 async def api_draft_retry(request: Request) -> JSONResponse:
@@ -389,6 +613,8 @@ def build_app() -> Starlette:
     routes = [
         Route("/", homepage),
         Route("/index.html", homepage),
+        Route("/swipe", swipe_page),
+        Route("/swipe.html", swipe_page),
         Route("/api/health", api_health),
         Route("/api/people", api_people),
         Route("/api/photo", api_photo),
@@ -406,7 +632,21 @@ def build_app() -> Starlette:
         Route("/api/message-new-friends", api_message_new_friends, methods=["POST"]),
         Route("/api/new-friends", api_new_friends, methods=["POST"]),
         Route("/api/swipe", api_swipe, methods=["POST"]),
+        Route("/api/unmatch", api_unmatch, methods=["POST"]),
+        Route("/api/unmatch-expired", api_unmatch_expired, methods=["POST"]),
+        Route("/api/rematch", api_rematch, methods=["POST"]),
+        Route("/api/rematch-expired", api_rematch_expired, methods=["POST"]),
+        Route("/api/crm/draft", api_crm_draft),
+        Route("/api/crm/lead", api_crm_lead, methods=["POST"]),
+        Route("/api/swipe/prefs", api_swipe_prefs, methods=["GET", "POST"]),
+        Route("/api/swipe/desk", api_swipe_desk),
+        Route("/api/swipe/start", api_swipe_start, methods=["POST"]),
+        Route("/api/swipe/decide", api_swipe_decide, methods=["POST"]),
+        Route("/api/swipe/stop", api_swipe_stop, methods=["POST"]),
+        Route("/api/swipe/card", api_swipe_card),
         Route("/api/draft", api_draft, methods=["POST"]),
+        Route("/api/draft/prompt", api_draft_prompt, methods=["POST"]),
+        Route("/api/draft/generate", api_draft_generate, methods=["POST"]),
         Route("/api/draft/retry", api_draft_retry, methods=["POST"]),
         Route("/api/queue/cancel", api_cancel, methods=["POST"]),
         Route("/api/queue/cancel-all", api_cancel_all, methods=["POST"]),

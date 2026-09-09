@@ -11,7 +11,13 @@ import time
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from src.chats import chat_partner_name, dismiss_icebreaker_if_present, is_empty_outbound_chat, list_new_friends
+from src.chats import (
+    chat_partner_name,
+    dismiss_icebreaker_if_present,
+    is_empty_outbound_chat,
+    is_expired_rematch_overlay,
+    list_new_friends,
+)
 from src.config import load_config
 from src.device import bring_app_foreground, connect, dump_hierarchy, wait_idle
 from src.gestures import _adb_swipe, tap
@@ -54,13 +60,13 @@ def _reraise_cancel(exc: BaseException) -> None:
         raise exc
 
 
-def _maybe_grab_profile_photo(device, name: str) -> None:
+def _maybe_grab_profile_photo(device, name: str, *, force: bool = False) -> None:
     from src.photos import capture_profile_photo, photo_exists
 
-    if not name or photo_exists(name):
+    if not name or (not force and photo_exists(name)):
         return
     try:
-        capture_profile_photo(device, name)
+        capture_profile_photo(device, name, force=force)
     except Exception:
         log.debug("profile photo skip %s", name, exc_info=True)
 
@@ -1246,11 +1252,10 @@ def _wait_thread(device) -> str:
         wait_idle(device, 0.45)
         xml = dump_hierarchy(device)
         blob = _texts(xml).lower()
-        if chat_partner_name(xml) or _on_profile(xml):
+        if chat_partner_name(xml) or _on_profile(xml) or is_expired_rematch_overlay(xml):
             return xml
         if "match has expired" in blob or "conversation expired" in blob:
-            if "chatInput" in xml or "chatToolbar" in xml:
-                return xml
+            return xml
     return xml
 
 
@@ -1674,7 +1679,9 @@ def _row_in_tap_zone(row: dict, *, height: int) -> bool:
     return lo <= int(row["y"]) <= hi
 
 
-def open_chat_from_list(device, package: str, name: str) -> str | None:
+def open_chat_from_list(
+    device, package: str, name: str, *, max_loops: int = 60, max_stagnant: int = 6
+) -> str | None:
     """Scroll the Chats inbox and tap an exact name. Used when search misses."""
     width, height = _screen_size(device)
     tap_lo, tap_hi, tap_aim = _tap_zone(height)
@@ -1689,7 +1696,7 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
     last_key: tuple[str, ...] | None = None
     stagnant = 0
     tap_tries = 0
-    for _ in range(60):
+    for _ in range(max(1, int(max_loops))):
         if not _on_list(xml):
             xml = recover_to_list(device, package)
         rows = _list_rows(xml, min_top=int(height * 0.08), height=height, width=width)
@@ -1726,9 +1733,13 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
             else:
                 tap(device, int(width * 0.38), int(hit["y1"]) + max(40, int(height * 0.025)))
             wait_idle(device, 1.6)
-            partner = chat_partner_name(_wait_thread(device))
+            xml = _wait_thread(device)
+            partner = chat_partner_name(xml)
             if partner and _same_person(partner, name):
                 return partner
+            if is_expired_rematch_overlay(xml) and name.strip().casefold() in xml.lower():
+                log.info("opened expired rematch overlay for %s", name)
+                return name
             log.warning("list opened %s wanted %s", partner, name)
             tap_tries += 1
             if partner:
@@ -1744,7 +1755,7 @@ def open_chat_from_list(device, package: str, name: str) -> str | None:
         else:
             stagnant = 0
             last_key = key
-        if stagnant >= 6:
+        if stagnant >= max(1, int(max_stagnant)):
             break
         _scroll_inbox(
             device, width, height, older=True, distance=int(height * 0.14), duration_ms=240
@@ -1960,7 +1971,9 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
         friends = [
             f
             for f in visible
-            if max(48, int(width * 0.11)) <= int(f.x) <= width - max(48, int(width * 0.11)) and f"{f.name}@{int(f.x) // 40}" not in attempted
+            if not f.expired
+            and max(48, int(width * 0.11)) <= int(f.x) <= width - max(48, int(width * 0.11))
+            and f"{f.name}@{int(f.x) // 40}" not in attempted
         ]
         if not friends:
             _scroll_new_friends_strip(device, xml, width, height, toward_end=True)
@@ -1968,7 +1981,9 @@ def capture_new_friend_chats(device, conn, package: str) -> int:
             friends = [
                 f
                 for f in list_new_friends(xml)
-                if max(48, int(width * 0.11)) <= int(f.x) <= width - max(48, int(width * 0.11)) and f"{f.name}@{int(f.x) // 40}" not in attempted
+                if not f.expired
+                and max(48, int(width * 0.11)) <= int(f.x) <= width - max(48, int(width * 0.11))
+                and f"{f.name}@{int(f.x) // 40}" not in attempted
             ]
             if not friends:
                 stagnant_rounds += 1
@@ -2202,13 +2217,20 @@ def _fast_reply_scan_body(cfg, package: str, serial: str | None, sleep_after: bo
 
 def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True, phone_id: str | None = None) -> tuple[bool, str]:
     """Scroll Chats + New friends and crop visible faces. Does not open threads."""
-    from src.phones import serial_for
-    from src.photos import avatars_dir
-    from src.unlock import sleep_screen, wake_and_unlock
+    from src.phones import phone_scope, serial_for
 
     cfg = load_config()
     package = str(cfg["package"])
     serial = serial or serial_for(phone_id)
+    with phone_scope(phone_id):
+        return _grab_inbox_photos_body(cfg, package, serial, sleep_after)
+
+
+def _grab_inbox_photos_body(cfg, package: str, serial: str | None, sleep_after: bool) -> tuple[bool, str]:
+    from src.phones import current_phone_id
+    from src.photos import avatars_dir
+    from src.unlock import sleep_screen, wake_and_unlock
+
     device = connect(serial)
     try:
         if not wake_and_unlock(device, serial=serial):
@@ -2220,8 +2242,9 @@ def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True, ph
             _set_inbox_filter(device, filt)
             scan_chat_list(device, package)
         collect_new_friend_names(device, package)
-        n = len([p for p in avatars_dir().glob("*.jpg") if p.stat().st_size > 80])
-        msg = f"grabbed inbox thumbnails ({n} on disk)"
+        phone_dir = avatars_dir() / current_phone_id()
+        n = len([p for p in phone_dir.glob("*.jpg") if p.stat().st_size > 80])
+        msg = f"grabbed inbox thumbnails ({n} on disk for {current_phone_id()})"
         log.info(msg)
         return True, msg
     except Exception as exc:
@@ -2242,12 +2265,18 @@ def grab_inbox_photos(*, serial: str | None = None, sleep_after: bool = True, ph
 
 def refresh_new_friends_strip(*, serial: str | None = None, sleep_after: bool = True, phone_id: str | None = None) -> tuple[bool, str]:
     """Unlock, scan the New friends circles, open any not already stored, then sleep."""
-    from src.phones import serial_for
-    from src.unlock import sleep_screen, wake_and_unlock
+    from src.phones import phone_scope, serial_for
 
     cfg = load_config()
     package = str(cfg["package"])
     serial = serial or serial_for(phone_id)
+    with phone_scope(phone_id):
+        return _refresh_new_friends_strip_body(cfg, package, serial, sleep_after)
+
+
+def _refresh_new_friends_strip_body(cfg, package: str, serial: str | None, sleep_after: bool) -> tuple[bool, str]:
+    from src.unlock import sleep_screen, wake_and_unlock
+
     device = connect(serial)
     try:
         if not wake_and_unlock(device, serial=serial):

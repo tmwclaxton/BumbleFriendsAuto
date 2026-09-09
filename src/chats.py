@@ -22,6 +22,7 @@ class NewFriend:
     x: int
     y: int
     bounds: str
+    expired: bool = False
 
 
 def _bounds_center(bounds: str) -> tuple[int, int] | None:
@@ -81,7 +82,10 @@ def list_new_friends(xml: str) -> list[NewFriend]:
         if key in seen:
             continue
         seen.add(key)
-        friends.append(NewFriend(name=name, x=center[0], y=center[1], bounds=bounds))
+        expired = "expired" in desc.lower()
+        friends.append(
+            NewFriend(name=name, x=center[0], y=center[1], bounds=bounds, expired=expired)
+        )
 
     # Left-to-right as shown in the row.
     friends.sort(key=lambda f: f.x)
@@ -100,6 +104,19 @@ def chat_partner_name(xml: str) -> str | None:
             if text:
                 return text
     return None
+
+
+def is_expired_rematch_overlay(xml: str) -> bool:
+    """Profile card after tapping an expired inbox row: Remove + Rematch."""
+    blob = xml.lower()
+    if "this match has expired" not in blob and "match has expired" not in blob:
+        return False
+    return (
+        "myprofilepreview_rightbutton" in blob
+        or 'text="rematch"' in blob
+        or "text='rematch'" in blob
+        or 'content-desc="rematch"' in blob
+    )
 
 
 def is_empty_outbound_chat(xml: str) -> bool:

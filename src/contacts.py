@@ -112,6 +112,17 @@ def _google_account(serial: str) -> tuple[str, str] | None:
     return None
 
 
+_LGS_NAME = re.compile(r"(?:\s+LGS)+\s*$", re.I)
+
+
+def with_lgs_suffix(name: str) -> str:
+    """Display name saved on the Pixel: '{name} LGS', without doubling the tag."""
+    name = re.sub(_LGS_NAME, "", (name or "").strip()).strip()
+    if not name:
+        return ""
+    return f"{name} LGS"
+
+
 def add_pixel_contact(
     *,
     inbox_name: str,
@@ -122,7 +133,7 @@ def add_pixel_contact(
 ) -> tuple[bool, str]:
     """Unlock, write a Contacts row, mark the inbox person. Does not open Bumble."""
     inbox_name = (inbox_name or "").strip()
-    contact_name = (contact_name or "").strip()
+    contact_name = with_lgs_suffix(contact_name)
     phone = re.sub(r"\s+", "", phone or "")
     notes = (notes or "").strip()
     if not contact_name:
@@ -210,7 +221,7 @@ def add_pixel_contact(
     return True, f"added {contact_name} to Pixel contacts" + (f" ({phone})" if phone else "")
 
 
-def contact_preview(name: str) -> dict:
+def contact_preview(name: str, phone_id: str | None = None) -> dict:
     """What an agent needs to decide the Pixel contact fields. No phone."""
     name = (name or "").strip()
     if not name:
@@ -218,59 +229,66 @@ def contact_preview(name: str) -> dict:
     cfg = load_config()
     conn = db_connect(db_path_from_config(cfg))
     try:
-        row = conn.execute(
-            """
-            SELECT p.name, p.location, p.age, p.phone_provided, p.in_contacts, p.notes,
-                   c.last_text, c.preview
-            FROM people p
-            LEFT JOIN chats c ON c.person_id = p.id
-            WHERE p.name = ?
-            """,
-            (name,),
-        ).fetchone()
-        if row is None:
-            return {"ok": False, "error": "person not found"}
-        extra = namesake_meta(conn).get(name) or {}
-        blobs: list[str] = []
-        for msg in list_thread(conn, name):
-            blobs.append(str(msg["body"] or ""))
-        blobs.append(f"{row['last_text'] or ''} {row['preview'] or ''}")
-        blob = "\n".join(blobs)
-        phones = extract_phones(blob)
-        insta = extract_instagrams(blob)
-        location = (row["location"] or "").strip()
-        distinguish = str(extra.get("distinguish") or "")
-        base = str(extra.get("base_name") or name)
-        suggested = name
-        if extra.get("same_name_count", 1) and int(extra.get("same_name_count") or 1) > 1:
+        from src.phones import phone_scope
+
+        with phone_scope(phone_id):
+            row = conn.execute(
+                """
+                SELECT p.name, p.phone_id, p.location, p.age, p.phone_provided, p.in_contacts,
+                       p.notes, p.ethnicity, p.lgs_lead_id, c.last_text, c.preview
+                FROM people p
+                LEFT JOIN chats c ON c.person_id = p.id
+                WHERE p.name = ?
+                """,
+                (name,),
+            ).fetchone()
+            if row is None:
+                return {"ok": False, "error": "person not found"}
+            extra = namesake_meta(conn).get(name) or {}
+            blobs: list[str] = []
+            for msg in list_thread(conn, name):
+                blobs.append(str(msg["body"] or ""))
+            blobs.append(f"{row['last_text'] or ''} {row['preview'] or ''}")
+            blob = "\n".join(blobs)
+            phones = extract_phones(blob)
+            insta = extract_instagrams(blob)
+            location = (row["location"] or "").strip()
+            distinguish = str(extra.get("distinguish") or "")
+            base = str(extra.get("base_name") or name)
+            suggested = name
+            if extra.get("same_name_count", 1) and int(extra.get("same_name_count") or 1) > 1:
+                if location:
+                    suggested = f"{base} ({location})"
+                elif distinguish:
+                    suggested = f"{base} ({distinguish})"
+            suggested = with_lgs_suffix(suggested)
+            note_bits = ["Bumble Friends / LGS"]
             if location:
-                suggested = f"{base} ({location})"
-            elif distinguish:
-                suggested = f"{base} ({distinguish})"
-        note_bits = ["Bumble Friends / LGS"]
-        if location:
-            note_bits.append(location)
-        if insta:
-            note_bits.append("ig @" + ", @".join(insta))
-        return {
-            "ok": True,
-            "inbox_name": name,
-            "display_name": extra.get("display_name") or name,
-            "base_name": base,
-            "distinguish": distinguish,
-            "location": location,
-            "age": row["age"],
-            "phone_provided": bool(row["phone_provided"]),
-            "in_contacts": bool(row["in_contacts"]),
-            "phone_candidates": phones,
-            "instagram_candidates": insta,
-            "suggested_contact_name": suggested,
-            "suggested_notes": " · ".join(note_bits),
-            "hint": (
-                "Read get_thread if you need more context. Then call start_add_to_contacts "
-                "with the contact_name and phone you chose. Do not invent a number that is "
-                "not in the thread. Phone is optional if they only gave Insta."
-            ),
-        }
+                note_bits.append(location)
+            if insta:
+                note_bits.append("ig @" + ", @".join(insta))
+            return {
+                "ok": True,
+                "inbox_name": name,
+                "phone_id": str(row["phone_id"] or "toby"),
+                "display_name": extra.get("display_name") or name,
+                "base_name": base,
+                "distinguish": distinguish,
+                "location": location,
+                "age": row["age"],
+                "ethnicity": row["ethnicity"] or "",
+                "phone_provided": bool(row["phone_provided"]),
+                "in_contacts": bool(row["in_contacts"]),
+                "lgs_lead_id": row["lgs_lead_id"],
+                "phone_candidates": phones,
+                "instagram_candidates": insta,
+                "suggested_contact_name": suggested,
+                "suggested_notes": " · ".join(note_bits),
+                "hint": (
+                    "Read get_thread if you need more context. Then call start_add_to_contacts "
+                    "with the contact_name and phone you chose. Do not invent a number that is "
+                    "not in the thread. Phone is optional if they only gave Insta."
+                ),
+            }
     finally:
         conn.close()

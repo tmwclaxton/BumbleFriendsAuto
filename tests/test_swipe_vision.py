@@ -61,6 +61,45 @@ class DecideSwipeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("crazy", reason)
 
+    def test_woman_race_filter(self):
+        cfg = {
+            "filters": {
+                "swipe_vision": {
+                    "women_include": ["white", "east_asian"],
+                    "women_if_missing": "pass",
+                }
+            }
+        }
+        ok, reason = decide_swipe(
+            texts=["She/Her"],
+            vision={"gender": "female", "ethnicity": "black", "crazy": "no"},
+            cfg=cfg,
+        )
+        self.assertFalse(ok)
+        self.assertIn("excluded", reason)
+        ok, _ = decide_swipe(
+            texts=["She/Her"],
+            vision={"gender": "female", "ethnicity": "white", "crazy": "no"},
+            cfg=cfg,
+        )
+        self.assertTrue(ok)
+
+    def test_explicit_men_include_south_asian(self):
+        cfg = {
+            "filters": {
+                "swipe_vision": {
+                    "men_include": ["south_asian", "white"],
+                    "men_exclude": [],
+                }
+            }
+        }
+        ok, _ = decide_swipe(
+            texts=["He/Him"],
+            vision={"gender": "male", "ethnicity": "south_asian", "crazy": "no"},
+            cfg=cfg,
+        )
+        self.assertTrue(ok)
+
     def test_chip_overrides_vision_ethnicity(self):
         ok, reason = decide_swipe(
             texts=["Ethnicity", "South Asian", "He/Him"],

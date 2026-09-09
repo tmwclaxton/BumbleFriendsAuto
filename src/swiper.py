@@ -155,6 +155,12 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
     swipe_cfg = dict(cfg["swipe"])
     dump_dir = Path(str(cfg.get("dump_dir") or "dumps"))
 
+    from src.swipe_desk import attach_session, begin_pending, finish_session, note_result, set_message, wait_decision
+
+    final_say = bool(cfg.get("final_say"))
+    phone_id = str(cfg.get("phone_id") or "")
+    attach_session(phone_id=phone_id or "toby", max_swipes=max_swipes, final_say=final_say)
+
     device = connect(serial)
     unlocked = False
     for attempt in range(4):
@@ -171,6 +177,7 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 time.sleep(2)
     if not unlocked:
         log.error("phone still locked — unlock failed")
+        finish_session("phone still locked")
         return 1
     if cfg.get("bring_to_foreground", True):
         bring_app_foreground(device, package)
@@ -192,8 +199,12 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
         package,
     )
 
+    end_msg = "session ended"
     try:
+        from src.phone_queue import check_cancel
+
         while swipes < max_swipes:
+            check_cancel()
             try:
                 state, xml = _read_state(device, package)
             except Exception as exc:
@@ -264,6 +275,7 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
 
             nav_attempts = 0
             recover_attempts = 0
+            set_message("Reading this card")
             browse_profile(device, cfg.get("browse") or {})
             # Re-check after browsing — scrolling can hit empty/paywall overlays rarely.
             try:
@@ -306,9 +318,13 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 _maybe_dismiss_overlay(device, package)
 
             do_like = random.random() < like_ratio
+            reason = "like_ratio"
+            vision_meta: dict = {}
             if swipe_vision_enabled(cfg):
+                set_message("Guessing gender and race")
                 texts = collect_card_texts(device, extra_scrolls=1)
                 vision_like, reason, meta = evaluate_card(device, texts, cfg)
+                vision_meta = meta
                 log.info("filter swipe_vision %s meta=%s", reason, meta.get("vision") or meta)
                 do_like = bool(vision_like)
             elif ethnicity_filter_enabled(cfg):
@@ -320,6 +336,38 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
 
             pre_id = _card_identity(device)
             log.info("card identity before swipe: %s", pre_id or "?")
+            vision = dict(vision_meta.get("vision") or {})
+            proposed = "like" if do_like else "pass"
+            if final_say:
+                begin_pending(
+                    {
+                        "name": vision.get("name") or (pre_id.split("-")[0] if pre_id else ""),
+                        "gender": vision.get("gender") or "",
+                        "ethnicity": vision.get("ethnicity") or "",
+                        "crazy": vision.get("crazy") or "no",
+                        "proposed": proposed,
+                        "reason": reason,
+                    }
+                )
+                choice = wait_decision()
+                if choice == "stop":
+                    log.info("swipe desk stop")
+                    end_msg = "stopped"
+                    return 0
+                if choice == "like":
+                    do_like = True
+                elif choice == "pass":
+                    do_like = False
+            action = "like" if do_like else "pass"
+            note_result(
+                name=str(vision.get("name") or (pre_id.split("-")[0] if pre_id else "")),
+                gender=str(vision.get("gender") or ""),
+                ethnicity=str(vision.get("ethnicity") or ""),
+                proposed=proposed,
+                action=action,
+                reason=reason,
+                overridden=action != proposed,
+            )
             swipe(device, swipe_cfg, like=do_like)
             # Verify the card actually advanced; retry the swipe a few times if
             # the same card is still on screen (weak/blocked swipe).
@@ -400,9 +448,21 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
             if swipes < max_swipes:
                 sleep_between_swipes(delay_min, delay_max)
 
+        end_msg = f"done {swipes} likes={likes} passes={passes}"
     except KeyboardInterrupt:
         log.info("interrupted (Ctrl+C)")
+        end_msg = "interrupted"
         return 130
+    except Exception as exc:
+        from src.phone_queue import QueueCancelled
+
+        if isinstance(exc, QueueCancelled):
+            end_msg = "stopped"
+            raise
+        end_msg = str(exc)[:120]
+        raise
+    finally:
+        finish_session(end_msg)
 
     log.info(
         "session done swipes=%d likes=%d passes=%d matches_dismissed=%d",

@@ -481,11 +481,12 @@ def _hero_box(width: int, height: int) -> tuple[int, int, int, int]:
     return left, top, left + side, top + side
 
 
-def capture_open_profile_photo(device, name: str) -> bool:
+def capture_open_profile_photo(device, name: str, *, force: bool = False) -> bool:
     """Crop the first profile photo from an already-open profile screen.
 
     If this face already belongs to a namesake, keep it on that person instead of
-    overwriting the wrong Joshua.
+    overwriting the wrong Joshua. ``force`` overwrites this person's file (used
+    after rematch, when the stored crop is the grey expired avatar).
     """
     try:
         img = _screenshot_pil(device)
@@ -493,19 +494,20 @@ def capture_open_profile_photo(device, name: str) -> bool:
         crop = _crop_square(img, _hero_box(width, height), inset=0.02)
         if crop is None:
             return False
-        matched = match_face_to_namesakes(crop, name)
         dest = name
-        if matched:
-            dest = matched
-            if photo_exists(dest):
-                log.info("profile photo already stored as %s", dest)
-                return True
-        elif photo_exists(name):
-            stored = load_photo(name)
-            if stored is not None and faces_differ(crop, stored):
-                dest = next_photo_slot(name)
-            elif stored is not None:
-                return True
+        if not force:
+            matched = match_face_to_namesakes(crop, name)
+            if matched:
+                dest = matched
+                if photo_exists(dest):
+                    log.info("profile photo already stored as %s", dest)
+                    return True
+            elif photo_exists(name):
+                stored = load_photo(name)
+                if stored is not None and faces_differ(crop, stored):
+                    dest = next_photo_slot(name)
+                elif stored is not None:
+                    return True
         dest_path = photo_file(dest)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         crop.save(dest_path, "JPEG", quality=82)
@@ -517,11 +519,11 @@ def capture_open_profile_photo(device, name: str) -> bool:
     return False
 
 
-def capture_profile_photo(device, name: str) -> bool:
+def capture_profile_photo(device, name: str, *, force: bool = False) -> bool:
     """From an open chat, tap into the profile and save the first photo."""
     xml = dump_hierarchy(device)
     if _looks_like_profile(xml):
-        return capture_open_profile_photo(device, name)
+        return capture_open_profile_photo(device, name, force=force)
     point = _toolbar_profile_tap(xml, name)
     if point is None:
         info = device.info or {}
@@ -536,7 +538,7 @@ def capture_profile_photo(device, name: str) -> bool:
     if not _looks_like_profile(xml):
         log.debug("profile did not open for %s", name)
         return False
-    ok = capture_open_profile_photo(device, name)
+    ok = capture_open_profile_photo(device, name, force=force)
     device.press("back")
     wait_idle(device, 0.9)
     return ok

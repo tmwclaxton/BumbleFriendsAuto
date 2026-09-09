@@ -140,26 +140,30 @@ def _parse_vision_line(text: str) -> dict[str, str]:
     return {"gender": gender, "ethnicity": eth, "crazy": crazy, "name": name, "pronouns": pron}
 
 
-def _men_include(cfg: dict) -> frozenset[str]:
-    filt = dict((cfg.get("filters") or {}).get("swipe_vision") or {})
-    raw = filt.get("men_include") or list(_MEN_DEFAULT_INCLUDE)
+def _canon_set(raw: object, default: frozenset[str] | None) -> frozenset[str] | None:
+    if raw is None:
+        return default
     out: set[str] = set()
     for part in raw if isinstance(raw, (list, tuple, set)) else str(raw).split(","):
         canon = canonicalize(str(part)) or str(part).strip().lower().replace(" ", "_")
         if canon:
             out.add(canon)
-    return frozenset(out) or _MEN_DEFAULT_INCLUDE
+    return frozenset(out)
+
+
+def _men_include(cfg: dict) -> frozenset[str]:
+    filt = dict((cfg.get("filters") or {}).get("swipe_vision") or {})
+    return _canon_set(filt.get("men_include"), _MEN_DEFAULT_INCLUDE) or _MEN_DEFAULT_INCLUDE
 
 
 def _men_exclude(cfg: dict) -> frozenset[str]:
     filt = dict((cfg.get("filters") or {}).get("swipe_vision") or {})
-    raw = filt.get("men_exclude") or list(_MEN_DEFAULT_EXCLUDE)
-    out: set[str] = set()
-    for part in raw if isinstance(raw, (list, tuple, set)) else str(raw).split(","):
-        canon = canonicalize(str(part)) or str(part).strip().lower().replace(" ", "_")
-        if canon:
-            out.add(canon)
-    return frozenset(out) | _MEN_DEFAULT_EXCLUDE
+    if "men_include" in filt and filt.get("men_exclude") in (None, [], ()):
+        return frozenset()
+    raw = filt.get("men_exclude")
+    if raw is None:
+        raw = list(_MEN_DEFAULT_EXCLUDE)
+    return _canon_set(raw, _MEN_DEFAULT_EXCLUDE) or frozenset()
 
 
 def screenshot_card(device) -> Path:
@@ -310,18 +314,36 @@ def decide_swipe(
     ethnicity = next(iter(chip_eth), None) or vision_eth
     crazy = ((vision or {}).get("crazy") or "no").lower() == "yes"
 
+    pass_crazy = filt.get("pass_crazy", True)
+    if isinstance(pass_crazy, str):
+        pass_crazy = pass_crazy.strip().lower() not in {"0", "false", "off", "no"}
+    if crazy and pass_crazy:
+        return False, f"{gender or 'unknown'} crazy=yes ethnicity={ethnicity} → pass"
+
     if gender == "female":
-        if crazy:
-            return False, f"woman crazy=yes ethnicity={ethnicity} → pass"
+        if "women_include" in filt:
+            women = _canon_set(filt.get("women_include"), default=None)
+            if women is None:
+                women = frozenset()
+            if_missing_women = str(filt.get("women_if_missing") or "allow").strip().lower()
+            if if_missing_women not in {"allow", "pass"}:
+                if_missing_women = "allow"
+            if ethnicity in {"unknown", ""}:
+                if if_missing_women == "allow":
+                    return True, f"woman ethnicity missing → allow"
+                return False, f"woman ethnicity missing → pass"
+            if ethnicity in women:
+                return True, f"woman ethnicity={ethnicity} allowed → like"
+            return False, f"woman ethnicity={ethnicity} excluded → pass"
         return True, f"woman ethnicity={ethnicity} crazy=no → like"
 
     # Male or unknown → apply men rules (unknown treated as men = stricter).
     include = _men_include(cfg)
     exclude = _men_exclude(cfg)
     label = "man" if gender == "male" else "unknown-gender"
-    if ethnicity in exclude or ethnicity == "south_asian":
+    if ethnicity in exclude or (ethnicity == "south_asian" and "men_include" not in filt):
         return False, f"{label} ethnicity={ethnicity} excluded → pass"
-    if ethnicity in {"black"}:
+    if ethnicity in {"black"} and "men_include" not in filt:
         return False, f"{label} ethnicity=black → pass"
     if ethnicity in include:
         return True, f"{label} ethnicity={ethnicity} allowed → like"
@@ -330,7 +352,7 @@ def decide_swipe(
             return True, f"{label} ethnicity missing → allow"
         return False, f"{label} ethnicity missing → pass"
     # Bare asian / other buckets: not in men allowlist
-    return False, f"{label} ethnicity={ethnicity} outside men allowlist → pass"
+    return False, f"{label} ethnicity={ethnicity} excluded → pass"
 
 
 def evaluate_card(device, texts: list[str], cfg: dict | None = None) -> tuple[bool, str, dict[str, Any]]:
@@ -341,6 +363,12 @@ def evaluate_card(device, texts: list[str], cfg: dict | None = None) -> tuple[bo
     vision: dict[str, str] | None = None
     try:
         path = screenshot_card(device)
+        try:
+            from src.swipe_desk import save_card_photo
+
+            meta["photo_seq"] = save_card_photo(path)
+        except Exception:
+            log.debug("swipe desk photo skip", exc_info=True)
         vision = classify_card_image(path, cfg)
         meta["vision"] = vision
     except Exception as exc:

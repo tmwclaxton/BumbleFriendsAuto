@@ -24,45 +24,78 @@
     overflow: hidden;
   }
   body {
-    font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+    font: 14px/1.4 "Avenir Next", "Segoe UI", sans-serif;
     background: var(--bg);
     color: var(--text);
     display: grid;
-    grid-template-columns: 320px 1fr;
-    grid-template-rows: 100%;
+    grid-template-rows: auto 1fr;
     min-height: 0;
   }
-  aside {
-    border-right: 1px solid var(--line);
+  .topbar {
     display: flex;
-    flex-direction: column;
-    min-height: 0;
-    height: 100%;
-    overflow: hidden;
-  }
-  header {
-    flex-shrink: 0;
-    padding: 16px 16px 10px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 10px 16px 10px;
     border-bottom: 1px solid var(--line);
+    background: #16161b;
   }
-  header h1 { margin: 0; font-size: 18px; font-weight: 650; }
-  header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .brand { min-width: 160px; }
+  .brand h1 { margin: 0; font-size: 16px; font-weight: 650; }
+  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 11px; max-width: 280px; }
+  .top-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+  }
+  .filter-menu { position: relative; }
+  #filters-btn {
+    text-transform: none;
+    letter-spacing: 0;
+    font: 12px/1.2 inherit;
+    font-weight: 650;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 5px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #filters-btn:hover { background: #1a1820; color: var(--text); }
+  #filters-btn.active { color: #e0b4d4; border-color: #6a4a62; }
+  #filters-btn[aria-expanded="true"] { background: #24242c; color: var(--text); }
+  #filter-panel {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 25;
+    min-width: 280px;
+    max-width: min(520px, 80vw);
+    padding: 10px;
+    background: #16161b;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px #0008;
+  }
+  .filter-menu.open #filter-panel { display: block; }
   #filter {
-    flex-shrink: 0;
-    width: calc(100% - 24px);
-    margin: 10px 12px 6px;
-    padding: 8px 10px;
+    width: 100%;
+    margin: 0 0 8px;
+    padding: 6px 10px;
     border: 1px solid var(--line);
     border-radius: 8px;
     background: var(--bg);
     color: var(--text);
   }
   #eth-filter {
-    flex-shrink: 0;
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    padding: 0 12px 10px;
   }
   #eth-filter button {
     background: transparent;
@@ -79,12 +112,6 @@
     color: #e0b4d4;
     border-color: #6a4a62;
   }
-  #eth-guess-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 12px 10px;
-  }
   #eth-guess, #guess-eth {
     background: transparent;
     color: var(--muted);
@@ -96,6 +123,256 @@
   }
   #eth-guess:hover, #guess-eth:hover { color: var(--text); }
   #eth-guess:disabled, #guess-eth:disabled { opacity: 0.55; cursor: default; }
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(300px, 1fr) minmax(300px, 1fr) minmax(420px, 1.35fr);
+    min-height: 0;
+    height: 100%;
+  }
+  .workspace.toby-collapsed {
+    grid-template-columns: 44px minmax(300px, 1fr) minmax(420px, 1.35fr);
+  }
+  .workspace.archie-collapsed {
+    grid-template-columns: minmax(300px, 1fr) 44px minmax(420px, 1.35fr);
+  }
+  .workspace.toby-collapsed.archie-collapsed {
+    grid-template-columns: 44px 44px minmax(0, 1fr);
+  }
+  .phone-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid var(--line);
+    background: var(--bg);
+  }
+  .phone-col.toby { --col: #9ecbff; --col-bg: #152232; }
+  .phone-col.archie { --col: #f0c674; --col-bg: #2a2212; }
+  .col-head {
+    flex-shrink: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--line);
+    background: var(--col-bg);
+  }
+  .col-collapse {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--col);
+    font: 16px/1 inherit;
+    cursor: pointer;
+  }
+  .col-collapse:hover { background: #24242c; }
+  .phone-col.collapsed .col-scroll,
+  .phone-col.collapsed .col-acts,
+  .phone-col.collapsed .col-meta { display: none; }
+  .phone-col.collapsed .col-head {
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 8px 4px;
+    min-height: 0;
+    border-bottom: 0;
+  }
+  .phone-col.collapsed h2 {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .col-acts {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .unmatch-expired, #unmatch-one {
+    flex-shrink: 0;
+    background: #3a2218;
+    color: var(--need);
+    border: 1px solid #ff8a5b55;
+    border-radius: 8px;
+    padding: 5px 8px;
+    font: 11px/1.2 inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .rematch-expired, #rematch-one {
+    flex-shrink: 0;
+    background: #17332c;
+    color: var(--wait);
+    border: 1px solid #3d6b5c;
+    border-radius: 8px;
+    padding: 5px 8px;
+    font: 11px/1.2 inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .unmatch-expired:hover, #unmatch-one:hover { background: #4a2c20; }
+  .rematch-expired:hover, #rematch-one:hover { background: #1f443a; }
+  .unmatch-expired:disabled, #unmatch-one:disabled,
+  .rematch-expired:disabled, #rematch-one:disabled,
+  #crm-one:disabled { opacity: .45; cursor: default; }
+  #crm-one {
+    flex-shrink: 0;
+    background: #1d2a3a;
+    color: #8ec8ff;
+    border: 1px solid #3d5a78;
+    border-radius: 8px;
+    padding: 5px 8px;
+    font: 11px/1.2 inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #crm-one:hover { background: #243548; }
+  #crm-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: #0008;
+    padding: 16px;
+  }
+  #crm-modal.open { display: flex; }
+  #crm-modal .sheet {
+    width: min(440px, 100%);
+    max-height: 90vh;
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  #crm-modal h3 { margin: 0 0 8px; font-size: 16px; }
+  #crm-modal label {
+    display: block;
+    margin: 8px 0 4px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  #crm-modal input, #crm-modal select, #crm-modal textarea {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg);
+    color: inherit;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 8px;
+    font: 13px inherit;
+  }
+  #crm-modal textarea { min-height: 72px; resize: vertical; }
+  #crm-modal .row-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  #crm-modal button { font: 12px inherit; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
+  #crm-cancel { background: transparent; color: inherit; border: 1px solid var(--line); }
+  #crm-save { background: #1d2a3a; color: #8ec8ff; border: 1px solid #3d5a78; }
+  .in-crm { background: #1d2a3a; color: #8ec8ff; }
+  #prompt-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: #0008;
+    padding: 16px;
+  }
+  #prompt-modal.open { display: flex; }
+  #prompt-modal .sheet {
+    width: min(820px, 100%);
+    max-height: 90vh;
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  #prompt-modal h3 { margin: 0 0 6px; font-size: 16px; }
+  #prompt-modal label {
+    display: block;
+    margin: 0 0 4px;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  #prompt-modal .prompt-meta { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+  #prompt-modal pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    max-height: 36vh;
+    overflow: auto;
+    margin: 0 0 12px;
+  }
+  #prompt-modal .row-btns { display: flex; justify-content: flex-end; }
+  #prompt-close {
+    background: transparent;
+    color: inherit;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: 12px inherit;
+    cursor: pointer;
+  }
+  .row-acts {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .row-acts button {
+    font: 10px/1.1 inherit;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .row-acts [data-act="unmatch"] {
+    background: #3a2218;
+    color: var(--need);
+    border: 1px solid #ff8a5b55;
+  }
+  .row-acts [data-act="rematch"] {
+    background: #17332c;
+    color: var(--wait);
+    border: 1px solid #3d6b5c;
+  }
+  a.row-main {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+    color: inherit;
+    text-decoration: none;
+  }
+  .col-head h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 650;
+    color: var(--col);
+  }
+  .col-head p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+  .col-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
   #ethnicity-set {
     flex-shrink: 0;
     background: var(--panel);
@@ -106,20 +383,14 @@
     font: 12px/1.2 inherit;
     max-width: 150px;
   }
-  #sidebar-scroll {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-  }
-  #list { overflow: visible; }
+  .chat-list { overflow: visible; }
   .row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
     width: 100%;
     text-align: left;
-    padding: 10px 14px;
+    padding: 8px 12px;
     border: 0;
     border-bottom: 1px solid var(--line);
     background: transparent;
@@ -129,8 +400,19 @@
   }
   .row:hover, .row.on { background: #24242c; }
   .row .meta { min-width: 0; flex: 1; }
+  .row .who { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
   .row .name { font-weight: 600; }
-  .row .snip { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .eth { color: var(--muted); font-size: 11px; font-weight: 500; }
+  .row .snip {
+    color: var(--muted);
+    font-size: 12px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-top: 2px;
+  }
   .face-wrap {
     position: relative;
     flex-shrink: 0;
@@ -188,15 +470,15 @@
     text-transform: uppercase;
     color: var(--muted);
   }
-  #new-wrap {
-    margin: 8px 10px 4px;
+  .new-wrap {
+    margin: 8px 8px 4px;
     background: #16141e;
     border: 1px solid #3a3350;
-    border-radius: 12px;
+    border-radius: 10px;
     overflow: hidden;
   }
-  #new-wrap[hidden] { display: none; }
-  #new-wrap .section-head { color: #c9b6ff; flex-wrap: wrap; }
+  .new-wrap[hidden] { display: none; }
+  .new-wrap .section-head { color: #c9b6ff; flex-wrap: wrap; }
   .section-actions {
     display: flex;
     align-items: center;
@@ -228,23 +510,24 @@
     color: var(--muted);
     line-height: 1.4;
   }
-  #new-wrap .row { border-bottom-color: #2c2838; }
-  #new-wrap .row:last-child { border-bottom: 0; }
-  #new-hint {
+  .new-wrap .row { border-bottom-color: #2c2838; }
+  .new-wrap .row:last-child { border-bottom: 0; }
+  .new-hint {
     margin: 0;
-    padding: 0 14px 10px;
-    font-size: 12px;
+    padding: 0 12px 8px;
+    font-size: 11px;
     letter-spacing: 0;
     text-transform: none;
     color: var(--muted);
     line-height: 1.35;
   }
-  #chats-head {
-    padding-top: 14px;
+  .chats-head {
+    padding-top: 10px;
     flex-wrap: wrap;
   }
   #refresh-all,
-  #fast-scan {
+  #fast-scan,
+  #show-prompt {
     text-transform: none;
     letter-spacing: 0;
     font: 12px/1.2 inherit;
@@ -257,48 +540,30 @@
     cursor: pointer;
     white-space: nowrap;
   }
-  #refresh-all:hover, #fast-scan:hover { background: #1a1820; color: var(--text); }
+  #refresh-all:hover, #fast-scan:hover, #show-prompt:hover { background: #1a1820; color: var(--text); }
   #refresh-all:disabled, #fast-scan:disabled { opacity: .45; cursor: default; }
-  #group-wrap {
-    margin: 14px 10px 4px;
+  .group-wrap {
+    margin: 10px 8px 4px;
     background: #121814;
     border: 1px solid #2a4038;
-    border-radius: 12px;
+    border-radius: 10px;
     overflow: hidden;
   }
-  #group-wrap[hidden] { display: none; }
-  #group-wrap .section-head { color: var(--wait); }
-  #group-wrap .row { border-bottom-color: #24332e; }
-  #group-wrap .row:last-child { border-bottom: 0; }
-  #group-hint {
-    margin: 0;
-    padding: 0 14px 10px;
-    font-size: 12px;
-    letter-spacing: 0;
-    text-transform: none;
-    color: var(--muted);
-    line-height: 1.35;
-  }
-  #dismissed-wrap {
-    margin: 14px 10px 12px;
+  .group-wrap[hidden] { display: none; }
+  .group-wrap .section-head { color: var(--wait); }
+  .group-wrap .row { border-bottom-color: #24332e; }
+  .group-wrap .row:last-child { border-bottom: 0; }
+  .dismissed-wrap {
+    margin: 10px 8px 12px;
     background: #161412;
     border: 1px solid #3a3330;
-    border-radius: 12px;
+    border-radius: 10px;
     overflow: hidden;
   }
-  #dismissed-wrap[hidden] { display: none; }
-  #dismissed-wrap .section-head { color: #b8a99a; }
-  #dismissed-wrap .row { border-bottom-color: #2c2826; }
-  #dismissed-wrap .row:last-child { border-bottom: 0; }
-  #dismissed-hint {
-    margin: 0;
-    padding: 0 14px 10px;
-    font-size: 12px;
-    letter-spacing: 0;
-    text-transform: none;
-    color: var(--muted);
-    line-height: 1.35;
-  }
+  .dismissed-wrap[hidden] { display: none; }
+  .dismissed-wrap .section-head { color: #b8a99a; }
+  .dismissed-wrap .row { border-bottom-color: #2c2826; }
+  .dismissed-wrap .row:last-child { border-bottom: 0; }
   #msg-all {
     text-transform: none;
     letter-spacing: 0;
@@ -421,6 +686,13 @@
     font: inherit;
   }
   #composer button:disabled { opacity: .45; cursor: default; }
+  #ai-draft {
+    background: #1d2a3a;
+    color: #8ec8ff;
+    border: 1px solid #3d5a78 !important;
+    padding: 0 14px;
+    font-weight: 650;
+  }
   #send {
     background: var(--you);
     color: #1a1508;
@@ -479,11 +751,25 @@
   #queue .q-err { color: var(--need); }
   .tag.toby { background: #1d3a5c; color: #9ecbff; }
   .tag.archie { background: #3a2a12; color: #f0c674; }
-  #phone-filter { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
-  #phone-filter button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px; padding: 2px 10px; cursor: pointer; }
-  #phone-filter button.on { color: var(--text); border-color: var(--text); }
-  #phone-target-row { display: flex; align-items: center; gap: 8px; padding: 0 12px 10px; font-size: 12px; color: var(--muted); }
-  #phone-target-row select { font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+  #phone-target-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  #phone-target-row select { font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  .top-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  @media (max-width: 1100px) {
+    .workspace { grid-template-columns: 1fr 1fr; }
+    .workspace.toby-collapsed { grid-template-columns: 44px 1fr; }
+    .workspace.archie-collapsed { grid-template-columns: 1fr 44px; }
+    .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 44px 44px; }
+    main { grid-column: 1 / -1; min-height: 42vh; border-top: 1px solid var(--line); }
+  }
+  #swipe-btn {
+    color: var(--you);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font: inherit;
+  }
+  #swipe-btn:hover { background: #24242c; }
   #queue button {
     background: transparent;
     color: var(--muted);
@@ -497,97 +783,179 @@
 </style>
 </head>
 <body>
-<aside>
-  <header>
+<header class="topbar">
+  <div class="brand">
     <h1>BFF inbox</h1>
     <p id="meta">Loading…</p>
-  </header>
-  <input id="filter" placeholder="Filter names" autocomplete="off"/>
-  <div id="eth-filter"></div>
-  <div id="phone-filter"></div>
-  <div id="phone-target-row">
-    <span>Jobs on</span>
-    <select id="phone-target" title="Which phone inbox actions use">
-      <option value="all">Both phones</option>
-      <option value="toby">Toby / Pixel</option>
-      <option value="archie">Archie / Galaxy</option>
-    </select>
-    <button type="button" id="swipe-btn" title="Run a swipe session on the selected phone(s)">Swipe</button>
   </div>
-  <div id="eth-guess-row">
-    <button type="button" id="eth-guess">Guess from photos</button>
-  </div>
-  <div id="sidebar-scroll">
-    <div id="new-wrap">
-      <div class="section-head">
-        <span id="new-label">New friends</span>
-        <span class="section-actions">
-          <button type="button" id="refresh-new" title="Look at the New friends circles on the phone and store anyone waiting for a first message. Does not recapture every chat.">Refresh strip</button>
-          <button type="button" id="msg-all" title="Sends the hiking / board games opener on the phone to every match in this section. Does not message existing chats.">Send opener to all</button>
-        </span>
+  <div class="top-tools">
+    <div class="filter-menu" id="filter-menu">
+      <button type="button" id="filters-btn" aria-expanded="false" aria-controls="filter-panel" title="Show name and ethnicity filters">Filters</button>
+      <div id="filter-panel">
+        <input id="filter" placeholder="Filter names" autocomplete="off"/>
+        <div id="eth-filter"></div>
       </div>
-      <p id="new-hint">Matches waiting for a first message. Refresh strip looks at the phone. Send opener only messages this list, not the chats below.</p>
-      <div id="new-list"></div>
     </div>
-    <div id="chats-head" class="section-head">
-      <span>Chats</span>
-      <span class="section-actions">
-        <button type="button" id="fast-scan" title="Scroll the inbox list and open only chats whose latest message changed or whose 'Your turn' badge disagrees with what we stored. A few minutes, no full recapture.">Fast reply scan</button>
-        <button type="button" id="refresh-all" title="Open every chat on the phone and refresh stored transcripts. Can take up to ~40 minutes.">Refresh all</button>
-      </span>
+    <div id="phone-target-row">
+      <span>Jobs on</span>
+      <select id="phone-target" title="Which phone inbox actions use">
+        <option value="all">Both phones</option>
+        <option value="toby">Toby / Pixel</option>
+        <option value="archie">Archie / Galaxy</option>
+      </select>
     </div>
-    <div id="list"></div>
-    <div id="group-wrap" hidden>
-      <div class="section-head">
-        <span id="group-label">In group</span>
-      </div>
-      <p id="group-hint">Added to the WhatsApp group. Filed away here until you take them out. New Bumble messages stay in the thread.</p>
-      <div id="group-list"></div>
-    </div>
-    <div id="dismissed-wrap" hidden>
-      <div class="section-head">
-        <span id="dismissed-label">Dismissed</span>
-      </div>
-      <p id="dismissed-hint">Stays here until they send a new message. Refreshing the chat does not bring them back.</p>
-      <div id="dismissed-list"></div>
+    <div class="top-actions">
+      <button type="button" id="fast-scan" title="Scroll the inbox list and open only chats whose latest message changed or whose Your turn badge disagrees with storage.">Fast scan</button>
+      <button type="button" id="refresh-all" title="Open every chat and refresh stored transcripts. Can take ~40 minutes.">Refresh all</button>
+      <button type="button" id="refresh-new" title="Look at the New friends circles on the phone.">Refresh strip</button>
+      <button type="button" id="msg-all" title="Send the opener only to New friends, not existing chats.">Send openers</button>
+      <button type="button" id="eth-guess">Guess from photos</button>
+      <button type="button" id="show-prompt" title="Show the system + user prompt Sol gets for drafts">AI prompt</button>
+      <a id="swipe-btn" href="/swipe" title="Open the swipe desk">Swipe desk</a>
     </div>
   </div>
-</aside>
+</header>
+<div class="workspace">
+<section class="phone-col toby" data-phone="toby">
+  <div class="col-head">
+    <button type="button" class="col-collapse" data-collapse="toby" aria-expanded="true" title="Collapse Toby">‹</button>
+    <div>
+      <h2>Toby · Pixel</h2>
+      <p class="col-meta" data-col-meta>Loading…</p>
+    </div>
+    <div class="col-acts">
+      <button type="button" class="unmatch-expired" data-unmatch-expired="toby" hidden>Unmatch expired</button>
+      <button type="button" class="rematch-expired" data-rematch-expired="toby" hidden>Rematch expired</button>
+    </div>
+  </div>
+  <div class="col-scroll">
+    <div class="new-wrap">
+      <div class="section-head">
+        <span data-new-label>New friends</span>
+        <div class="section-actions">
+          <button type="button" class="unmatch-expired" data-unmatch-expired="toby" data-new-only="1" hidden>Unmatch new expired</button>
+          <button type="button" class="rematch-expired" data-rematch-expired="toby" data-new-only="1" hidden>Rematch new expired</button>
+        </div>
+      </div>
+      <p class="new-hint" data-new-hint>Waiting for a first message.</p>
+      <div data-new-list></div>
+    </div>
+    <div class="chats-head section-head"><span>Chats</span></div>
+    <div class="chat-list" data-chat-list></div>
+    <div class="group-wrap" hidden>
+      <div class="section-head"><span data-group-label>In group</span></div>
+      <div data-group-list></div>
+    </div>
+    <div class="dismissed-wrap" hidden>
+      <div class="section-head"><span data-dismissed-label>Dismissed</span></div>
+      <div data-dismissed-list></div>
+    </div>
+  </div>
+</section>
+<section class="phone-col archie" data-phone="archie">
+  <div class="col-head">
+    <button type="button" class="col-collapse" data-collapse="archie" aria-expanded="true" title="Collapse Archie">‹</button>
+    <div>
+      <h2>Archie · Galaxy</h2>
+      <p class="col-meta" data-col-meta>Loading…</p>
+    </div>
+    <div class="col-acts">
+      <button type="button" class="unmatch-expired" data-unmatch-expired="archie" hidden>Unmatch expired</button>
+      <button type="button" class="rematch-expired" data-rematch-expired="archie" hidden>Rematch expired</button>
+    </div>
+  </div>
+  <div class="col-scroll">
+    <div class="new-wrap">
+      <div class="section-head">
+        <span data-new-label>New friends</span>
+        <div class="section-actions">
+          <button type="button" class="unmatch-expired" data-unmatch-expired="archie" data-new-only="1" hidden>Unmatch new expired</button>
+          <button type="button" class="rematch-expired" data-rematch-expired="archie" data-new-only="1" hidden>Rematch new expired</button>
+        </div>
+      </div>
+      <p class="new-hint" data-new-hint>Waiting for a first message.</p>
+      <div data-new-list></div>
+    </div>
+    <div class="chats-head section-head"><span>Chats</span></div>
+    <div class="chat-list" data-chat-list></div>
+    <div class="group-wrap" hidden>
+      <div class="section-head"><span data-group-label>In group</span></div>
+      <div data-group-list></div>
+    </div>
+    <div class="dismissed-wrap" hidden>
+      <div class="section-head"><span data-dismissed-label>Dismissed</span></div>
+      <div data-dismissed-list></div>
+    </div>
+  </div>
+</section>
 <main>
   <div id="thread-head"><h2>Select a chat</h2></div>
-  <div id="msgs"><p class="empty">Pick someone on the left.</p></div>
+  <div id="msgs"><p class="empty">Pick someone from Toby or Archie.</p></div>
   <div id="status"></div>
   <div id="queue"></div>
   <div id="composer-wrap">
     <div id="emoji-panel"></div>
     <form id="composer">
-      <textarea id="draft" placeholder="Reply — this sends on the phone" disabled></textarea>
+      <button type="button" id="ai-draft" title="Write a draft, or adapt what is already in the box plus any instruction" disabled>Draft</button>
+      <textarea id="draft" placeholder="Reply, or leave an instruction and tap Draft" disabled></textarea>
       <button type="button" id="emoji-btn" title="Emoji" disabled>😊</button>
       <button type="submit" id="send" disabled>Send</button>
     </form>
   </div>
 </main>
+<div id="prompt-modal" hidden>
+  <div class="sheet">
+    <h3>Draft prompt</h3>
+    <p class="prompt-meta" id="prompt-meta"></p>
+    <label for="prompt-system">System</label>
+    <pre id="prompt-system"></pre>
+    <label for="prompt-user">User</label>
+    <pre id="prompt-user"></pre>
+    <div class="row-btns">
+      <button type="button" id="prompt-close">Close</button>
+    </div>
+  </div>
+</div>
+<div id="crm-modal" hidden>
+  <div class="sheet">
+    <h3>Add to CRM</h3>
+    <p class="new-hint" id="crm-hint">Prefill from the chat, then edit anything that looks off.</p>
+    <form id="crm-form">
+      <label for="crm-name">Name</label>
+      <input id="crm-name" name="name" required autocomplete="off"/>
+      <label for="crm-phone">Phone</label>
+      <input id="crm-phone" name="phone" required autocomplete="off"/>
+      <label for="crm-instagram">Instagram</label>
+      <input id="crm-instagram" name="instagram" autocomplete="off"/>
+      <label for="crm-hometown">Hometown / area</label>
+      <input id="crm-hometown" name="hometown" autocomplete="off"/>
+      <label for="crm-ethnicity">Ethnicity</label>
+      <select id="crm-ethnicity" name="ethnicity"></select>
+      <label for="crm-group">Home group</label>
+      <select id="crm-group" name="home_lgs_group_id">
+        <option value="">None yet</option>
+      </select>
+      <label for="crm-notes">Notes</label>
+      <textarea id="crm-notes" name="notes"></textarea>
+      <div class="row-btns">
+        <button type="button" id="crm-cancel">Cancel</button>
+        <button type="submit" id="crm-save">Save to Let's Go Social</button>
+      </div>
+    </form>
+  </div>
+</div>
+</div>
 <script>
-const listEl = document.getElementById("list");
-const newWrap = document.getElementById("new-wrap");
-const newListEl = document.getElementById("new-list");
-const newLabel = document.getElementById("new-label");
 const msgAllBtn = document.getElementById("msg-all");
 const refreshNewBtn = document.getElementById("refresh-new");
 const refreshAllBtn = document.getElementById("refresh-all");
 const fastScanBtn = document.getElementById("fast-scan");
-const newHint = document.getElementById("new-hint");
-const groupWrap = document.getElementById("group-wrap");
-const groupListEl = document.getElementById("group-list");
-const groupLabel = document.getElementById("group-label");
-const dismissedWrap = document.getElementById("dismissed-wrap");
-const dismissedListEl = document.getElementById("dismissed-list");
-const dismissedLabel = document.getElementById("dismissed-label");
 const msgsEl = document.getElementById("msgs");
 const headEl = document.getElementById("thread-head");
 const metaEl = document.getElementById("meta");
 const draftEl = document.getElementById("draft");
 const sendEl = document.getElementById("send");
+const aiDraftBtn = document.getElementById("ai-draft");
 const emojiBtn = document.getElementById("emoji-btn");
 const emojiPanel = document.getElementById("emoji-panel");
 const statusEl = document.getElementById("status");
@@ -595,7 +963,6 @@ const queueEl = document.getElementById("queue");
 let people = [];
 let phones = [];
 let ethnicityChoices = [];
-let phoneFilter = "";
 const FILTER_STORE = "bff-inbox-filters";
 
 function loadStoredFilters() {
@@ -619,16 +986,61 @@ function saveStoredFilters() {
       name: document.getElementById("filter").value,
     }));
   } catch (err) { /* private mode */ }
+  updateFiltersBtn();
+}
+
+function activeFilterCount() {
+  const nameOn = document.getElementById("filter").value.trim() ? 1 : 0;
+  return nameOn + ethnicityFilter.size;
+}
+
+function updateFiltersBtn() {
+  const btn = document.getElementById("filters-btn");
+  if (!btn) return;
+  const n = activeFilterCount();
+  btn.textContent = n ? "Filters · " + n : "Filters";
+  btn.classList.toggle("active", n > 0);
+}
+
+function setFilterPanelOpen(open) {
+  const menu = document.getElementById("filter-menu");
+  const btn = document.getElementById("filters-btn");
+  if (!menu || !btn) return;
+  menu.classList.toggle("open", open);
+  btn.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 const storedFilters = loadStoredFilters();
 let ethnicityFilter = new Set(storedFilters.eth);
 document.getElementById("filter").value = storedFilters.name;
+updateFiltersBtn();
 let ethnicityGuess = {};
 let guessTimer = 0;
 let openerTemplate = "";
 let current = null;
 let currentPhone = "toby";
+const SIDEBAR_KEYS = {toby: "bff.sidebar.toby", archie: "bff.sidebar.archie"};
+
+function sidebarCollapsed(pid) {
+  try { return localStorage.getItem(SIDEBAR_KEYS[pid]) === "1"; } catch { return false; }
+}
+
+function applySidebarCollapse() {
+  const ws = document.querySelector(".workspace");
+  for (const pid of ["toby", "archie"]) {
+    const col = document.querySelector('.phone-col[data-phone="' + pid + '"]');
+    if (!col) continue;
+    const on = sidebarCollapsed(pid);
+    const label = pid === "archie" ? "Archie" : "Toby";
+    col.classList.toggle("collapsed", on);
+    ws.classList.toggle(pid + "-collapsed", on);
+    const btn = col.querySelector("[data-collapse]");
+    if (!btn) continue;
+    btn.setAttribute("aria-expanded", on ? "false" : "true");
+    btn.title = on ? "Expand " + label : "Collapse " + label;
+    btn.textContent = on ? "›" : "‹";
+  }
+}
 
 function personKey(p) {
   return String((p && p.phone_id) || "toby") + ":" + String((p && p.name) || "");
@@ -688,16 +1100,11 @@ async function loadPeople() {
   ethnicityChoices = data.ethnicity_choices || ethnicityChoices;
   ethnicityGuess = data.ethnicity_guess || ethnicityGuess;
   renderEthFilter();
-  renderPhoneFilter();
   renderEthGuess(ethnicityGuess);
   const n = people.filter(p => p.status === "needs_reply" && !p.dismissed && !p.in_group).length;
-  const phonesProvided = people.filter(p => p.phone_provided).length;
-  const fresh = people.filter(p => p.new_friend && !p.in_group).length;
-  const grouped = people.filter(p => p.in_group).length;
-  const hidden = people.filter(p => (p.dismissed || p.status === "dismissed") && !p.in_group).length;
   const drafts = people.filter(p => (p.draft || "").trim()).length;
   const drafting = people.filter(p => ["pending", "running", "error"].includes(p.draft_status)).length;
-  let line = people.length + " people · " + n + " need a reply · " + fresh + " new friends · " + grouped + " in group · " + hidden + " dismissed · " + drafts + " drafts · " + phonesProvided + " phone provided";
+  let line = people.length + " people · " + n + " need a reply · " + drafts + " drafts";
   if (drafting) line += " · " + drafting + " auto-draft";
   const ad = data.auto_draft || {};
   if (ad.error) line += " · draft worker: " + ad.error;
@@ -764,6 +1171,21 @@ function isInGroup(p) {
   return !!(p && p.in_group);
 }
 
+function isExpired(p) {
+  if (!p) return false;
+  if ((p.status || "") === "expired") return true;
+  if (remainingLabel(p.message_until) === "Match expired" && !p.last_from) return true;
+  const blob = `${p.last_text || ""} ${p.preview || ""}`;
+  return /conversation expired|match has expired|match expired/i.test(blob);
+}
+
+function isExpiredNew(p) {
+  if (!isExpired(p) || isInGroup(p) || isDismissed(p)) return false;
+  const text = (p.last_text || p.preview || "").trim();
+  if (/conversation expired/i.test(text)) return false;
+  return !text || /hours left|no messages|match expired/i.test(text) || !!p.message_until;
+}
+
 function rowHtml(p, inNew) {
   const on = current === p.name && currentPhone === (p.phone_id || "toby") ? " on" : "";
   const snip = esc(inNew ? remainingLabel(p.message_until) : (p.last_text || p.preview || ""));
@@ -771,56 +1193,41 @@ function rowHtml(p, inNew) {
   const stLabel = p.new_friend ? "new friend" : (isInGroup(p) ? "in group" : st.replace("_"," "));
   const tag = inNew ? "" : `<span class="tag ${st}">${esc(stLabel)}</span>`;
   const href = "?chat=" + encodeURIComponent(p.name) + "&phone=" + encodeURIComponent(p.phone_id || "toby");
-  const phone = p.phone_provided
-    ? '<span class="tag phone">phone provided</span>'
-    : "";
-  const draft = (p.draft || "").trim()
-    ? '<span class="tag draft">draft</span>'
-    : "";
+  const extras = [];
+  if (p.phone_provided) extras.push('<span class="tag phone">phone</span>');
+  if ((p.draft || "").trim()) extras.push('<span class="tag draft">draft</span>');
   const ds = (p.draft_status || "").trim();
-  const drafting = (ds === "pending" || ds === "running")
-    ? '<span class="tag drafting">drafting</span>'
-    : (ds === "error"
-      ? '<span class="tag draft_error" title="' + esc(p.draft_error || "draft failed") + '">draft err</span>'
-      : "");
-  const same = (p.same_name_count || 1) > 1
-    ? `<span class="tag same-name">${p.same_name_count} named ${esc(p.base_name || p.name)}</span>`
-    : "";
+  if (ds === "pending" || ds === "running") extras.push('<span class="tag drafting">drafting</span>');
+  else if (ds === "error") extras.push('<span class="tag draft_error" title="' + esc(p.draft_error || "draft failed") + '">draft err</span>');
+  if ((p.same_name_count || 1) > 1) extras.push(`<span class="tag same-name">${p.same_name_count}×</span>`);
+  if (p.lgs_lead_id) extras.push('<span class="tag in-crm">CRM</span>');
   const ethChoice = ethnicityChoices.find(c => c.id === p.ethnicity);
   const eth = p.ethnicity
-    ? `<span class="tag same-name">${esc(ethChoice ? ethChoice.label : p.ethnicity)}</span>`
+    ? `<span class="eth">${esc(ethChoice ? ethChoice.label : p.ethnicity)}</span>`
     : "";
   const shown = p.display_name || p.name;
-  return `<a class="row${on}" href="${href}" data-name="${esc(p.name)}" data-phone="${esc(p.phone_id || "toby")}">
+  const acts = isExpired(p)
+    ? `<span class="row-acts">
+        <button type="button" data-act="unmatch" data-name="${esc(p.name)}" data-phone="${esc(p.phone_id || "toby")}">Unmatch</button>
+        <button type="button" data-act="rematch" data-name="${esc(p.name)}" data-phone="${esc(p.phone_id || "toby")}">Rematch</button>
+      </span>`
+    : "";
+  return `<div class="row${on}" data-name="${esc(p.name)}" data-phone="${esc(p.phone_id || "toby")}">
+    <a class="row-main" href="${href}">
     ${faceHtml(p, p.name)}
     <div class="meta">
-      <div><span class="name">${esc(shown)}</span>${phoneTag(p)}${tag}${same}${eth}${draft}${drafting}${phone}</div>
+      <div class="who"><span class="name">${esc(shown)}</span>${eth}${tag}${extras.join("")}</div>
       <div class="snip">${snip}</div>
     </div>
-  </a>`;
+    </a>
+    ${acts}
+  </div>`;
 }
 
 function matchEthnicity(p) {
   if (!ethnicityFilter.size) return true;
   const key = (p.ethnicity || "").trim() || "unknown";
   return ethnicityFilter.has(key);
-}
-
-function matchPhone(p) {
-  if (!phoneFilter) return true;
-  return (p.phone_id || "toby") === phoneFilter;
-}
-
-function renderPhoneFilter() {
-  const el = document.getElementById("phone-filter");
-  if (!el) return;
-  const chips = [{id: "", label: "All phones"}].concat(
-    (phones.length ? phones : [{id:"toby",label:"Toby"},{id:"archie",label:"Archie"}]).map(p => ({id: p.id, label: p.label}))
-  );
-  el.innerHTML = chips.map(c => {
-    const on = phoneFilter === c.id ? " on" : "";
-    return `<button type="button" data-phone-filter="${esc(c.id)}" class="${on}">${esc(c.label)}</button>`;
-  }).join("");
 }
 
 function renderEthFilter() {
@@ -833,51 +1240,85 @@ function renderEthFilter() {
   }).join("");
 }
 
-function renderList() {
+function renderPhoneColumn(pid) {
+  const col = document.querySelector('.phone-col[data-phone="' + pid + '"]');
+  if (!col) return {fresh: 0};
   const q = document.getElementById("filter").value.trim().toLowerCase();
-  const match = p => (!q || p.name.toLowerCase().includes(q)) && matchEthnicity(p) && matchPhone(p);
-  const allFresh = people.filter(p => p.new_friend && !isDismissed(p) && !isInGroup(p));
+  const pool = people.filter(p => (p.phone_id || "toby") === pid);
+  const match = p => (!q || p.name.toLowerCase().includes(q)) && matchEthnicity(p);
+  const allFresh = pool.filter(p => p.new_friend && !isDismissed(p) && !isInGroup(p));
   const fresh = allFresh.filter(match);
-  const hiddenByFilter = allFresh.length - fresh.length;
-  const grouped = people.filter(p => isInGroup(p) && match(p));
-  const hidden = people.filter(p => isDismissed(p) && !isInGroup(p) && match(p));
-  const rest = people.filter(p => !p.new_friend && !isDismissed(p) && !isInGroup(p) && match(p));
-  const chatsHead = document.getElementById("chats-head");
-  newWrap.hidden = false;
-  msgAllBtn.disabled = !fresh.length;
+  const expiredNew = pool.filter(p => isExpiredNew(p) && match(p));
+  const expiredAll = pool.filter(p => isExpired(p) && !isInGroup(p));
+  const grouped = pool.filter(p => isInGroup(p) && match(p));
+  const hidden = pool.filter(p => isDismissed(p) && !isInGroup(p) && match(p));
+  const rest = pool.filter(p => !p.new_friend && !isExpiredNew(p) && !isDismissed(p) && !isInGroup(p) && match(p));
+  const need = pool.filter(p => p.status === "needs_reply" && !p.dismissed && !p.in_group).length;
+  col.querySelector("[data-col-meta]").textContent =
+    pool.length + " people · " + need + " need reply · " + allFresh.length + " new · " + expiredAll.length + " expired";
+  const unmatchBtns = col.querySelectorAll("[data-unmatch-expired]");
+  unmatchBtns.forEach(btn => {
+    const newOnly = btn.dataset.newOnly === "1";
+    const n = newOnly ? expiredNew.length : expiredAll.length;
+    btn.hidden = !n;
+    btn.textContent = (newOnly ? "Unmatch new expired · " : "Unmatch expired · ") + n;
+  });
+  col.querySelectorAll("[data-rematch-expired]").forEach(btn => {
+    const newOnly = btn.dataset.newOnly === "1";
+    const n = newOnly ? expiredNew.length : expiredAll.length;
+    btn.hidden = !n;
+    btn.textContent = (newOnly ? "Rematch new expired · " : "Rematch expired · ") + n;
+  });
+  const newLabel = col.querySelector("[data-new-label]");
+  const newHint = col.querySelector("[data-new-hint]");
+  const newList = col.querySelector("[data-new-list]");
   if (fresh.length) {
     newLabel.textContent = "New friends · " + fresh.length;
-    newHint.textContent = hiddenByFilter
-      ? "Matches waiting for a first message. " + hiddenByFilter + " hidden by the name or ethnicity filter."
-      : "Matches waiting for a first message. Refresh strip looks at the phone. Send opener only messages this list, not the chats below.";
-    newListEl.innerHTML = fresh.map(p => rowHtml(p, true)).join("");
+    newHint.textContent = (allFresh.length - fresh.length)
+      ? (allFresh.length - fresh.length) + " hidden by filter"
+      : "Waiting for a first message.";
+    newList.innerHTML = fresh.map(p => rowHtml(p, true)).join("")
+      + expiredNew.map(p => rowHtml(p, false)).join("");
   } else if (allFresh.length) {
-    newLabel.textContent = "New friends · " + allFresh.length + " stored";
-    newHint.textContent = allFresh.length + " waiting, hidden by the name or ethnicity filter. Clear the filter to see them, or refresh the strip.";
-    newListEl.innerHTML = '<p class="empty-new">Hidden by the current filter.</p>';
+    newLabel.textContent = "New friends · " + allFresh.length;
+    newHint.textContent = "Hidden by the current filter.";
+    newList.innerHTML = '<p class="empty-new">Hidden by filter.</p>';
   } else {
     newLabel.textContent = "New friends";
-    newHint.textContent = "None stored. The last inbox recapture saw no circles. Refresh strip looks at the phone without opening every chat.";
-    newListEl.innerHTML = '<p class="empty-new">No matches waiting for a first message.</p>';
+    newHint.textContent = expiredNew.length ? "Expired matches waiting to unmatch." : "None waiting.";
+    newList.innerHTML = expiredNew.length
+      ? expiredNew.map(p => rowHtml(p, false)).join("")
+      : '<p class="empty-new">No first-message matches.</p>';
   }
+  const groupWrap = col.querySelector(".group-wrap");
+  const groupList = col.querySelector("[data-group-list]");
   if (grouped.length) {
     groupWrap.hidden = false;
-    groupLabel.textContent = "In group · " + grouped.length;
-    groupListEl.innerHTML = grouped.map(p => rowHtml(p, false)).join("");
+    col.querySelector("[data-group-label]").textContent = "In group · " + grouped.length;
+    groupList.innerHTML = grouped.map(p => rowHtml(p, false)).join("");
   } else {
     groupWrap.hidden = true;
-    groupListEl.innerHTML = "";
+    groupList.innerHTML = "";
   }
+  const dismissedWrap = col.querySelector(".dismissed-wrap");
+  const dismissedList = col.querySelector("[data-dismissed-list]");
   if (hidden.length) {
     dismissedWrap.hidden = false;
-    dismissedLabel.textContent = "Dismissed · " + hidden.length;
-    dismissedListEl.innerHTML = hidden.map(p => rowHtml(p, false)).join("");
+    col.querySelector("[data-dismissed-label]").textContent = "Dismissed · " + hidden.length;
+    dismissedList.innerHTML = hidden.map(p => rowHtml(p, false)).join("");
   } else {
     dismissedWrap.hidden = true;
-    dismissedListEl.innerHTML = "";
+    dismissedList.innerHTML = "";
   }
-  chatsHead.hidden = !rest.length && !q;
-  listEl.innerHTML = rest.map(p => rowHtml(p, false)).join("");
+  col.querySelector(".chats-head").hidden = !rest.length && !q;
+  col.querySelector("[data-chat-list]").innerHTML = rest.map(p => rowHtml(p, false)).join("");
+  return {fresh: fresh.length};
+}
+
+function renderList() {
+  const toby = renderPhoneColumn("toby");
+  const archie = renderPhoneColumn("archie");
+  msgAllBtn.disabled = !(toby.fresh + archie.fresh);
 }
 
 function isDayLabel(body) {
@@ -890,6 +1331,15 @@ function renderHead(name, status, phoneProvided) {
   const hidden = !grouped && (isDismissed(known) || status === "dismissed");
   const dismiss = status === "needs_reply" && !hidden && !grouped
     ? '<button type="button" id="dismiss-reply">Dismiss needs reply</button>'
+    : "";
+  const unmatch = isExpired(known) || status === "expired"
+    ? '<button type="button" id="unmatch-one">Unmatch</button>'
+    : "";
+  const rematch = isExpired(known) || status === "expired"
+    ? '<button type="button" id="rematch-one">Rematch</button>'
+    : "";
+  const crm = phoneProvided || (known && known.lgs_lead_id)
+    ? `<button type="button" id="crm-one">${known && known.lgs_lead_id ? "Edit CRM" : "Add to CRM"}</button>`
     : "";
   const phone = phoneProvided ? '<span class="tag phone">phone provided</span>' : "";
   const title = (known && known.display_name) || name;
@@ -917,7 +1367,7 @@ function renderHead(name, status, phoneProvided) {
     : "";
   headEl.innerHTML = `<h2>${faceHtml(known, name)}${esc(title)} ${phoneTag(known || {phone_id: currentPhone})} ${same} ${phone} ${grp} ${hid}</h2><div class="actions">
     <select id="ethnicity-set" aria-label="Ethnicity">${ethOpts}</select>${guessOne}
-    <button type="button" id="refresh-chat">Refresh</button>${retryDraft}${groupBtn}${dismiss}
+    <button type="button" id="refresh-chat">Refresh</button>${retryDraft}${groupBtn}${dismiss}${crm}${unmatch}${rematch}
   </div>`;
 }
 
@@ -934,6 +1384,7 @@ async function openThread(name, opts) {
   renderHead(name, known && known.status, known && known.phone_provided);
   draftEl.disabled = false;
   sendEl.disabled = false;
+  aiDraftBtn.disabled = false;
   emojiBtn.disabled = false;
   if (switching) draftEl.value = (known && known.draft) || "";
   const res = await fetch("/api/thread?name=" + encodeURIComponent(name) + "&phone=" + encodeURIComponent(phone));
@@ -969,12 +1420,15 @@ async function openThread(name, opts) {
   msgsEl.scrollTop = msgsEl.scrollHeight;
 }
 
-document.getElementById("phone-filter").addEventListener("click", e => {
-  const btn = e.target.closest("[data-phone-filter]");
-  if (!btn) return;
-  phoneFilter = btn.dataset.phoneFilter || "";
-  renderPhoneFilter();
-  renderList();
+document.getElementById("filters-btn").addEventListener("click", e => {
+  e.stopPropagation();
+  const menu = document.getElementById("filter-menu");
+  setFilterPanelOpen(!menu.classList.contains("open"));
+});
+document.getElementById("filter-panel").addEventListener("click", e => e.stopPropagation());
+document.addEventListener("click", () => setFilterPanelOpen(false));
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") setFilterPanelOpen(false);
 });
 document.getElementById("eth-filter").addEventListener("click", e => {
   const btn = e.target.closest("[data-eth]");
@@ -1140,6 +1594,43 @@ headEl.addEventListener("click", async e => {
     }
     return;
   }
+  const crmBtn = e.target.closest("#crm-one");
+  if (crmBtn && current) {
+    openCrmModal();
+    return;
+  }
+  const unmatchBtn = e.target.closest("#unmatch-one");
+  if (unmatchBtn && current) {
+    if (!confirm("Unmatch " + current + " on the phone and remove them from this inbox?")) return;
+    unmatchBtn.disabled = true;
+    statusEl.textContent = "Queued unmatch of " + current;
+    const res = await fetch("/api/unmatch", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: current, phone_id: currentPhone}),
+    });
+    const data = await res.json();
+    statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+    if (data.ok) pollQueue();
+    else unmatchBtn.disabled = false;
+    return;
+  }
+  const rematchBtn = e.target.closest("#rematch-one");
+  if (rematchBtn && current) {
+    if (!confirm("Rematch " + current + " on the phone? Needs Bumble Friends Premium if they are in the expired silver circles.")) return;
+    rematchBtn.disabled = true;
+    statusEl.textContent = "Queued rematch of " + current;
+    const res = await fetch("/api/rematch", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: current, phone_id: currentPhone}),
+    });
+    const data = await res.json();
+    statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+    if (data.ok) pollQueue();
+    else rematchBtn.disabled = false;
+    return;
+  }
   const btn = e.target.closest("#dismiss-reply");
   if (!btn || !current) return;
   btn.disabled = true;
@@ -1184,12 +1675,104 @@ window.addEventListener("beforeunload", persistCurrentDraft);
 document.addEventListener("click", e => {
   if (!e.target.closest("#composer-wrap")) emojiPanel.classList.remove("open");
 });
-document.querySelector("aside").addEventListener("click", e => {
-  const link = e.target.closest("a[data-name]");
-  if (!link) return;
+document.querySelector(".workspace").addEventListener("click", e => {
+  const collapseBtn = e.target.closest("[data-collapse]");
+  if (collapseBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const pid = collapseBtn.dataset.collapse;
+    try { localStorage.setItem(SIDEBAR_KEYS[pid], sidebarCollapsed(pid) ? "0" : "1"); } catch {}
+    applySidebarCollapse();
+    return;
+  }
+  const act = e.target.closest("[data-act]");
+  if (act) {
+    e.preventDefault();
+    e.stopPropagation();
+    const name = act.dataset.name;
+    const phone = act.dataset.phone || "toby";
+    const kind = act.dataset.act;
+    if (kind === "unmatch") {
+      if (!confirm("Unmatch " + name + " on the phone and remove them from this inbox?")) return;
+      statusEl.textContent = "Queued unmatch of " + name;
+      fetch("/api/unmatch", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name, phone_id: phone}),
+      }).then(r => r.json()).then(data => {
+        statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || "error"));
+        if (data.ok) pollQueue();
+      });
+      return;
+    }
+    if (kind === "rematch") {
+      if (!confirm("Rematch " + name + " on the phone?")) return;
+      statusEl.textContent = "Queued rematch of " + name;
+      fetch("/api/rematch", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name, phone_id: phone}),
+      }).then(r => r.json()).then(data => {
+        statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || "error"));
+        if (data.ok) pollQueue();
+      });
+      return;
+    }
+  }
+  const bulkUnmatch = e.target.closest("[data-unmatch-expired]");
+  if (bulkUnmatch) {
+    const pid = bulkUnmatch.dataset.unmatchExpired;
+    const newOnly = bulkUnmatch.dataset.newOnly === "1";
+    const n = people.filter(p => (p.phone_id || "toby") === pid && (newOnly ? isExpiredNew(p) : (isExpired(p) && !isInGroup(p)))).length;
+    if (!n) return;
+    if (!confirm(
+      "Unmatch " + n + (newOnly ? " expired new friend" : " expired connection") + (n === 1 ? "" : "s") +
+      " on " + (pid === "archie" ? "Archie" : "Toby") + "?\n\n" +
+      "Opens each chat, taps Chat options → Unmatch, and removes them from this inbox. Does not report anyone."
+    )) return;
+    bulkUnmatch.disabled = true;
+    statusEl.textContent = "Queued unmatch of expired" + (newOnly ? " new friends" : "") + " on " + pid;
+    fetch("/api/unmatch-expired", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({phone_id: pid, new_friends_only: newOnly}),
+    }).then(r => r.json()).then(data => {
+      statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || "error"));
+      if (data.ok) pollQueue();
+      else bulkUnmatch.disabled = false;
+    });
+    return;
+  }
+  const bulkRematch = e.target.closest("[data-rematch-expired]");
+  if (bulkRematch) {
+    const pid = bulkRematch.dataset.rematchExpired;
+    const newOnly = bulkRematch.dataset.newOnly === "1";
+    const n = people.filter(p => (p.phone_id || "toby") === pid && (newOnly ? isExpiredNew(p) : (isExpired(p) && !isInGroup(p)))).length;
+    if (!n) return;
+    if (!confirm(
+      "Rematch " + n + (newOnly ? " expired new friend" : " expired connection") + (n === 1 ? "" : "s") +
+      " on " + (pid === "archie" ? "Archie" : "Toby") + "?\n\n" +
+      "Taps Rematch on the expired thread or the silver New friends circle. Needs Premium for instant rematch."
+    )) return;
+    bulkRematch.disabled = true;
+    statusEl.textContent = "Queued rematch of expired" + (newOnly ? " new friends" : "") + " on " + pid;
+    fetch("/api/rematch-expired", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({phone_id: pid, new_friends_only: newOnly}),
+    }).then(r => r.json()).then(data => {
+      statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || "error"));
+      if (data.ok) pollQueue();
+      else bulkRematch.disabled = false;
+    });
+    return;
+  }
+  const row = e.target.closest(".row[data-name]");
+  if (!row) return;
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+  if (e.target.closest("a.row-main") && (e.metaKey || e.ctrlKey)) return;
   e.preventDefault();
-  openThread(link.dataset.name, {phone: link.dataset.phone || "toby"});
+  openThread(row.dataset.name, {phone: row.dataset.phone || "toby"});
 });
 refreshNewBtn.addEventListener("click", async () => {
   refreshNewBtn.disabled = true;
@@ -1224,7 +1807,8 @@ fastScanBtn.addEventListener("click", async () => {
   else fastScanBtn.disabled = false;
 });
 msgAllBtn.addEventListener("click", async () => {
-  const fresh = people.filter(p => p.new_friend);
+  const target = phoneTarget();
+  const fresh = people.filter(p => p.new_friend && (target === "all" || (p.phone_id || "toby") === target));
   if (!fresh.length) return;
   const sample = fresh[0].opener || openerTemplate.replace("{name}", fresh[0].name.split(/\s+/)[0]);
   const names = fresh.map(p => p.name).join(", ");
@@ -1251,6 +1835,69 @@ window.addEventListener("popstate", () => {
   if (chat.name) openThread(chat.name, {push: false, phone: chat.phone});
 });
 
+const promptModal = document.getElementById("prompt-modal");
+function closePromptModal() {
+  promptModal.classList.remove("open");
+  promptModal.hidden = true;
+}
+async function openPromptModal() {
+  statusEl.textContent = "Loading draft prompt…";
+  const res = await fetch("/api/draft/prompt", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      name: current || "",
+      phone_id: currentPhone,
+      text: current ? draftEl.value : "",
+    }),
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    statusEl.textContent = "Prompt failed: " + (data.error || res.status);
+    return;
+  }
+  const who = data.name ? (" for " + data.name) : " (shared, no chat selected)";
+  document.getElementById("prompt-meta").textContent =
+    (data.model || "Sol") + " · " + (data.mode || "generate") + who;
+  document.getElementById("prompt-system").textContent = data.system || "";
+  document.getElementById("prompt-user").textContent = data.user || "";
+  promptModal.hidden = false;
+  promptModal.classList.add("open");
+  statusEl.textContent = "";
+}
+document.getElementById("show-prompt").addEventListener("click", openPromptModal);
+document.getElementById("prompt-close").addEventListener("click", closePromptModal);
+promptModal.addEventListener("click", e => {
+  if (e.target === promptModal) closePromptModal();
+});
+aiDraftBtn.addEventListener("click", async () => {
+  if (!current || aiDraftBtn.disabled) return;
+  aiDraftBtn.disabled = true;
+  statusEl.textContent = draftEl.value.trim()
+    ? "Adapting the composer with Sol…"
+    : "Drafting with Sol…";
+  const res = await fetch("/api/draft/generate", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      name: current,
+      phone_id: currentPhone,
+      text: draftEl.value,
+    }),
+  });
+  const data = await res.json();
+  aiDraftBtn.disabled = false;
+  if (!data.ok) {
+    statusEl.textContent = "Draft failed: " + (data.error || res.status);
+    return;
+  }
+  draftEl.value = data.text || "";
+  const person = findPerson(current, currentPhone);
+  if (person) person.draft = draftEl.value;
+  renderList();
+  statusEl.textContent = data.mode === "revise" ? "Adapted the composer" : "Draft ready";
+});
+
 document.getElementById("composer").addEventListener("submit", async e => {
   e.preventDefault();
   if (!current) return;
@@ -1264,6 +1911,83 @@ document.getElementById("composer").addEventListener("submit", async e => {
   const data = await res.json();
   statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
   if (data.ok) pollQueue();
+});
+
+const crmModal = document.getElementById("crm-modal");
+function closeCrmModal() {
+  crmModal.classList.remove("open");
+  crmModal.hidden = true;
+}
+async function openCrmModal() {
+  if (!current) return;
+  statusEl.textContent = "Loading CRM draft…";
+  const res = await fetch("/api/crm/draft?name=" + encodeURIComponent(current) + "&phone=" + encodeURIComponent(currentPhone));
+  const data = await res.json();
+  if (!data.ok) {
+    statusEl.textContent = "CRM draft failed: " + (data.error || res.status);
+    return;
+  }
+  document.getElementById("crm-hint").textContent = data.lgs_lead_id
+    ? "Already in CRM — edit and save to update the same number."
+    : (data.groups_error ? ("CRM groups unavailable: " + data.groups_error) : "Prefill from the chat, then edit anything that looks off.");
+  document.getElementById("crm-name").value = data.suggested_contact_name || data.display_name || current;
+  document.getElementById("crm-phone").value = (data.phone_candidates && data.phone_candidates[0]) || "";
+  document.getElementById("crm-instagram").value = (data.instagram_candidates && data.instagram_candidates[0]) || "";
+  document.getElementById("crm-hometown").value = data.location || "";
+  document.getElementById("crm-notes").value = data.suggested_notes || "";
+  const eth = document.getElementById("crm-ethnicity");
+  eth.innerHTML = ['<option value="">Unknown</option>']
+    .concat(ethnicityChoices.map(c => {
+      const sel = c.id === (data.ethnicity || "") ? " selected" : "";
+      return `<option value="${esc(c.id)}"${sel}>${esc(c.label)}</option>`;
+    })).join("");
+  const group = document.getElementById("crm-group");
+  const groups = data.groups || [];
+  group.innerHTML = '<option value="">None yet</option>' + groups.map(g =>
+    `<option value="${esc(g.id)}">${esc(g.name)}${g.town ? " · " + esc(g.town) : ""}</option>`
+  ).join("");
+  if (groups.length === 1) group.value = String(groups[0].id);
+  crmModal.hidden = false;
+  crmModal.classList.add("open");
+  statusEl.textContent = "";
+}
+document.getElementById("crm-cancel").addEventListener("click", closeCrmModal);
+crmModal.addEventListener("click", e => {
+  if (e.target === crmModal) closeCrmModal();
+});
+document.getElementById("crm-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const save = document.getElementById("crm-save");
+  save.disabled = true;
+  const payload = {
+    name: document.getElementById("crm-name").value.trim(),
+    phone: document.getElementById("crm-phone").value.trim(),
+    instagram: document.getElementById("crm-instagram").value.trim(),
+    hometown: document.getElementById("crm-hometown").value.trim(),
+    ethnicity: document.getElementById("crm-ethnicity").value,
+    notes: document.getElementById("crm-notes").value.trim(),
+    home_lgs_group_id: document.getElementById("crm-group").value
+      ? Number(document.getElementById("crm-group").value)
+      : null,
+    source: "bumble",
+    bumble_inbox_name: current,
+    bumble_phone_id: currentPhone,
+  };
+  const res = await fetch("/api/crm/lead", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  save.disabled = false;
+  statusEl.textContent = data.ok
+    ? ((data.created ? "Added " : "Updated ") + payload.name + " in Let's Go Social")
+    : ("CRM save failed: " + (data.error || res.status));
+  if (data.ok) {
+    closeCrmModal();
+    await loadPeople();
+    if (current) await openThread(current, {push: false, phone: currentPhone});
+  }
 });
 
 function jobPhoneLabel(job) {
@@ -1280,6 +2004,18 @@ function jobLabel(job) {
   if (job.kind === "grab_photos") return who + "Grab photos";
   if (job.kind === "refresh_new_friends") return who + "Refresh New friends strip";
   if (job.kind === "swipe") return who + "Swipe";
+  if (job.kind === "unmatch") return who + "Unmatch " + job.name;
+  if (job.kind === "unmatch_expired") {
+    let extra = "";
+    try { extra = JSON.parse(job.text || "{}").new_friends_only ? " (new friends)" : ""; } catch (err) {}
+    return who + "Unmatch expired" + extra;
+  }
+  if (job.kind === "rematch") return who + "Rematch " + job.name;
+  if (job.kind === "rematch_expired") {
+    let extra = "";
+    try { extra = JSON.parse(job.text || "{}").new_friends_only ? " (new friends)" : ""; } catch (err) {}
+    return who + "Rematch expired" + extra;
+  }
   if (job.kind === "add_contact") return who + "Add Pixel contact " + job.name;
   const snip = String(job.text || "").replace(/\s+/g, " ").slice(0, 42);
   return who + "Reply to " + job.name + (snip ? " — " + snip : "");
@@ -1366,9 +2102,16 @@ async function pollQueue() {
           draftEl.value = (job.status === "error" || job.status === "cancelled") ? job.text : "";
         }
       }
-      if ((job.status === "done" || job.status === "cancelled") && ((job.name === current && (job.phone_id || "toby") === currentPhone) || job.kind === "message_new_friends" || job.kind === "recapture_all" || job.kind === "fast_scan" || job.kind === "grab_photos" || job.kind === "refresh_new_friends" || job.kind === "swipe")) {
+      if ((job.status === "done" || job.status === "cancelled") && ((job.name === current && (job.phone_id || "toby") === currentPhone) || job.kind === "message_new_friends" || job.kind === "recapture_all" || job.kind === "fast_scan" || job.kind === "grab_photos" || job.kind === "refresh_new_friends" || job.kind === "swipe" || job.kind === "unmatch" || job.kind === "unmatch_expired" || job.kind === "rematch" || job.kind === "rematch_expired")) {
         await loadPeople();
-        if (current) await openThread(current, {push: false, phone: currentPhone});
+        if (job.kind === "unmatch" && job.status === "done" && job.name === current && (job.phone_id || "toby") === currentPhone) {
+          current = null;
+          setChatUrl("", "", false);
+          headEl.innerHTML = "<h2>Select a chat</h2>";
+          msgsEl.innerHTML = '<p class="empty">Unmatched.</p>';
+        } else if (current && findPerson(current, currentPhone)) {
+          await openThread(current, {push: false, phone: currentPhone});
+        }
       }
     }
   } catch (err) {
@@ -1376,23 +2119,10 @@ async function pollQueue() {
   }
 }
 
+applySidebarCollapse();
 loadPeople().then(() => {
   const chat = chatFromUrl();
   if (chat.name) return openThread(chat.name, {push: false, phone: chat.phone});
-});
-document.getElementById("swipe-btn").addEventListener("click", async () => {
-  const btn = document.getElementById("swipe-btn");
-  btn.disabled = true;
-  statusEl.textContent = "Queued swipe";
-  const res = await fetch("/api/swipe", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({phone_id: phoneTarget()}),
-  });
-  const data = await res.json();
-  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
-  if (data.ok) pollQueue();
-  btn.disabled = false;
 });
 setInterval(pollQueue, 1000);
 setInterval(async () => {

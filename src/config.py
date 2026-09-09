@@ -83,6 +83,10 @@ DEFAULTS: dict[str, Any] = {
         "enabled": True,
         "max_attempts": 5,
     },
+    "lgs": {
+        "api_url": "http://127.0.0.1:8099",
+        "pipeline_token": "",
+    },
     "messenger": {
         "template": (
             "Hi {name}, I'm putting together a wee group for hiking / board games / sports. "

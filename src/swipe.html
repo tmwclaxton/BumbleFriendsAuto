@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Swipe desk</title>
+<style>
+  :root {
+    --bg: #111114;
+    --panel: #1b1b21;
+    --line: #2c2c34;
+    --text: #f2efe8;
+    --muted: #9a9588;
+    --you: #e8c547;
+    --need: #ff8a5b;
+    --wait: #7eb8a4;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+  body {
+    font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+    display: grid;
+    grid-template-columns: minmax(300px, 380px) 1fr;
+    min-height: 100vh;
+  }
+  a { color: var(--you); }
+  aside {
+    border-right: 1px solid var(--line);
+    padding: 18px 16px 24px;
+    overflow-y: auto;
+  }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  .sub { color: var(--muted); font-size: 12px; margin: 0 0 16px; }
+  label.block { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 6px; }
+  select, input[type="number"] {
+    width: 100%;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+  }
+  .toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    margin-top: 8px;
+  }
+  .toggle input { margin-top: 3px; }
+  .toggle strong { display: block; }
+  .toggle span { color: var(--muted); font-size: 12px; }
+  .races { display: flex; flex-wrap: wrap; gap: 6px; }
+  .races button {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 3px 9px;
+    font: 12px/1.3 inherit;
+    cursor: pointer;
+  }
+  .races button.on { background: #2a2430; color: #e0b4d4; border-color: #6a4a62; }
+  .row-btns { display: flex; gap: 8px; margin: 6px 0 4px; }
+  .row-btns button, .actions button, #start, #stop {
+    font: inherit;
+    cursor: pointer;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    padding: 6px 10px;
+  }
+  .missing { display: flex; gap: 8px; margin-top: 6px; }
+  .missing label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  #start { background: var(--you); color: #1a1508; border: 0; font-weight: 650; flex: 1; padding: 10px; }
+  #stop { background: #3a2220; color: var(--need); flex: 1; padding: 10px; }
+  .run-row { display: flex; gap: 8px; margin-top: 18px; }
+  main { padding: 20px 24px 32px; min-width: 0; }
+  .card-stage {
+    display: grid;
+    grid-template-columns: minmax(220px, 340px) 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  #card-img {
+    width: 100%;
+    aspect-ratio: 9 / 16;
+    object-fit: cover;
+    border-radius: 16px;
+    background: #2a2a32;
+    border: 1px solid var(--line);
+  }
+  .empty-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    text-align: center;
+    padding: 24px;
+  }
+  .proposed { font-size: 28px; font-weight: 700; letter-spacing: 0.04em; margin: 8px 0; }
+  .proposed.like { color: var(--wait); }
+  .proposed.pass { color: var(--need); }
+  .meta { color: var(--muted); font-size: 13px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+  .actions button:disabled { opacity: 0.4; cursor: default; }
+  #approve { background: var(--wait); color: #102018; border: 0; font-weight: 650; }
+  #like { background: #1d3a5c; color: #9ecbff; }
+  #pass { background: #3a2a12; color: #f0c674; }
+  .stats { display: flex; gap: 16px; color: var(--muted); font-size: 13px; margin: 8px 0 16px; }
+  .log { list-style: none; padding: 0; margin: 0; }
+  .log li { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .log .ov { color: var(--you); }
+  @media (max-width: 880px) {
+    body, .card-stage { grid-template-columns: 1fr; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Swipe desk</h1>
+  <p class="sub"><a href="/">Back to inbox</a> · pick a phone, set race prefs, then either let it run or approve each card.</p>
+
+  <label class="block" for="phone">Phone</label>
+  <select id="phone">
+    <option value="toby">Toby / Pixel</option>
+    <option value="archie">Archie / Galaxy</option>
+  </select>
+
+  <label class="block" for="max">Cards this session</label>
+  <input id="max" type="number" min="1" max="200" value="20"/>
+
+  <div class="toggle">
+    <input id="final-say" type="checkbox" checked/>
+    <div>
+      <strong>I want the final say</strong>
+      <span>Pause on each card. Approve the suggestion or override Like / Pass until you trust it, then turn this off.</span>
+    </div>
+  </div>
+  <div class="toggle">
+    <input id="pass-crazy" type="checkbox" checked/>
+    <div>
+      <strong>Pass “unhinged” cards</strong>
+      <span>Vision can still flag a card as a no regardless of race.</span>
+    </div>
+  </div>
+
+  <label class="block">Men — like these races</label>
+  <div class="row-btns">
+    <button type="button" data-all="men">All</button>
+    <button type="button" data-none="men">None</button>
+  </div>
+  <div class="races" id="men-races"></div>
+  <div class="missing">
+    <label><input type="radio" name="men-miss" value="pass" checked/> Unknown men: pass</label>
+    <label><input type="radio" name="men-miss" value="allow"/> like</label>
+  </div>
+
+  <label class="block">Women — like these races</label>
+  <div class="row-btns">
+    <button type="button" data-all="women">All</button>
+    <button type="button" data-none="women">None</button>
+  </div>
+  <div class="races" id="women-races"></div>
+  <div class="missing">
+    <label><input type="radio" name="women-miss" value="allow" checked/> Unknown women: like</label>
+    <label><input type="radio" name="women-miss" value="pass"/> pass</label>
+  </div>
+
+  <div class="run-row">
+    <button type="button" id="start">Start session</button>
+    <button type="button" id="stop">Stop</button>
+  </div>
+</aside>
+<main>
+  <p id="status" class="meta">Load prefs, then start a session.</p>
+  <div class="stats">
+    <span id="stat-swipes">0 swipes</span>
+    <span id="stat-likes">0 likes</span>
+    <span id="stat-passes">0 passes</span>
+    <span id="stat-ov">0 overrides</span>
+  </div>
+  <div class="card-stage">
+    <img id="card-img" class="empty-card" alt="Current card" hidden/>
+    <div id="card-empty" class="empty-card" style="min-height:280px;border:1px dashed var(--line);border-radius:16px">No card yet. Start a session to see the live suggestion.</div>
+    <div>
+      <div id="who" style="font-size:22px;font-weight:650">—</div>
+      <div id="tags" class="meta"></div>
+      <div id="proposed" class="proposed"></div>
+      <p id="reason" class="meta"></p>
+      <div class="actions">
+        <button type="button" id="approve" disabled>Approve</button>
+        <button type="button" id="like" disabled>Like instead</button>
+        <button type="button" id="pass" disabled>Pass instead</button>
+      </div>
+    </div>
+  </div>
+  <h2 style="font-size:15px;margin:28px 0 8px">This session</h2>
+  <ul class="log" id="log"></ul>
+</main>
+<script>
+const menSet = new Set();
+const womenSet = new Set();
+let races = [];
+let lastSeq = 0;
+
+function prefsFromForm() {
+  return {
+    phone_id: document.getElementById("phone").value,
+    max_swipes: Number(document.getElementById("max").value || 20),
+    final_say: document.getElementById("final-say").checked,
+    pass_crazy: document.getElementById("pass-crazy").checked,
+    men_include: [...menSet],
+    women_include: [...womenSet],
+    men_if_missing: document.querySelector("input[name=men-miss]:checked").value,
+    women_if_missing: document.querySelector("input[name=women-miss]:checked").value,
+  };
+}
+
+function applyPrefs(p) {
+  if (!p) return;
+  document.getElementById("phone").value = p.phone_id || "toby";
+  document.getElementById("max").value = p.max_swipes || 20;
+  document.getElementById("final-say").checked = !!p.final_say;
+  document.getElementById("pass-crazy").checked = p.pass_crazy !== false;
+  const menMiss = document.querySelector(`input[name=men-miss][value="${p.men_if_missing || "pass"}"]`);
+  if (menMiss) menMiss.checked = true;
+  const womenMiss = document.querySelector(`input[name=women-miss][value="${p.women_if_missing || "allow"}"]`);
+  if (womenMiss) womenMiss.checked = true;
+  menSet.clear();
+  womenSet.clear();
+  (p.men_include || []).forEach(id => menSet.add(id));
+  (p.women_include || []).forEach(id => womenSet.add(id));
+  renderRaces();
+}
+
+function renderRaces() {
+  for (const [elId, set] of [["men-races", menSet], ["women-races", womenSet]]) {
+    const box = document.getElementById(elId);
+    box.innerHTML = races.map(r => {
+      const on = set.has(r.id) ? " on" : "";
+      return `<button type="button" data-race="${r.id}" class="${on}">${r.label}</button>`;
+    }).join("");
+  }
+}
+
+document.querySelector("aside").addEventListener("click", e => {
+  const all = e.target.closest("[data-all]");
+  const none = e.target.closest("[data-none]");
+  const chip = e.target.closest("[data-race]");
+  if (all) {
+    const set = all.dataset.all === "men" ? menSet : womenSet;
+    races.forEach(r => set.add(r.id));
+    renderRaces();
+  } else if (none) {
+    (none.dataset.none === "men" ? menSet : womenSet).clear();
+    renderRaces();
+  } else if (chip) {
+    const set = chip.parentElement.id === "men-races" ? menSet : womenSet;
+    if (set.has(chip.dataset.race)) set.delete(chip.dataset.race);
+    else set.add(chip.dataset.race);
+    renderRaces();
+  }
+});
+
+async function savePrefs() {
+  await fetch("/api/swipe/prefs", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(prefsFromForm()),
+  });
+}
+
+function renderDesk(d) {
+  document.getElementById("status").textContent = d.message || (d.running ? "Running" : "Idle");
+  document.getElementById("stat-swipes").textContent = (d.swipes || 0) + " swipes";
+  document.getElementById("stat-likes").textContent = (d.likes || 0) + " likes";
+  document.getElementById("stat-passes").textContent = (d.passes || 0) + " passes";
+  document.getElementById("stat-ov").textContent = (d.overrides || 0) + " overrides";
+  const pending = d.pending;
+  const img = document.getElementById("card-img");
+  const empty = document.getElementById("card-empty");
+  const waiting = !!d.waiting && !!pending;
+  document.getElementById("approve").disabled = !waiting;
+  document.getElementById("like").disabled = !waiting;
+  document.getElementById("pass").disabled = !waiting;
+  if (d.photo_seq && d.photo_seq !== lastSeq) {
+    lastSeq = d.photo_seq;
+    img.src = "/api/swipe/card?v=" + lastSeq;
+    img.hidden = false;
+    empty.hidden = true;
+  } else if (!d.photo_seq) {
+    img.hidden = true;
+    empty.hidden = false;
+  }
+  if (pending) {
+    document.getElementById("who").textContent = pending.name || "Unknown name";
+    document.getElementById("tags").textContent = [pending.gender, pending.ethnicity, pending.crazy === "yes" ? "unhinged" : ""]
+      .filter(Boolean).join(" · ");
+    const prop = pending.proposed || "pass";
+    const el = document.getElementById("proposed");
+    el.textContent = prop === "like" ? "SUGGEST LIKE" : "SUGGEST PASS";
+    el.className = "proposed " + prop;
+    document.getElementById("reason").textContent = pending.reason || "";
+  } else if (!d.running) {
+    document.getElementById("who").textContent = "—";
+    document.getElementById("tags").textContent = "";
+    document.getElementById("proposed").textContent = "";
+    document.getElementById("reason").textContent = "";
+  }
+  document.getElementById("log").innerHTML = (d.log || []).slice().reverse().map(row => {
+    const ov = row.overridden ? ' <span class="ov">override</span>' : "";
+    return `<li><strong>${row.action}</strong> ${row.name || "card"} · ${row.gender || "?"} · ${row.ethnicity || "?"} · wanted ${row.proposed}${ov}<div class="meta">${row.reason || ""}</div></li>`;
+  }).join("");
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/swipe/desk");
+    const d = await res.json();
+    if (d.races && !races.length) {
+      races = d.races;
+      applyPrefs(d.prefs);
+    }
+    renderDesk(d);
+  } catch (err) { /* brief restarts */ }
+}
+
+document.getElementById("start").addEventListener("click", async () => {
+  await savePrefs();
+  const res = await fetch("/api/swipe/start", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(prefsFromForm()),
+  });
+  const data = await res.json();
+  document.getElementById("status").textContent = data.ok ? (data.message || "Queued") : (data.error || "Failed");
+  poll();
+});
+document.getElementById("stop").addEventListener("click", async () => {
+  await fetch("/api/swipe/stop", {method: "POST"});
+  poll();
+});
+async function decide(action) {
+  await fetch("/api/swipe/decide", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action}),
+  });
+  poll();
+}
+document.getElementById("approve").addEventListener("click", () => decide("approve"));
+document.getElementById("like").addEventListener("click", () => decide("like"));
+document.getElementById("pass").addEventListener("click", () => decide("pass"));
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

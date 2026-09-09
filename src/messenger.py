@@ -67,7 +67,11 @@ def _tappable_friends(xml: str, device) -> list:
     width = int(device.info["displayWidth"])
     friends = list_new_friends(xml)
     margin = max(48, int(width * 0.11))
-    return [f for f in friends if margin <= int(f.x) <= width - margin]
+    return [
+        f
+        for f in friends
+        if not f.expired and margin <= int(f.x) <= width - margin
+    ]
 
 
 def go_to_chats(device, package: str) -> str:

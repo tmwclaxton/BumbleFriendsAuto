@@ -99,6 +99,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE people ADD COLUMN ethnicity_source TEXT")
     if "in_contacts" not in people_cols:
         conn.execute("ALTER TABLE people ADD COLUMN in_contacts INTEGER NOT NULL DEFAULT 0")
+    if "lgs_lead_id" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN lgs_lead_id INTEGER")
     if "draft" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN draft TEXT")
     if "message_until" not in chat_cols:
@@ -347,6 +349,21 @@ def set_in_contacts(conn: sqlite3.Connection, name: str, in_contacts: bool = Tru
     conn.execute(
         "UPDATE people SET in_contacts = ? WHERE id = ?",
         (1 if in_contacts else 0, int(row["id"])),
+    )
+    conn.commit()
+    return True
+
+
+def set_lgs_lead_id(conn: sqlite3.Connection, name: str, lead_id: int) -> bool:
+    name = (name or "").strip()
+    if not name:
+        return False
+    row = find_person(conn, name)
+    if row is None:
+        return False
+    conn.execute(
+        "UPDATE people SET lgs_lead_id = ? WHERE id = ?",
+        (int(lead_id), int(row["id"])),
     )
     conn.commit()
     return True
@@ -911,6 +928,144 @@ def derive_status(
     return "unknown"
 
 
+_EXPIRED_PREVIEW_RE = re.compile(
+    r"conversation expired|match has expired|match expired",
+    re.I,
+)
+_STALE_CONVO_EXPIRED_RE = re.compile(
+    r"conversation expired\s+(\d+)\s+(day|days|week|weeks)\s+ago",
+    re.I,
+)
+
+
+def person_is_expired(row: sqlite3.Row | dict | None) -> bool:
+    """True for a stored match whose Bumble connection has timed out."""
+    if row is None:
+        return False
+
+    def _get(key: str, default=None):
+        if hasattr(row, "keys") and key in row.keys():
+            return row[key]
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return default
+
+    if str(_get("status") or "") == "expired":
+        return True
+    until = _parse_iso(_get("message_until"))
+    if until is not None and until <= datetime.now(timezone.utc) and not _get("last_from"):
+        return True
+    blob = f"{_get('last_text') or ''} {_get('preview') or ''}"
+    return bool(_EXPIRED_PREVIEW_RE.search(blob))
+
+
+def person_is_expired_new(row: sqlite3.Row | dict | None) -> bool:
+    """Expired New-friends matches (timer / empty), not chats that died mid-thread."""
+    if not person_is_expired(row):
+        return False
+
+    def _get(key: str, default=None):
+        if hasattr(row, "keys") and key in row.keys():
+            return row[key]
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return default
+
+    if int(_get("in_group") or 0):
+        return False
+    if str(_get("status") or "") == "dismissed" or int(_get("dismissed") or 0):
+        return False
+    text = f"{_get('last_text') or ''} {_get('preview') or ''}".strip()
+    if re.search(r"conversation expired", text, re.I):
+        return False
+    return (
+        (not text)
+        or bool(_get("message_until"))
+        or bool(re.search(r"hours left|no messages|match expired", text, re.I))
+    )
+
+
+def person_is_rematchable(row: sqlite3.Row | dict | None) -> bool:
+    """True when Bumble still offers Rematch (fresh expiry), not a weeks-old dead chat."""
+    if not person_is_expired(row):
+        return False
+    if person_is_expired_new(row):
+        return True
+
+    def _get(key: str, default=None):
+        if hasattr(row, "keys") and key in row.keys():
+            return row[key]
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return default
+
+    text = f"{_get('last_text') or ''} {_get('preview') or ''}"
+    match = _STALE_CONVO_EXPIRED_RE.search(text)
+    if match is None:
+        return True
+    count = int(match.group(1))
+    days = count * 7 if match.group(2).lower().startswith("week") else count
+    return days < 2
+
+
+def list_expired_names(
+    conn: sqlite3.Connection, *, new_friends_only: bool = False, rematchable: bool = False
+) -> list[str]:
+    pid = _scope_phone()
+    names: list[str] = []
+    for row in list_people(conn):
+        if not person_is_expired(row):
+            continue
+        if int(row["in_group"] or 0):
+            continue
+        if str(row["phone_id"] or DEFAULT_PHONE_ID) != pid:
+            continue
+        if new_friends_only and not person_is_expired_new(row):
+            continue
+        if rematchable and not person_is_rematchable(row):
+            continue
+        names.append(str(row["name"]))
+    return names
+
+
+def mark_person_rematched(conn: sqlite3.Connection, name: str) -> bool:
+    """Treat a rematch as a fresh 24h New-friends window (current phone)."""
+    row = find_person(conn, name)
+    if row is None:
+        return False
+    pid = int(row["id"])
+    until = message_until_from_hours(24)
+    conn.execute(
+        """
+        UPDATE chats
+        SET status = 'waiting',
+            last_from = NULL,
+            last_text = '24 hours left to message',
+            preview = '24 hours left to message',
+            message_until = ?,
+            opener_sent = 0,
+            updated_at = ?
+        WHERE person_id = ?
+        """,
+        (until, _now(), pid),
+    )
+    conn.commit()
+    return True
+
+
+def delete_person(conn: sqlite3.Connection, name: str) -> bool:
+    """Remove a person and their chat after an unmatch (current phone)."""
+    row = find_person(conn, name)
+    if row is None:
+        return False
+    pid = int(row["id"])
+    conn.execute("DELETE FROM messages WHERE person_id = ?", (pid,))
+    conn.execute("DELETE FROM chats WHERE person_id = ?", (pid,))
+    conn.execute("DELETE FROM people WHERE id = ?", (pid,))
+    conn.commit()
+    return True
+
+
 def upsert_chat(
     conn: sqlite3.Connection,
     name: str,
@@ -1468,7 +1623,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         conn.execute(
             """
             SELECT p.name, p.phone_id, p.location, p.distance, p.age, p.phone_provided, p.ethnicity,
-                   p.ethnicity_source, p.in_contacts,
+                   p.ethnicity_source, p.in_contacts, p.lgs_lead_id,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
                    c.dismissed_reply_text, c.opener_sent, c.draft, c.message_until,
                    c.in_group,
