@@ -1,4 +1,4 @@
-"""Background worker: auto-draft needs_reply turns via GPT Sol + Obsidian."""
+"""Background worker: auto-draft needs_reply turns via GLM 5.3 + Obsidian."""
 
 from __future__ import annotations
 
@@ -215,6 +215,9 @@ def _loop() -> None:
         while not _stop.is_set():
             try:
                 process_due_drafts()
+                from src.crm import process_due_crm_syncs
+
+                process_due_crm_syncs()
             except Exception as exc:
                 log.exception("draft worker loop error")
                 _bump(error=str(exc), message="loop error")

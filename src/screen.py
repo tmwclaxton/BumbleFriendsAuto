@@ -17,6 +17,8 @@ class ScreenKind(str, Enum):
     EMPTY = "empty"
     PERMISSION = "permission"
     CHATS = "chats"
+    LIKED_YOU = "liked_you"
+    LIKED_YOU_CARD = "liked_you_card"
     OTHER_TAB = "other_tab"
     LOADING = "loading"
     NOT_BUMBLE = "not_bumble"
@@ -130,6 +132,16 @@ _CARD_HINTS = (
 _CARD_RIDS = (
     "profile_details_badgeSuperSwipe",
     "toolbar_filter",
+)
+
+_LIKED_YOU_RIDS = (
+    "beeline_root",
+)
+
+_LIKED_YOU_CARD_RIDS = (
+    "myProfilePreview_root",
+    "myProfilePreview_leftButton",
+    "myProfilePreview_rightButton",
 )
 
 _CHATS_RIDS = (
@@ -283,6 +295,23 @@ def classify(
     if hit := _matches_any(blob, _PAYWALL_PATTERNS):
         return ScreenState(ScreenKind.PAYWALL, package, texts, reason=hit)
 
+    if any(rid in rids for rid in _LIKED_YOU_CARD_RIDS) or re.search(
+        r"\bnot\s+for\s+me\b", blob
+    ):
+        return ScreenState(ScreenKind.LIKED_YOU_CARD, package, texts, reason="liked-you-preview")
+
+    body = [t for t in texts if t.strip().lower() not in _NAV_LABELS]
+    body_blob = _joined_lower(tuple(body))
+    if (
+        any(rid in rids for rid in _LIKED_YOU_RIDS)
+        or re.search(
+            r"check\s+out\s+people\s+who\s+liked|who\s+liked\s+or\s+complimented|"
+            r"people\s+like\s+you|see\s+who\s+likes\s+you",
+            body_blob,
+        )
+    ):
+        return ScreenState(ScreenKind.LIKED_YOU, package, texts, reason="liked-you-list")
+
     card_rid_hits = [rid for rid in _CARD_RIDS if rid in rids]
     if card_rid_hits:
         return ScreenState(ScreenKind.CARD, package, texts, reason=",".join(card_rid_hits[:2]))
@@ -302,12 +331,6 @@ def classify(
     if has_people_nav and has_pass_or_like:
         return ScreenState(ScreenKind.CARD, package, texts, reason="nav+like/pass")
 
-    # Avoid treating bottom-nav labels ("Liked You") as the Liked You screen.
-    # Require body copy beyond the 5 nav labels.
-    body = [t for t in texts if t.strip().lower() not in _NAV_LABELS]
-    body_blob = _joined_lower(tuple(body))
-    if re.search(r"people\s+like\s+you|see\s+who\s+likes\s+you", body_blob):
-        return ScreenState(ScreenKind.OTHER_TAB, package, texts, reason="liked-you-body")
     if re.search(r"\bedit\s+profile\b|\bmy\s+profile\b", body_blob):
         return ScreenState(ScreenKind.OTHER_TAB, package, texts, reason="profile-body")
     if re.search(r"get\s+a\s+group\s+together|\bstart\s+a\s+plan\b", body_blob) and not card_hits:

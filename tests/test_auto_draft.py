@@ -250,6 +250,67 @@ class PromptBuildTests(unittest.TestCase):
             self.assertIn("Toby's recent first words", user)
             conn.close()
 
+    def test_early_chat_omits_conflicting_note_and_hints_intro(self):
+        from src.draft_llm import build_user_prompt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.db"
+            conn = connect(db)
+            upsert_chat(conn, "Adam", last_from="them", last_text="Tired but good", badge="Your turn")
+            replace_thread(
+                conn,
+                conn.execute("SELECT id FROM people WHERE name='Adam'").fetchone()[0],
+                [
+                    ("them", "Hey howre you"),
+                    ("you", "Yea good mate, been busy with work tbf. How're you?"),
+                    ("them", "Tired but good, got back from holiday and seeing family now"),
+                ],
+            )
+            conn.commit()
+            user = build_user_prompt(
+                conn,
+                "Adam",
+                {
+                    "events": "Wycombe Saturday 26 September",
+                    "run_prompt": "Short.",
+                    "person_note": "phone: 07827016443\nAlready got 29 Aug itinerary.\nstatus: followup",
+                    "person_note_path": "LGS/People/Adam.md",
+                },
+            )
+            self.assertIn("CONFLICTING People note omitted", user)
+            self.assertIn("early chat", user)
+            self.assertNotIn("07827016443", user)
+            conn.close()
+
+    def test_pitched_thread_keeps_people_note(self):
+        from src.draft_llm import build_user_prompt, transcript_has_group_pitch
+
+        thread = "Toby: I'm putting together a wee group for hiking\nAdam: Yeah sounds good"
+        self.assertTrue(transcript_has_group_pitch(thread))
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.db"
+            conn = connect(db)
+            upsert_chat(conn, "Adam", last_from="them", last_text="Yeah sounds good", badge="Your turn")
+            replace_thread(
+                conn,
+                conn.execute("SELECT id FROM people WHERE name='Adam'").fetchone()[0],
+                [("you", "I'm putting together a wee group for hiking"), ("them", "Yeah sounds good")],
+            )
+            conn.commit()
+            user = build_user_prompt(
+                conn,
+                "Adam",
+                {
+                    "events": "Wycombe Saturday",
+                    "run_prompt": "Short.",
+                    "person_note": "hub: bucks\nphone: 07827016443",
+                    "person_note_path": "LGS/People/Adam.md",
+                },
+            )
+            self.assertIn("07827016443", user)
+            self.assertNotIn("early chat", user)
+            conn.close()
+
 
 class ObsidianContextMockTests(unittest.TestCase):
     def test_generate_draft_uses_mock_providers(self):

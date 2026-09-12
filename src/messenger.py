@@ -190,7 +190,14 @@ def send_opener(device, message: str) -> bool:
     return False
 
 
-def send_named_message(name: str, text: str, *, serial: str | None = None, phone_id: str | None = None) -> tuple[bool, str]:
+def send_named_message(
+    name: str,
+    text: str,
+    *,
+    serial: str | None = None,
+    phone_id: str | None = None,
+    force: bool = False,
+) -> tuple[bool, str]:
     """Search-open a chat on the phone, send `text`, record it in SQLite."""
     text = text.strip()
     name = name.strip()
@@ -242,20 +249,19 @@ def send_named_message(name: str, text: str, *, serial: str | None = None, phone
             return partner
         log.warning("search could not verify a namesake row for %s", name)
         recover_to_list(device, package)
-        partner = open_chat_from_list(device, package, name)
+        partner = open_chat_from_list(device, package, name, accept=_accept)
         if partner:
-            conn = db_connect(db_path_from_config(cfg))
-            try:
-                ok = verify_open_thread(conn, device, name, width, height)
-            finally:
-                conn.close()
-            if ok:
-                return partner
-            log.warning("list opened the wrong namesake for %s — refusing row", name)
-            leave_chat(device)
+            return partner
+        log.warning("list could not verify a namesake row for %s", name)
         return None
 
     partner = _verified_open()
+    if not partner and force:
+        log.warning("FORCE send to %s — user confirmed namesake on the phone", name)
+        recover_to_list(device, package)
+        partner = open_chat_via_search(device, package, name) or open_chat_from_list(
+            device, package, name
+        )
     if not partner:
         return False, f"could not verify the open thread is {name} — NOT sent (namesake ambiguity)"
     chat_xml = dump_hierarchy(device)

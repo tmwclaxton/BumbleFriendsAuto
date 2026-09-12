@@ -1,4 +1,4 @@
-"""Generate Bumble Friends reply drafts via NanoGPT (GPT-5.6 Sol)."""
+"""Generate Bumble Friends reply drafts via NanoGPT (GLM 5.3)."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from src.store import base_person_name, list_thread
 log = logging.getLogger(__name__)
 
 _API_URL = "https://nano-gpt.com/api/v1/chat/completions"
-_DEFAULT_CHAT_MODEL = "openai/gpt-5.6-sol"
+_DEFAULT_CHAT_MODEL = "z-ai/glm-5.3"
 _LONDON = ZoneInfo("Europe/London")
 
 _SYSTEM = """You write ONE unsent Bumble Friends reply draft for Toby running Let's Go Social.
@@ -33,7 +33,8 @@ Voice rules learned from Toby's real sent messages:
 - NEVER use em/en dashes (— or –) — Toby punctuates with commas or short sentences. Dashes read as AI.
 - Transcript artifact: Bumble's UI hides emojis from our capture, so old messages show ".." where a real emoji (👀 😂) was sent. NEVER copy that ".." — when the moment calls for an emoji, use the real emoji. Never replace an emoji with ".." or any punctuation.
 - NEVER say "no pressure" (or "no worries if not", "if you're up for it" style hedges) — Toby just asks the question and lets them answer.
-- NEVER re-pitch the intro ("I'm putting together a wee group...") to anyone who has already replied — answer what they actually said instead.
+- NEVER re-pitch the intro ("I'm putting together a wee group...") to anyone who has already been told about the group or an event in THIS live transcript — answer what they actually said instead.
+- If the live transcript has NO group / Let's Go Social / wee group / event invite yet (only small talk like how-are-you), explain what you're doing first: short wee-group / making friends pitch. Do NOT jump straight to a dated event ("We've got the next Wycombe one on Saturday…") until they've heard the group idea or already answered it.
 - If they ask how Toby is: one short honest line (work, R&D, life) + bounce it back ("you?"), then any next step.
 - Do NOT paste the itinerary Google Doc for a yes, "sounds good", or a general "what's the plan". Keep that as day + place + 1–2 activities in the bubble. Only paste the hub itinerary link from Events if they ask for specifics beyond that — what time, meet point, how long, exact activity order, or "send me the details / itinerary / doc". Only invented links are banned.
 - Pitch events as settled plans: "we're planning an escape room and board games" — never tentative "thinking an escape room". It's a group ("we"), not just Toby.
@@ -44,6 +45,7 @@ Voice rules learned from Toby's real sent messages:
 One next step only. Plain text only — no markdown, no quotes wrapping the whole reply, no analysis.
 If Events has no sendable upcoming row for their hub and they have not already been invited to a date that passed, do not invent an event; ask whereabouts or keep the chat warm without a date.
 Prefer facts from the live SQLite transcript over the People note when they disagree.
+If the People note is marked CONFLICTING or omitted, ignore any phone / past event / status claims from it and trust only the live transcript + Events.
 """
 
 
@@ -81,6 +83,78 @@ def _format_thread(conn, name: str) -> str:
             continue
         lines.append(f"{side}: {body}")
     return "\n".join(lines) if lines else "(no messages)"
+
+
+_GROUP_PITCH_RE = re.compile(
+    r"wee\s+group|let'?s\s+go\s+social|putting\s+together|"
+    r"making\s+(some\s+)?friends|whatsapp\s+group|"
+    r"\b(wycombe|battersea|cotswolds?|tewkesbury|escape\s+room|"
+    r"board\s+games|hike|hiking)\b|"
+    r"saturday\s+\d|upcoming|interested\s*\?|👀",
+    re.I,
+)
+_NOTE_PHONE_RE = re.compile(
+    r"(?i)(?:\bphone\b|\bwhats?app\b).*?(?:\+?\d[\d\s().-]{7,}\d)|"
+    r"(?:\+?\d[\d\s().-]{7,}\d)"
+)
+_NOTE_PAST_RE = re.compile(
+    r"(?i)already\s+got|itinerary|google\s+contacts?|status:\s*followup|"
+    r"added\s+to\s+(the\s+)?whatsapp|phone:\s*[\"']?\d"
+)
+
+
+def transcript_has_group_pitch(thread_text: str) -> bool:
+    """True if Toby already pitched the group / an event in the live transcript."""
+    for line in (thread_text or "").splitlines():
+        if not line.startswith("Toby:"):
+            continue
+        if _GROUP_PITCH_RE.search(line):
+            return True
+    return False
+
+
+def person_note_conflicts_transcript(note: str, thread_text: str) -> bool:
+    """Drop People notes that look like a different same-name lead.
+
+    e.g. note claims a phone / past itinerary while the live chat is still
+    small-talk with no group pitch.
+    """
+    note = (note or "").strip()
+    if not note:
+        return False
+    if transcript_has_group_pitch(thread_text):
+        return False
+    # Early thread but note says they're already deep in the funnel.
+    deep = bool(_NOTE_PHONE_RE.search(note) or _NOTE_PAST_RE.search(note))
+    return deep
+
+
+def sanitize_person_note(note: str, thread_text: str) -> str:
+    note = (note or "").strip()
+    if not note:
+        return "(no people note yet)"
+    if person_note_conflicts_transcript(note, thread_text):
+        return (
+            "(CONFLICTING People note omitted — it claims phone/past invite/"
+            "followup status that the live transcript does not support. "
+            "Treat this as an early chat; trust only the live transcript + Events.)"
+        )
+    return note
+
+
+def early_chat_hint(thread_text: str) -> str:
+    if transcript_has_group_pitch(thread_text):
+        return ""
+    if not (thread_text or "").strip() or thread_text.strip() == "(no messages)":
+        return (
+            "Stage: no live messages yet — open with the wee-group intro, "
+            "not a dated event invite.\n\n"
+        )
+    return (
+        "Stage: early chat — live transcript has no group/event pitch yet. "
+        "First explain you're putting together a wee group / making friends. "
+        "Do not open with a dated hub event.\n\n"
+    )
 
 
 def _recent_you_openers(conn, name: str) -> list[str]:
@@ -135,7 +209,8 @@ def build_user_prompt(
     composer_text: str = "",
 ) -> str:
     today = datetime.now(_LONDON).strftime("%A %d %B %Y").replace(" 0", " ")
-    person = (context.get("person_note") or "").strip() or "(no people note yet)"
+    thread = _format_thread(conn, name)
+    person = sanitize_person_note(context.get("person_note") or "", thread)
     return (
         f"Today (Europe/London): {today}\n"
         f"Person inbox name: {name}\n"
@@ -143,7 +218,8 @@ def build_user_prompt(
         f"## LGS/Events.md (source of truth for invites)\n{context['events']}\n\n"
         f"## LGS/Run prompt.md (style + flow rules)\n{context['run_prompt']}\n\n"
         f"## {context.get('person_note_path') or 'People note'}\n{person}\n\n"
-        f"## Live Bumble transcript (authoritative)\n{_format_thread(conn, name)}\n\n"
+        f"## Live Bumble transcript (authoritative)\n{thread}\n\n"
+        f"{early_chat_hint(thread)}"
         f"{_opener_hint(conn, name)}"
         "Write only the next reply bubble Toby should send."
         + _composer_block(composer_text)

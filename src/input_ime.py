@@ -1,4 +1,4 @@
-"""Switch to an ADB-friendly keyboard for typing, then put the user's IME back."""
+"""Keep AdbKeyboard selected so Gboard cannot swallow automation input."""
 
 from __future__ import annotations
 
@@ -48,26 +48,26 @@ def set_ime(device, ime: str) -> bool:
     return ok
 
 
-@contextmanager
-def automation_keyboard(device) -> Iterator[str]:
-    """Use AdbKeyboard while typing; restore Gboard / whatever they had after."""
-    previous = current_ime(device)
-    chosen = ""
+def ensure_adb_keyboard(device) -> str:
+    """Select AdbKeyboard and leave it selected."""
+    current = current_ime(device)
+    if any(ime.split("/")[0] in current for ime in _ADB_IMES if current):
+        return current
     for ime in _ADB_IMES:
         if set_ime(device, ime):
-            chosen = ime
-            break
-    if not chosen:
-        log.warning("no AdbKeyboard IME available — typing with %s", previous)
-    try:
-        yield chosen or previous
-    finally:
-        if previous and previous != chosen:
-            set_ime(device, previous)
+            return ime
+    log.warning("no AdbKeyboard IME available — typing with %s", current)
+    return current
+
+
+@contextmanager
+def automation_keyboard(device) -> Iterator[str]:
+    """Switch to AdbKeyboard for typing and keep it on afterwards."""
+    yield ensure_adb_keyboard(device)
 
 
 def type_into(device, field, text: str) -> None:
-    """Fill a focused EditText even when the daily keyboard is Gboard."""
+    """Fill a focused EditText via AdbKeyboard."""
     with automation_keyboard(device):
         field.click()
         try:

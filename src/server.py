@@ -70,7 +70,11 @@ async def swipe_page(_: Request) -> Response:
 
 
 async def api_health(_: Request) -> JSONResponse:
-    return JSONResponse({"ok": True})
+    from src.phones import public_phones
+
+    phones = public_phones()
+    offline = [p["label"] for p in phones if p.get("ready") and not p.get("online")]
+    return JSONResponse({"ok": True, "phones": phones, "offline": offline})
 
 
 async def api_people(_: Request) -> JSONResponse:
@@ -505,13 +509,83 @@ async def api_swipe_decide(request: Request) -> JSONResponse:
 
 async def api_swipe_stop(_: Request) -> JSONResponse:
     from src.phone_queue import queue_snapshot
-    from src.swipe_desk import snapshot, submit_decision
+    from src.swipe_desk import liked_you_finish, snapshot, submit_decision
 
     submit_decision("stop")
+    liked_you_finish("Stopped")
     for job in queue_snapshot():
-        if job.get("kind") == "swipe" and job.get("status") in {"queued", "running"}:
+        if job.get("kind") in {"swipe", "liked_you_scan", "liked_you_run"} and job.get("status") in {
+            "queued",
+            "running",
+        }:
             cancel_job(int(job["id"]))
     return JSONResponse({"ok": True, **snapshot()})
+
+
+async def api_liked_you_scan(request: Request) -> JSONResponse:
+    from src.swipe_desk import job_payload, save_prefs
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    prefs = save_prefs(data)
+    jobs = enqueue_many("liked_you_scan", text=job_payload(prefs), phone_id=prefs["phone_id"])
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "prefs": prefs,
+            "jobs": jobs,
+            "job": jobs[0],
+            "message": f"queued Liked You scan on {prefs['phone_id']}",
+        }
+    )
+
+
+async def api_liked_you_toggle(request: Request) -> JSONResponse:
+    from src.swipe_desk import liked_you_set_decisions, liked_you_toggle, snapshot
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    rows = data.get("items") if isinstance(data.get("items"), list) else None
+    if rows:
+        liked_you_set_decisions(rows)
+        return JSONResponse({"ok": True, **snapshot()})
+    ok = liked_you_toggle(str(data.get("id") or ""), str(data.get("decision") or ""))
+    return JSONResponse({"ok": ok, **snapshot()}, status_code=200 if ok else 400)
+
+
+async def api_liked_you_go(request: Request) -> JSONResponse:
+    from src.swipe_desk import job_payload, liked_you_set_decisions, load_prefs, save_prefs
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    if isinstance(data.get("items"), list):
+        liked_you_set_decisions(data["items"])
+    prefs = save_prefs(data) if data else load_prefs()
+    jobs = enqueue_many("liked_you_run", text=job_payload(prefs), phone_id=prefs["phone_id"])
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "prefs": prefs,
+            "jobs": jobs,
+            "job": jobs[0],
+            "message": f"queued Liked You go on {prefs['phone_id']}",
+        }
+    )
+
+
+async def api_liked_you_thumb(request: Request) -> Response:
+    from src.swipe_desk import liked_thumb_path
+
+    name = (request.query_params.get("name") or "").strip()
+    path = liked_thumb_path(name)
+    if path is None:
+        return Response(status_code=404)
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 async def api_swipe_card(_: Request) -> Response:
@@ -700,7 +774,13 @@ async def api_reply(request: Request) -> JSONResponse:
     if not name or not text:
         return JSONResponse({"ok": False, "error": "name and text required"}, status_code=400)
     phone_id = str(data.get("phone_id") or "").strip() or None
-    job = enqueue("reply", name, text, phone_id=phone_id)
+    job = enqueue(
+        "reply",
+        name,
+        text,
+        phone_id=phone_id,
+        force=bool(data.get("force")),
+    )
     return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued reply to {name}"})
 
 
@@ -745,6 +825,10 @@ def build_app() -> Starlette:
         Route("/api/swipe/decide", api_swipe_decide, methods=["POST"]),
         Route("/api/swipe/stop", api_swipe_stop, methods=["POST"]),
         Route("/api/swipe/card", api_swipe_card),
+        Route("/api/swipe/liked-you/scan", api_liked_you_scan, methods=["POST"]),
+        Route("/api/swipe/liked-you/toggle", api_liked_you_toggle, methods=["POST"]),
+        Route("/api/swipe/liked-you/go", api_liked_you_go, methods=["POST"]),
+        Route("/api/swipe/liked-you/thumb", api_liked_you_thumb),
         Route("/api/draft", api_draft, methods=["POST"]),
         Route("/api/draft/prompt", api_draft_prompt, methods=["POST"]),
         Route("/api/draft/generate", api_draft_generate, methods=["POST"]),

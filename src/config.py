@@ -70,7 +70,7 @@ DEFAULTS: dict[str, Any] = {
     "nanogpt": {
         "api_key": "",
         "vision_model": "google/gemini-2.5-flash",
-        "chat_model": "openai/gpt-5.6-sol",
+        "chat_model": "z-ai/glm-5.3",
     },
     "obsidian": {
         "mcp_url": "http://127.0.0.1:18080/mcp",

@@ -45,8 +45,8 @@ Docker image talks to the **host ADB server** and the USB **Pixel 7** (`29081FDH
 
 - Inbox: https://lgspipeline.grantgunner.org (HTTP basic auth)
 - MCP: https://lgspipeline.grantgunner.org/mcp (same auth)
-- Recapture cron (Europe/London): 10:00, 13:00, 17:00, 23:00
-- Fast reply scan cron (Europe/London): every 30 min, 08:00–23:59 — scrolls the inbox list and opens only chats whose preview/badge disagree with the stored last message; also refreshes the New friends strip and rematches expired circles there
+- Recapture cron (Europe/London): **08:00** — full inbox refresh on both phones (also covers New friends)
+- Fast reply scan cron (Europe/London): random 30–90 min gap, 08:00–23:59 — scrolls the inbox list and opens only chats whose preview/badge disagree with the stored last message; also refreshes the New friends strip and rematches expired circles there
 
 On the server:
 

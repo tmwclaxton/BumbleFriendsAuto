@@ -1,7 +1,7 @@
-# Europe/London (TZ set in the container). Recapture full inbox.
-0 10 * * * python -m src.jobs.recapture_cron
-0 13 * * * python -m src.jobs.recapture_cron
-0 17 * * * python -m src.jobs.recapture_cron
-0 23 * * * python -m src.jobs.recapture_cron
-# Fast reply scan between full recaptures (list-only unless something changed).
-*/30 8-23 * * * python -m src.jobs.fast_scan_cron
+# Europe/London (TZ set in the container).
+# One full inbox refresh first thing — opens every chat (~40 min). Also picks up New friends.
+0 8 * * * python -m src.jobs.recapture_cron
+# Fast reply scan through the day (list-only unless something changed).
+# Also refreshes the New friends strip and rematches expired circles there.
+# Tick every 5 minutes; the job itself waits a random 30–90 minutes between runs.
+*/5 8-23 * * * python -m src.jobs.fast_scan_cron

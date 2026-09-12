@@ -9,7 +9,8 @@ class WhatsAppParseTest(unittest.TestCase):
             [
                 {"name": "Toby", "phone": "07837370669"},
                 {"name": "Archie", "number": "+44 7398 727993"},
-                {"name": "Skip me"},
+                {"name": "Name only"},
+                {"name": ""},
             ]
         )
         self.assertEqual(
@@ -17,6 +18,7 @@ class WhatsAppParseTest(unittest.TestCase):
             [
                 {"name": "Toby", "phone": "07837370669"},
                 {"name": "Archie", "phone": "+44 7398 727993"},
+                {"name": "Name only", "phone": ""},
             ],
         )
 

@@ -6,10 +6,28 @@ import unittest
 
 from datetime import date
 
-from src.crm_extract import extract_crm_fields, extract_hometown, extract_instagram_them
+from src.crm_extract import (
+    crm_ready_to_save,
+    crm_should_update,
+    extract_crm_fields,
+    extract_hometown,
+    extract_instagram_them,
+)
 
 
 class HometownTests(unittest.TestCase):
+    def test_does_not_swallow_a_following_number(self):
+        self.assertEqual(
+            extract_hometown("I'm from High Wycombe\n07837000001"),
+            "High Wycombe",
+        )
+
+    def test_same_line_number_and_later_insta_stay_out_of_hometown(self):
+        self.assertEqual(
+            extract_hometown("I'm in Battersea 07400999000\ninsta is maya.bff"),
+            "Battersea",
+        )
+
     def test_from_area(self):
         self.assertEqual(
             extract_hometown("I’m from Milton Keynes area but I drive."),
@@ -88,4 +106,29 @@ class CrmFieldsTests(unittest.TestCase):
         self.assertEqual(
             extract_hometown("It’s real cool. I live in Reading so I’d probably be able to do Wycombe"),
             "Reading",
+        )
+
+
+class CrmReadyTests(unittest.TestCase):
+    def test_needs_name_phone_and_place(self):
+        self.assertFalse(crm_ready_to_save({"suggested_contact_name": "Sam LGS", "phone": "07111"}))
+        self.assertTrue(
+            crm_ready_to_save(
+                {"suggested_contact_name": "Sam LGS", "phone": "07111", "hometown": "Reading"}
+            )
+        )
+        self.assertTrue(
+            crm_ready_to_save({"name": "Sam LGS", "phone": "07111", "hub": "bucks"})
+        )
+
+    def test_update_when_new_fact_arrives(self):
+        existing = {"phone": "07111222333", "hometown": "Reading"}
+        self.assertFalse(
+            crm_should_update(existing, {"phone": "07111222333", "hometown": "Reading"})
+        )
+        self.assertTrue(
+            crm_should_update(
+                existing,
+                {"phone": "07111222333", "hometown": "Reading", "instagram": "samx"},
+            )
         )

@@ -97,7 +97,7 @@ def parse_people(raw) -> list[dict]:
             continue
         phone = str(item.get("phone") or item.get("number") or "").strip()
         name = str(item.get("name") or "").strip()
-        if not phone:
+        if not phone and not name:
             continue
         people.append({"name": name, "phone": phone})
     return people
@@ -175,7 +175,7 @@ def create_group(
     title = (title or "").strip() or "Let's Go Social"
     members = parse_people(people)
     if len(members) < 1:
-        return {"ok": False, "error": "need at least one phone number"}
+        return {"ok": False, "error": "need at least one person"}
 
     connect, _, serial_for, wake_and_unlock = _runtime()
     serial = serial_for(phone_id)

@@ -8,19 +8,20 @@ from datetime import date
 from src.contacts import extract_instagrams, with_lgs_suffix
 from src.store import extract_phones
 
+_PLACE = r"([A-Za-z][A-Za-z\s'’-]{1,40}?)"
+_PLACE_STOP = r"(?:\s+area|\s+but|\s+so|\s+and|\s+though|\s+\+?\d|[.!?,]|$)"
 _FROM_RE = re.compile(
-    r"(?:i(?:['’]?m| am)|im)\s+(?:from|in|based(?:\s+in)?)\s+"
-    r"([A-Za-z][A-Za-z0-9\s'’-]{1,40}?)"
-    r"(?:\s+area|\s+but|\s+so|\s+and|\s+though|[.!?,]|$)",
-    re.I,
+    rf"(?:i(?:['’]?m| am)|im)\s+(?:from|in|based(?:\s+in)?)\s+{_PLACE}{_PLACE_STOP}",
+    re.I | re.M,
 )
 _BASED_RE = re.compile(
-    r"(?:based(?:\s+in)?|live(?:s| in)|from)\s+"
-    r"([A-Za-z][A-Za-z0-9\s'’-]{1,36}?)"
-    r"(?:\s+area|\s+but|\s+so|\s+and|\s+though|[.!?,]|$)",
+    rf"(?:based(?:\s+in)?|live(?:s| in)|from)\s+{_PLACE}{_PLACE_STOP}",
+    re.I | re.M,
+)
+_AGE_RE = re.compile(
+    r"(?:i(?:['’]?m| am)\s+)([1-9]\d)(?:\s*(?:years?\s*old|yo))?\b",
     re.I,
 )
-_AGE_RE = re.compile(r"\b(?:i(?:['’]?m| am)\s+)?([1-9]\d)\s*(?:years?\s*old|yo)\b", re.I)
 _TIKTOK_RE = re.compile(
     r"(?:tiktok\.com/@|tiktok\s*(?:is|:)?\s*@?)([A-Za-z0-9._]{2,30})",
     re.I,
@@ -138,6 +139,13 @@ _HUB_KEYS = {
 
 def _clean_place(raw: str) -> str:
     place = re.sub(r"\s+", " ", (raw or "").strip(" .!?,")).strip()
+    place = re.sub(r"\s+\+?\d[\d\s-]{6,}.*$", "", place)
+    place = re.sub(
+        r"\s+(?:insta(?:gram)?|ig|tiktok|add me|whatsapp|my number)\b.*$",
+        "",
+        place,
+        flags=re.I,
+    )
     place = re.sub(r"\b(area|mate|though|tbh|tbf)\b", "", place, flags=re.I).strip(" .")
     if len(place) < 2 or place.casefold() in _SKIP_PLACES:
         return ""
@@ -452,3 +460,67 @@ def extract_crm_fields(
         "closest_lgs_group_id": group_id,
         "suggested_notes": " · ".join(notes),
     }
+
+
+def crm_has_location(fields: dict) -> bool:
+    for key in ("hometown", "region"):
+        if str(fields.get(key) or "").strip():
+            return True
+    return bool(str(fields.get("hub") or "").strip())
+
+
+def crm_ready_to_save(fields: dict) -> bool:
+    """Name + phone + a rough base (said in chat, profile town, or hub)."""
+    name = str(fields.get("suggested_contact_name") or fields.get("name") or "").strip()
+    phone = str(fields.get("phone") or "").strip()
+    return bool(name and phone and crm_has_location(fields))
+
+
+def _crm_digits(value: object) -> str:
+    return re.sub(r"\D+", "", str(value or ""))[-10:]
+
+
+def _crm_text(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def crm_should_update(existing: dict | None, fields: dict) -> bool:
+    """True when the thread has a fact the CRM card is missing or has stale."""
+    if not existing:
+        return True
+    checks = (
+        (_crm_digits(existing.get("phone")), _crm_digits(fields.get("phone"))),
+        (
+            _crm_text(existing.get("hometown") or existing.get("region")),
+            _crm_text(fields.get("hometown") or fields.get("region")),
+        ),
+        (
+            _crm_text(str(existing.get("instagram") or "").lstrip("@")),
+            _crm_text(str(fields.get("instagram") or "").lstrip("@")),
+        ),
+        (
+            _crm_text(str(existing.get("tiktok") or "").lstrip("@")),
+            _crm_text(str(fields.get("tiktok") or "").lstrip("@")),
+        ),
+        (_crm_text(existing.get("email")), _crm_text(fields.get("email"))),
+        (
+            _crm_text(existing.get("interested_event")),
+            _crm_text(fields.get("interested_event")),
+        ),
+        (_crm_text(existing.get("age")), _crm_text(fields.get("age"))),
+        (
+            _crm_text(existing.get("interests_skills")),
+            _crm_text(fields.get("interests_skills")),
+        ),
+    )
+    for old, new in checks:
+        if new and new != old:
+            return True
+    old_g = existing.get("closest_lgs_group_id") or existing.get("home_lgs_group_id")
+    new_g = fields.get("closest_lgs_group_id") or fields.get("home_lgs_group_id")
+    try:
+        if new_g and int(new_g) != int(old_g or 0):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False

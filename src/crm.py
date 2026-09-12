@@ -12,6 +12,7 @@ from src.config import load_config
 from src.contacts import contact_preview
 from src.crm_llm import enrich_crm_fields
 from src.phones import phone_scope
+from src.crm_extract import crm_ready_to_save, crm_should_update
 from src.store import connect as db_connect, db_path_from_config, list_thread, set_lgs_lead_id
 
 log = logging.getLogger(__name__)
@@ -181,3 +182,134 @@ def create_lead(payload: dict) -> dict:
             finally:
                 conn.close()
     return result
+
+
+def update_lead(lead_id: int, payload: dict) -> dict:
+    body = _crm_payload(payload)
+    path = f"/api/pipeline/contacts/{int(lead_id)}"
+    result = _request("PATCH", path, body)
+    if not result.get("ok") and int(result.get("status") or 0) in {404, 405}:
+        result = _request("PUT", path, body)
+    if not result.get("ok") and int(result.get("status") or 0) in {404, 405}:
+        result = _request("PATCH", f"/api/pipeline/leads/{int(lead_id)}", body)
+    if not result.get("ok") and int(result.get("status") or 0) in {404, 405}:
+        result = _request("PUT", f"/api/pipeline/leads/{int(lead_id)}", body)
+    return result
+
+
+def _lead_payload_from_draft(draft: dict, *, inbox_name: str, phone_id: str) -> dict:
+    return {
+        "name": draft.get("suggested_contact_name") or draft.get("name") or inbox_name,
+        "phone": draft.get("phone"),
+        "email": draft.get("email"),
+        "address": draft.get("address"),
+        "region": draft.get("region") or draft.get("hometown"),
+        "hometown": draft.get("hometown") or draft.get("region"),
+        "instagram": draft.get("instagram"),
+        "tiktok": draft.get("tiktok"),
+        "age": draft.get("age"),
+        "ethnicity": draft.get("ethnicity"),
+        "interested_event": draft.get("interested_event"),
+        "interests_skills": draft.get("interests_skills"),
+        "notes": draft.get("suggested_notes") or draft.get("notes"),
+        "tags": draft.get("tags"),
+        "status": draft.get("status") or "prospect",
+        "source": draft.get("source") or "bumble_friends",
+        "preferred_contact_method": draft.get("preferred_contact_method"),
+        "consent_to_contact": draft.get("consent_to_contact", True),
+        "attach_bumble_logs": True,
+        "next_follow_up_at": draft.get("next_follow_up_at"),
+        "closest_lgs_group_id": draft.get("closest_lgs_group_id"),
+        "home_lgs_group_id": draft.get("home_lgs_group_id") or draft.get("closest_lgs_group_id"),
+        "bumble_inbox_name": inbox_name,
+        "bumble_phone_id": phone_id,
+    }
+
+
+def sync_inbox_to_crm(name: str, phone_id: str | None = None) -> dict:
+    """Draft CRM fields with AI, then create or patch the LGS lead if ready."""
+    draft = crm_draft(name, phone_id=phone_id)
+    if not draft.get("ok"):
+        return {"ok": False, "error": draft.get("error") or "crm draft failed", "action": "error"}
+    payload = _lead_payload_from_draft(
+        draft, inbox_name=name, phone_id=str(draft.get("phone_id") or phone_id or "toby")
+    )
+    lead_id = draft.get("lgs_lead_id")
+    existing = draft.get("existing_lead") or draft.get("existing_contact")
+    if not lead_id:
+        if not crm_ready_to_save(draft):
+            return {
+                "ok": True,
+                "action": "skip",
+                "reason": "need name, phone, and a rough location before adding to CRM",
+            }
+        result = create_lead(payload)
+        result["action"] = "create" if result.get("ok") else "error"
+        return result
+    if not crm_should_update(existing if isinstance(existing, dict) else {}, draft):
+        return {"ok": True, "action": "skip", "reason": "CRM already has the new facts"}
+    result = update_lead(int(lead_id), payload)
+    result["action"] = "update" if result.get("ok") else "error"
+    return result
+
+
+def process_due_crm_syncs(*, limit: int = 4) -> int:
+    """Run queued CRM syncs (called from the draft worker loop)."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.phones import DEFAULT_PHONE_ID, phone_scope
+    from src.store import (
+        claim_crm_sync,
+        complete_crm_sync,
+        fail_crm_sync,
+        list_pending_crm_syncs,
+        them_message_fingerprint,
+    )
+
+    _, token = _lgs_settings()
+    if not token:
+        return 0
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    tried = 0
+    try:
+        for row in list_pending_crm_syncs(conn, limit=limit):
+            tried += 1
+            person_id = int(row["person_id"])
+            name = str(row["name"])
+            phone_id = str(row["phone_id"] or DEFAULT_PHONE_ID)
+            fp = str(row["crm_sync_fp"] or "")
+            attempts = int(row["crm_sync_attempts"] or 0) + 1
+            if not fp or not claim_crm_sync(conn, person_id, fp):
+                continue
+            with phone_scope(phone_id):
+                live = them_message_fingerprint(
+                    [(str(m["side"]), str(m["body"])) for m in list_thread(conn, name)]
+                )
+                if live != fp:
+                    complete_crm_sync(conn, person_id, fp)
+                    continue
+                result = sync_inbox_to_crm(name, phone_id=phone_id)
+            if result.get("ok"):
+                complete_crm_sync(conn, person_id, fp)
+                log.info("CRM %s %s", result.get("action") or "ok", name)
+                continue
+            if attempts >= 5:
+                complete_crm_sync(conn, person_id, fp)
+                log.warning("CRM sync gave up for %s: %s", name, result.get("error"))
+                continue
+            nxt = datetime.now(timezone.utc) + timedelta(
+                seconds=min(30 * (2 ** max(0, attempts - 1)), 1800)
+            )
+            fail_crm_sync(
+                conn,
+                person_id,
+                fp=fp,
+                error=str(result.get("error") or "CRM sync failed"),
+                attempts=attempts,
+                next_attempt_at=nxt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
+            log.warning("CRM sync failed for %s: %s", name, result.get("error"))
+    finally:
+        conn.close()
+    return tried

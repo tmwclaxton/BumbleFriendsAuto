@@ -240,7 +240,12 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                     go_to_people(device, xml)
                 continue
 
-            if state.kind in {ScreenKind.CHATS, ScreenKind.OTHER_TAB}:
+            if state.kind in {
+                ScreenKind.CHATS,
+                ScreenKind.OTHER_TAB,
+                ScreenKind.LIKED_YOU,
+                ScreenKind.LIKED_YOU_CARD,
+            }:
                 if nav_attempts >= 3:
                     log.warning("stop:could_not_reach_people")
                     return 2
@@ -307,7 +312,12 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                     state_after.reason or "after browse",
                 )
                 return 2
-            elif state_after.kind in {ScreenKind.CHATS, ScreenKind.OTHER_TAB}:
+            elif state_after.kind in {
+                ScreenKind.CHATS,
+                ScreenKind.OTHER_TAB,
+                ScreenKind.LIKED_YOU,
+                ScreenKind.LIKED_YOU_CARD,
+            }:
                 nav_attempts += 1
                 go_to_people(device, xml_after)
                 continue
@@ -438,7 +448,13 @@ def run_session(cfg: dict, serial: str | None = None) -> int:
                 if post.kind in STOP_KINDS:
                     log.warning("stop:%s (%s)", post.kind.value, post.reason or "detected")
                     return 2
-                if post.kind in {ScreenKind.CARD, ScreenKind.CHATS, ScreenKind.OTHER_TAB}:
+                if post.kind in {
+                    ScreenKind.CARD,
+                    ScreenKind.CHATS,
+                    ScreenKind.OTHER_TAB,
+                    ScreenKind.LIKED_YOU,
+                    ScreenKind.LIKED_YOU_CARD,
+                }:
                     settled = True
                     break
                 wait_idle(device, 0.8)

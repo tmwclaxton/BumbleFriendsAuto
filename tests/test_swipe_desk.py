@@ -28,6 +28,13 @@ class PrefsTests(unittest.TestCase):
         self.assertTrue(cfg["final_say"])
         self.assertEqual(cfg["filters"]["swipe_vision"]["women_include"], prefs["women_include"])
 
+    def test_snapshot_includes_liked_you(self):
+        from src.swipe_desk import snapshot
+
+        snap = snapshot()
+        self.assertIn("liked_you", snap)
+        self.assertIn("items", snap["liked_you"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,7 @@ phones:
     device: galaxy
     # serial: set via ARCHIE_SERIAL
     # Wireless debugging (TLS). Port can change; serial stays the device id.
-    # adb: 192.168.0.168:49414
+    # adb: 192.168.0.168:5555
     notes: Rooted Galaxy
 
 # Bumble Friends / BFF package (main Bumble dating app is com.bumble.app)
@@ -46,7 +46,7 @@ filters:
 nanogpt:
   api_key: ""
   vision_model: google/gemini-2.5-flash
-  chat_model: openai/gpt-5.6-sol
+  chat_model: z-ai/glm-5.3
 
 # Obsidian MCP on admin.grantgunner.org (events + run prompt for auto-drafts).
 # Prefer OBSIDIAN_MCP_TOKEN / OBSIDIAN_MCP_URL in the environment.

@@ -28,6 +28,8 @@ _INBOX_KINDS = {
     "grab_photos",
     "refresh_new_friends",
     "swipe",
+    "liked_you_scan",
+    "liked_you_run",
     "unmatch_expired",
     "rematch_expired",
     "whatsapp_group",
@@ -176,7 +178,14 @@ def _resolve_phone_id(kind: str, name: str, phone_id: str | None) -> str:
     return DEFAULT_PHONE_ID
 
 
-def enqueue(kind: str, name: str = "", text: str = "", phone_id: str | None = None) -> dict:
+def enqueue(
+    kind: str,
+    name: str = "",
+    text: str = "",
+    phone_id: str | None = None,
+    *,
+    force: bool = False,
+) -> dict:
     pid = _resolve_phone_id(kind, name, phone_id)
     bank = _bank(pid)
     with bank.lock:
@@ -187,6 +196,7 @@ def enqueue(kind: str, name: str = "", text: str = "", phone_id: str | None = No
                 and str(existing.get("name") or "") == name
                 and str(existing.get("text") or "") == text
                 and str(existing.get("phone_id") or pid) == pid
+                and bool(existing.get("force")) == bool(force)
             ):
                 return dict(existing)
         job = {
@@ -195,6 +205,7 @@ def enqueue(kind: str, name: str = "", text: str = "", phone_id: str | None = No
             "name": name,
             "text": text,
             "phone_id": pid,
+            "force": bool(force),
             "status": "queued",
             "error": None,
             "message": None,
@@ -315,7 +326,13 @@ def _run_job(job: dict) -> tuple[bool, str]:
     if kind == "reply":
         from src.messenger import send_named_message
 
-        return send_named_message(name, str(job.get("text") or ""), serial=serial, phone_id=pid)
+        return send_named_message(
+            name,
+            str(job.get("text") or ""),
+            serial=serial,
+            phone_id=pid,
+            force=bool(job.get("force")),
+        )
     if kind == "refresh":
         from src.sync_chats import refresh_named_chat
 
@@ -379,6 +396,26 @@ def _run_job(job: dict) -> tuple[bool, str]:
         cfg["phone_id"] = pid
         code = run_session(cfg, serial=serial)
         return code == 0, f"swipe session exit {code}"
+    if kind in {"liked_you_scan", "liked_you_run"}:
+        from src.liked_you import run_go, run_scan
+        from src.swipe_desk import apply_prefs_to_cfg
+
+        cfg = load_config()
+        extra: dict = {}
+        raw = str(job.get("text") or "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                extra = parsed
+        extra.setdefault("phone_id", pid)
+        cfg = apply_prefs_to_cfg(cfg, extra)
+        cfg["phone_id"] = pid
+        if kind == "liked_you_scan":
+            return run_scan(cfg, serial=serial)
+        return run_go(cfg, serial=serial)
     if kind == "add_contact":
         if pid != DEFAULT_PHONE_ID:
             return False, "add_contact is Pixel/Toby only"

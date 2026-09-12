@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS chats (
     message_until TEXT,
     in_group INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    last_active_at TEXT,
     updated_at TEXT NOT NULL
 );
 
@@ -128,12 +129,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chats ADD COLUMN draft_next_attempt_at TEXT")
     if "draft_updated_at" not in chat_cols:
         conn.execute("ALTER TABLE chats ADD COLUMN draft_updated_at TEXT")
+    if "last_active_at" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN last_active_at TEXT")
     people_cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(people)")}
     if "phone_id" not in people_cols:
         conn.execute(
             "ALTER TABLE people ADD COLUMN phone_id TEXT NOT NULL DEFAULT 'toby'"
         )
     _rebuild_people_unique(conn)
+    people_cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(people)")}
+    if "crm_sync_fp" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN crm_sync_fp TEXT")
+    if "crm_sync_status" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN crm_sync_status TEXT NOT NULL DEFAULT 'idle'")
+    if "crm_sync_error" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN crm_sync_error TEXT")
+    if "crm_sync_attempts" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN crm_sync_attempts INTEGER NOT NULL DEFAULT 0")
+    if "crm_sync_next_at" not in people_cols:
+        conn.execute("ALTER TABLE people ADD COLUMN crm_sync_next_at TEXT")
     _backfill_message_until(conn)
     _reapply_dismissals(conn)
     conn.commit()
@@ -266,6 +280,154 @@ _NEW_FRIEND_HINT = re.compile(
     r"hours?\s+left to message|no messages yet|\bextend\b",
     re.I,
 )
+
+
+STALE_CHAT_DAYS = 14
+
+_LIST_WHEN_AGO = re.compile(
+    r"^(\d+)\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|wks?|w|months?|mos?|mo)\s*(?:ago)?$",
+    re.I,
+)
+_LIST_WHEN_DATE = re.compile(
+    r"^(\d{1,2})\s+([A-Za-z]{3,9})(?:\s+(20\d{2}))?$",
+    re.I,
+)
+_LIST_WHEN_DATE_REV = re.compile(
+    r"^([A-Za-z]{3,9})\s+(\d{1,2})(?:,?\s+(20\d{2}))?$",
+    re.I,
+)
+_WEEKDAYS = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+_MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+
+
+def parse_list_when(text: str | None, *, now: datetime | None = None) -> datetime | None:
+    """Best-effort last-activity time from a BFF inbox row clock."""
+    raw = (text or "").strip()
+    if not raw or "left to message" in raw.lower() or len(raw) > 28:
+        return None
+    stamp = now or datetime.now(timezone.utc)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    else:
+        stamp = stamp.astimezone(timezone.utc)
+    low = raw.casefold()
+    if low in {"just now", "now", "today"}:
+        return stamp
+    if low == "yesterday":
+        return stamp - timedelta(days=1)
+    if low in _WEEKDAYS:
+        delta = (stamp.weekday() - _WEEKDAYS[low]) % 7
+        return stamp - timedelta(days=delta or 7)
+    ago = _LIST_WHEN_AGO.match(raw)
+    if ago:
+        n = int(ago.group(1))
+        unit = ago.group(2).casefold()
+        if unit.startswith("mo"):
+            return stamp - timedelta(days=30 * n)
+        if unit.startswith("w"):
+            return stamp - timedelta(weeks=n)
+        if unit.startswith("d"):
+            return stamp - timedelta(days=n)
+        if unit.startswith("h"):
+            return stamp - timedelta(hours=n)
+        return stamp - timedelta(minutes=n)
+    for pat in (_LIST_WHEN_DATE, _LIST_WHEN_DATE_REV):
+        match = pat.match(raw)
+        if not match:
+            continue
+        if pat is _LIST_WHEN_DATE:
+            day, month_s, year_s = match.group(1), match.group(2), match.group(3)
+        else:
+            month_s, day, year_s = match.group(1), match.group(2), match.group(3)
+        month = _MONTHS.get(month_s.casefold())
+        if not month:
+            continue
+        year = int(year_s) if year_s else stamp.year
+        try:
+            dt = datetime(year, month, int(day), tzinfo=timezone.utc)
+        except ValueError:
+            return None
+        if not year_s and dt > stamp:
+            dt = datetime(year - 1, month, int(day), tzinfo=timezone.utc)
+        return dt
+    return None
+
+
+def activity_is_stale(when: datetime | None, *, now: datetime | None = None) -> bool:
+    if when is None:
+        return False
+    stamp = now or datetime.now(timezone.utc)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp - when >= timedelta(days=STALE_CHAT_DAYS)
+
+
+def last_active_at(conn: sqlite3.Connection, name: str) -> datetime | None:
+    newest: datetime | None = None
+    for alias in name_aliases(conn, name) or [name]:
+        row = conn.execute(
+            """
+            SELECT c.last_active_at
+            FROM people p
+            JOIN chats c ON c.person_id = p.id
+            WHERE p.name = ? COLLATE NOCASE AND p.phone_id = ?
+            """,
+            (alias, _scope_phone()),
+        ).fetchone()
+        if not row:
+            continue
+        when = _parse_iso(row["last_active_at"])
+        if when and (newest is None or when > newest):
+            newest = when
+    return newest
+
+
+def chat_activity_stale(
+    conn: sqlite3.Connection,
+    name: str,
+    *,
+    list_time: str = "",
+    now: datetime | None = None,
+) -> bool:
+    listed = parse_list_when(list_time, now=now)
+    if listed is not None:
+        return activity_is_stale(listed, now=now)
+    return activity_is_stale(last_active_at(conn, name), now=now)
 
 
 def parse_hours_left(text: str | None) -> int | None:
@@ -735,9 +897,15 @@ def namesake_same_person(conn: sqlite3.Connection, keep: str, other: str) -> boo
                     return True
     stub_k, stub_o = not them_k, not them_o
     if stub_k or stub_o:
-        from src.photos import photos_conflict
+        from src.photos import faces_match, load_photo, photos_conflict
 
         if photos_conflict(keep, other):
+            return False
+        # Empty/expired match vs a real thread: two people unless the faces match.
+        if (them_k and stub_o) or (them_o and stub_k):
+            photo_k, photo_o = load_photo(keep), load_photo(other)
+            if photo_k is not None and photo_o is not None:
+                return faces_match(photo_k, photo_o)
             return False
         return True
     return False
@@ -1195,10 +1363,11 @@ def upsert_chat(
     location: str | None = None,
     distance: str | None = None,
     age: int | None = None,
+    list_time: str | None = None,
 ) -> int:
     person_id = upsert_person(conn, name, location=location, distance=distance, age=age)
     existing = conn.execute(
-        "SELECT preview, badge, last_from, last_text, opener_sent, dismissed_reply_text, message_until FROM chats WHERE person_id = ?",
+        "SELECT preview, badge, last_from, last_text, opener_sent, dismissed_reply_text, message_until, last_active_at FROM chats WHERE person_id = ?",
         (person_id,),
     ).fetchone()
     preview_v = preview if preview is not None else (existing["preview"] if existing else None)
@@ -1233,12 +1402,14 @@ def upsert_chat(
         dismissed_reply_text=existing["dismissed_reply_text"] if existing else None,
         message_until=until_v,
     )
+    listed = parse_list_when(list_time) if list_time else None
+    active_v = listed.strftime("%Y-%m-%dT%H:%M:%SZ") if listed else None
     conn.execute(
         """
         INSERT INTO chats (
             person_id, preview, badge, status, last_from, last_text, opener_sent,
-            message_until, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            message_until, last_active_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(person_id) DO UPDATE SET
             preview = excluded.preview,
             badge = excluded.badge,
@@ -1247,9 +1418,21 @@ def upsert_chat(
             last_text = excluded.last_text,
             opener_sent = excluded.opener_sent,
             message_until = excluded.message_until,
+            last_active_at = COALESCE(excluded.last_active_at, chats.last_active_at),
             updated_at = excluded.updated_at
         """,
-        (person_id, preview_v, badge_v, status, last_from_v, last_text_v, sent_v, until_v, _now()),
+        (
+            person_id,
+            preview_v,
+            badge_v,
+            status,
+            last_from_v,
+            last_text_v,
+            sent_v,
+            until_v,
+            active_v,
+            _now(),
+        ),
     )
     return person_id
 
@@ -1379,6 +1562,16 @@ def trailing_incoming_bodies(messages: list[tuple[str, str]]) -> list[str]:
     return bodies
 
 
+def them_message_fingerprint(messages: list[tuple[str, str]]) -> str | None:
+    """Fingerprint of everything they have said — used to re-check CRM on new texts."""
+    bodies = [
+        (body or "").strip()
+        for side, body in messages
+        if side == "them" and (body or "").strip()
+    ]
+    return "\n".join(bodies) if bodies else None
+
+
 def incoming_turn_fingerprint(messages: list[tuple[str, str]]) -> str | None:
     """Stable fingerprint for the latest unanswered incoming turn, or None."""
     bodies = trailing_incoming_bodies(messages)
@@ -1435,6 +1628,130 @@ def enqueue_auto_draft_if_needed(
     return True
 
 
+def enqueue_crm_sync_if_needed(
+    conn: sqlite3.Connection,
+    person_id: int,
+    messages: list[tuple[str, str]],
+) -> bool:
+    """Queue a CRM create/update when they sent something we have not synced yet."""
+    fp = them_message_fingerprint(messages)
+    if not fp:
+        return False
+    row = conn.execute(
+        """
+        SELECT p.crm_sync_fp, p.crm_sync_status, c.archived
+        FROM people p
+        LEFT JOIN chats c ON c.person_id = p.id
+        WHERE p.id = ?
+        """,
+        (person_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if "archived" in row.keys() and int(row["archived"] or 0):
+        return False
+    if (row["crm_sync_fp"] or "").strip() == fp and (row["crm_sync_status"] or "") in {
+        "pending",
+        "running",
+        "done",
+    }:
+        return False
+    conn.execute(
+        """
+        UPDATE people SET
+            crm_sync_fp = ?,
+            crm_sync_status = 'pending',
+            crm_sync_error = NULL,
+            crm_sync_attempts = 0,
+            crm_sync_next_at = ?
+        WHERE id = ?
+        """,
+        (fp, _now(), person_id),
+    )
+    return True
+
+
+def list_pending_crm_syncs(conn: sqlite3.Connection, *, limit: int = 8) -> list[sqlite3.Row]:
+    now = _now()
+    return list(
+        conn.execute(
+            """
+            SELECT p.id AS person_id, p.name, p.phone_id, p.lgs_lead_id,
+                   p.crm_sync_fp, p.crm_sync_status, p.crm_sync_error,
+                   p.crm_sync_attempts, p.crm_sync_next_at
+            FROM people p
+            LEFT JOIN chats c ON c.person_id = p.id
+            WHERE p.crm_sync_status IN ('pending', 'error')
+              AND p.crm_sync_fp IS NOT NULL
+              AND trim(p.crm_sync_fp) != ''
+              AND IFNULL(c.archived, 0) = 0
+              AND (p.crm_sync_next_at IS NULL OR p.crm_sync_next_at <= ?)
+            ORDER BY p.crm_sync_next_at ASC, p.id ASC
+            LIMIT ?
+            """,
+            (now, limit),
+        )
+    )
+
+
+def claim_crm_sync(conn: sqlite3.Connection, person_id: int, fp: str) -> bool:
+    cur = conn.execute(
+        """
+        UPDATE people SET crm_sync_status = 'running'
+        WHERE id = ? AND crm_sync_fp = ? AND crm_sync_status IN ('pending', 'error')
+        """,
+        (person_id, fp),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def complete_crm_sync(conn: sqlite3.Connection, person_id: int, fp: str) -> None:
+    conn.execute(
+        """
+        UPDATE people SET
+            crm_sync_status = 'done',
+            crm_sync_error = NULL,
+            crm_sync_attempts = 0,
+            crm_sync_next_at = NULL
+        WHERE id = ? AND crm_sync_fp = ?
+        """,
+        (person_id, fp),
+    )
+    conn.commit()
+
+
+def fail_crm_sync(
+    conn: sqlite3.Connection,
+    person_id: int,
+    *,
+    fp: str,
+    error: str,
+    attempts: int,
+    next_attempt_at: str | None,
+    give_up: bool = False,
+) -> None:
+    conn.execute(
+        """
+        UPDATE people SET
+            crm_sync_status = ?,
+            crm_sync_error = ?,
+            crm_sync_attempts = ?,
+            crm_sync_next_at = ?
+        WHERE id = ? AND crm_sync_fp = ?
+        """,
+        (
+            "error" if not give_up else "error",
+            (error or "")[:400],
+            attempts,
+            next_attempt_at,
+            person_id,
+            fp,
+        ),
+    )
+    conn.commit()
+
+
 def replace_thread(
     conn: sqlite3.Connection,
     person_id: int,
@@ -1464,11 +1781,22 @@ def replace_thread(
         )
     if cleaned:
         last_side, last_body = cleaned[-1]
-        conn.execute(
-            "UPDATE chats SET last_from = ?, last_text = ? WHERE person_id = ?",
-            (last_side, last_body, person_id),
-        )
+        prev_last = prev[-1][1] if prev else ""
+        if last_body != prev_last:
+            conn.execute(
+                """
+                UPDATE chats SET last_from = ?, last_text = ?, last_active_at = ?
+                WHERE person_id = ?
+                """,
+                (last_side, last_body, now, person_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE chats SET last_from = ?, last_text = ? WHERE person_id = ?",
+                (last_side, last_body, person_id),
+            )
     enqueue_auto_draft_if_needed(conn, person_id, cleaned)
+    enqueue_crm_sync_if_needed(conn, person_id, cleaned)
 
 
 def list_pending_auto_drafts(

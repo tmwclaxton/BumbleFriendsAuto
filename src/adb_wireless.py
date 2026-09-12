@@ -44,22 +44,33 @@ def _saved_endpoint() -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def _is_wireless_phone(row: dict) -> bool:
+    pid = str(row.get("id") or "").strip().casefold()
+    device = str(row.get("device") or "").strip().casefold()
+    return pid in {"archie", "galaxy"} or device in {"galaxy", "archie"}
+
+
 def wireless_endpoint(row: dict | None) -> str:
     if not row:
         return ""
-    env = (
-        os.environ.get("ARCHIE_ADB")
-        or os.environ.get("GALAXY_ADB")
-        or os.environ.get("ARCHIE_WIRELESS")
-        or ""
-    ).strip()
-    if env:
-        return env
+    # ARCHIE_ADB is Galaxy-only. Applying it to every phone made Pixel jobs
+    # connect to 192.168.0.168 when USB ADB was empty.
+    if _is_wireless_phone(row):
+        env = (
+            os.environ.get("ARCHIE_ADB")
+            or os.environ.get("GALAXY_ADB")
+            or os.environ.get("ARCHIE_WIRELESS")
+            or ""
+        ).strip()
+        if env:
+            return env
     for key in ("adb", "wireless", "wireless_adb"):
         value = str(row.get(key) or "").strip()
         if value:
             return value
-    return _saved_endpoint()
+    if _is_wireless_phone(row):
+        return _saved_endpoint()
+    return ""
 
 
 def devices_text() -> str:

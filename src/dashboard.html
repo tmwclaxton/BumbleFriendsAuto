@@ -28,9 +28,18 @@
     background: var(--bg);
     color: var(--text);
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto auto 1fr;
     min-height: 0;
   }
+  #phone-warn {
+    padding: 8px 16px;
+    background: #3a2218;
+    color: #ffc4a8;
+    border-bottom: 1px solid #6a3a28;
+    font-size: 13px;
+  }
+  #phone-warn[hidden] { display: none !important; }
+  .phone-col.offline .col-head h2 { color: var(--need); }
   .topbar {
     display: flex;
     flex-wrap: wrap;
@@ -115,6 +124,7 @@
   .workspace {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr);
+    align-items: stretch;
     min-width: 0;
     min-height: 0;
     height: 100%;
@@ -162,18 +172,26 @@
     cursor: pointer;
   }
   .col-collapse:hover { background: #24242c; }
+  .phone-col.collapsed {
+    align-self: stretch;
+    height: 100%;
+    min-height: 100%;
+    background: var(--col-bg);
+  }
   .phone-col.collapsed .col-scroll,
   .phone-col.collapsed .col-acts,
   .phone-col.collapsed .col-meta { display: none; }
   .phone-col.collapsed .col-head {
-    flex: 1;
+    flex: 1 1 auto;
     flex-direction: column;
     align-items: center;
     justify-content: flex-start;
     gap: 10px;
     padding: 8px 4px;
-    min-height: 0;
+    min-height: 100%;
+    height: 100%;
     border-bottom: 0;
+    background: var(--col-bg);
   }
   .phone-col.collapsed h2 {
     writing-mode: vertical-rl;
@@ -787,6 +805,17 @@
   }
   #emoji-panel button:hover { background: #24242c; }
   #status { padding: 0 16px 10px; font-size: 12px; color: var(--muted); min-height: 18px; }
+  #status button {
+    margin-left: 8px;
+    padding: 2px 10px;
+    font-size: 12px;
+    font-weight: 650;
+    border-radius: 8px;
+    background: #5a3d12;
+    color: #ffd27a;
+    border: 1px solid #8a6420;
+    cursor: pointer;
+  }
   #queue {
     padding: 0 16px 10px;
     font-size: 12px;
@@ -876,15 +905,13 @@
       </select>
     </div>
     <div class="top-actions">
-      <button type="button" id="fast-scan" title="Scroll the inbox list and open only chats whose latest message changed or whose Your turn badge disagrees with storage. Also refreshes the New friends strip and rematches expired circles.">Fast scan</button>
-      <button type="button" id="refresh-all" title="Open every chat and refresh stored transcripts. Can take ~40 minutes.">Refresh all</button>
-      <button type="button" id="refresh-new" title="Look at the New friends circles on the phone.">Refresh strip</button>
       <button type="button" id="msg-all" title="Send the opener only to New friends, not existing chats.">Send openers</button>
       <button type="button" id="show-prompt" title="Show the system + user prompt Sol gets for drafts">AI prompt</button>
       <a id="swipe-btn" href="/swipe" title="Open the swipe desk">Swipe desk</a>
     </div>
   </div>
 </header>
+<div id="phone-warn" hidden role="status"></div>
 <div class="workspace">
 <section class="phone-col toby" data-phone="toby">
   <div class="col-head">
@@ -1128,6 +1155,7 @@ const emojiBtn = document.getElementById("emoji-btn");
 const emojiPanel = document.getElementById("emoji-panel");
 const statusEl = document.getElementById("status");
 const queueEl = document.getElementById("queue");
+let lastNamesakeFail = null;
 let people = [];
 let phones = [];
 let ethnicityChoices = [];
@@ -1219,6 +1247,26 @@ function phoneTarget() {
   const el = document.getElementById("phone-target");
   return (el && el.value) || "all";
 }
+function renderPhoneWarn() {
+  const el = document.getElementById("phone-warn");
+  if (!el) return;
+  const down = (phones || []).filter(p => p.ready && !p.online);
+  for (const pid of ["toby", "archie"]) {
+    const col = document.querySelector('.phone-col[data-phone="' + pid + '"]');
+    const meta = (phones || []).find(p => p.id === pid);
+    if (col) col.classList.toggle("offline", !!(meta && meta.ready && !meta.online));
+  }
+  if (!down.length) {
+    el.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  const names = down.map(p => (p.label || p.id) + (p.device ? " (" + p.device + ")" : ""));
+  el.hidden = false;
+  el.textContent = names.length === 1
+    ? names[0] + " is disconnected — inbox jobs for that phone will fail until ADB is back."
+    : names.join(" and ") + " are disconnected — inbox jobs will fail until ADB is back.";
+}
 function phoneTag(p) {
   const id = (p && p.phone_id) || "toby";
   const label = (p && p.phone_label) || (id === "archie" ? "Archie" : "Toby");
@@ -1262,6 +1310,7 @@ async function loadPeople() {
   const data = await res.json();
   people = data.people || [];
   phones = data.phones || phones;
+  renderPhoneWarn();
   openerTemplate = data.opener_template || "";
   ethnicityChoices = data.ethnicity_choices || ethnicityChoices;
   renderEthFilter();
@@ -1524,7 +1573,7 @@ function renderHead(name, status, phoneProvided) {
     .join("");
   const ds = (known && known.draft_status) || "";
   const retryDraft = (ds === "error" || ds === "pending" || ds === "running")
-    ? '<button type="button" id="retry-draft" title="' + esc((known && known.draft_error) || "Re-queue GPT Sol draft") + '">Retry draft</button>'
+    ? '<button type="button" id="retry-draft" title="' + esc((known && known.draft_error) || "Re-queue Sol draft") + '">Retry draft</button>'
     : "";
   headEl.innerHTML = `<h2>${faceHtml(known, name)}<span class="head-title">${esc(title)}</span> ${phoneTag(known || {phone_id: currentPhone})} ${same} ${phone} ${archivedTag} ${hid}</h2><div class="actions">
     <select id="ethnicity-set" aria-label="Ethnicity">${ethOpts}</select>
@@ -1867,7 +1916,7 @@ document.querySelector(".workspace").addEventListener("click", e => {
   e.preventDefault();
   openThread(row.dataset.name, {phone: row.dataset.phone || "toby"});
 });
-refreshNewBtn.addEventListener("click", async () => {
+if (refreshNewBtn) refreshNewBtn.addEventListener("click", async () => {
   refreshNewBtn.disabled = true;
   statusEl.textContent = "Queued New friends strip refresh";
   const res = await fetch("/api/new-friends", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({phone_id: phoneTarget()})});
@@ -1876,7 +1925,7 @@ refreshNewBtn.addEventListener("click", async () => {
   if (data.ok) pollQueue();
   else refreshNewBtn.disabled = false;
 });
-refreshAllBtn.addEventListener("click", async () => {
+if (refreshAllBtn) refreshAllBtn.addEventListener("click", async () => {
   if (!confirm(
     "Refresh every chat on the phone?\n\n" +
     "Opens each conversation, updates stored transcripts, and can take up to ~40 minutes. " +
@@ -1890,7 +1939,7 @@ refreshAllBtn.addEventListener("click", async () => {
   if (data.ok) pollQueue();
   else refreshAllBtn.disabled = false;
 });
-fastScanBtn.addEventListener("click", async () => {
+if (fastScanBtn) fastScanBtn.addEventListener("click", async () => {
   fastScanBtn.disabled = true;
   statusEl.textContent = "Queued fast reply scan";
   const res = await fetch("/api/fast-scan", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({phone_id: phoneTarget()})});
@@ -1991,19 +2040,39 @@ aiDraftBtn.addEventListener("click", async () => {
   statusEl.textContent = data.mode === "revise" ? "Adapted the composer" : "Draft ready";
 });
 
+async function queueReply(text, {force = false} = {}) {
+  if (!current || !text) return;
+  lastNamesakeFail = null;
+  const res = await fetch("/api/reply", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: current, phone_id: currentPhone, text, force}),
+  });
+  const data = await res.json();
+  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
+  if (data.ok) pollQueue();
+}
+
 document.getElementById("composer").addEventListener("submit", async e => {
   e.preventDefault();
   if (!current) return;
   const text = draftEl.value.trim();
   if (!text) return;
-  const res = await fetch("/api/reply", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: current, phone_id: currentPhone, text}),
-  });
-  const data = await res.json();
-  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
-  if (data.ok) pollQueue();
+  await queueReply(text);
+});
+
+statusEl.addEventListener("click", async e => {
+  const btn = e.target.closest("[data-send-anyway]");
+  if (!btn || !lastNamesakeFail) return;
+  const pending = lastNamesakeFail;
+  if (!confirm(
+    "Send this to whoever is open on the phone for " + pending.name +
+    "?\n\nCheck the screen first — same-name chats are easy to mix up."
+  )) return;
+  draftEl.value = pending.text;
+  current = pending.name;
+  currentPhone = pending.phone_id || currentPhone;
+  await queueReply(pending.text, {force: true});
 });
 
 function matchWhatsAppGroup(groups, hint) {
@@ -2238,9 +2307,9 @@ function renderQueue(jobs) {
   const fastScanning = active.some(j => j.kind === "fast_scan");
   if (messaging) msgAllBtn.disabled = true;
   else if (people.some(p => p.new_friend)) msgAllBtn.disabled = false;
-  refreshNewBtn.disabled = refreshing;
-  refreshAllBtn.disabled = recapturing;
-  fastScanBtn.disabled = fastScanning || recapturing;
+  if (refreshNewBtn) refreshNewBtn.disabled = refreshing;
+  if (refreshAllBtn) refreshAllBtn.disabled = recapturing;
+  if (fastScanBtn) fastScanBtn.disabled = fastScanning || recapturing;
   if (!active.length) {
     queueEl.innerHTML = "";
     return;
@@ -2292,11 +2361,18 @@ async function pollQueue() {
     for (const job of fresh) {
       seenFinished.add(job.id);
       lastFinished = Math.max(lastFinished, job.id);
-      statusEl.textContent = job.status === "done"
-        ? (job.message || "done")
-        : job.status === "cancelled"
-        ? (job.message || "cancelled")
-        : ("Failed: " + (job.error || "error"));
+      if (job.status === "done") {
+        statusEl.textContent = job.message || "done";
+      } else if (job.status === "cancelled") {
+        statusEl.textContent = job.message || "cancelled";
+      } else if (job.kind === "reply" && /namesake/i.test(job.error || "")) {
+        lastNamesakeFail = {name: job.name, phone_id: job.phone_id, text: job.text};
+        statusEl.innerHTML =
+          "Failed: could not tell which " + esc(job.name) +
+          " is open. <button type=\"button\" data-send-anyway=\"1\">Send anyway — I will check the phone</button>";
+      } else {
+        statusEl.textContent = "Failed: " + (job.error || "error");
+      }
       if (job.kind === "reply" && job.text) {
         if (job.status === "error" || job.status === "cancelled") persistDraft(job.name, job.text, job.phone_id);
         else if (job.status === "done") persistDraft(job.name, "", job.phone_id);
@@ -2343,6 +2419,14 @@ setInterval(() => {
   if (people.some(p => p.new_friend && p.message_until)) renderList();
 }, 60000);
 pollQueue();
+setInterval(async () => {
+  try {
+    const res = await fetch("/api/health");
+    const data = await res.json();
+    if (data.phones) phones = data.phones;
+    renderPhoneWarn();
+  } catch (err) {}
+}, 5000);
 </script>
 </body>
 </html>

@@ -295,6 +295,20 @@ def adopt_photo(src_name: str, dest_name: str, phone_id: str | None = None) -> b
     return False
 
 
+def _person_aliases(name: str) -> list[str]:
+    try:
+        from src.config import load_config
+        from src.store import connect as db_connect, db_path_from_config, name_aliases
+
+        conn = db_connect(db_path_from_config(load_config()))
+        try:
+            return name_aliases(conn, name) or [name]
+        finally:
+            conn.close()
+    except Exception:
+        return [name]
+
+
 def next_photo_slot(name: str, aliases: list[str] | None = None) -> str:
     """First namesake without a file, or the next free 'Name N' slot."""
     for alias in aliases or [_base_name(name)]:
@@ -529,15 +543,14 @@ def grab_visible_list_avatars(device, xml: str | None = None) -> int:
                 if dest.casefold() != name.casefold() and dest.casefold() not in known:
                     continue
                 stored = load_photo(dest)
-                if stored is not None and not faces_differ(crop, stored):
+                if stored is not None:
                     continue
                 dest_path = photo_file(dest)
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
-                existed = dest_path.is_file() and dest_path.stat().st_size > 80
                 crop.save(dest_path, "JPEG", quality=82)
                 if dest_path.is_file() and dest_path.stat().st_size > 80:
                     saved += 1
-                    notify_photo_saved(dest, replaced=existed)
+                    notify_photo_saved(dest, replaced=False)
                     if dest != name:
                         log.info("list avatar %s stored as %s", name, dest)
             except Exception:
@@ -619,10 +632,20 @@ def capture_open_profile_photo(device, name: str, *, force: bool = False) -> boo
                     return True
             elif photo_exists(name):
                 stored = load_photo(name)
-                if stored is not None and faces_differ(crop, stored):
-                    dest = next_photo_slot(name)
-                elif stored is not None:
+                if stored is not None and not faces_differ(crop, stored):
                     return True
+                aliases = _person_aliases(name)
+                if len(aliases) <= 1:
+                    dest = name
+                else:
+                    dest = next_photo_slot(name, aliases)
+                    known = {alias.casefold() for alias in aliases}
+                    if dest.casefold() not in known:
+                        log.warning(
+                            "profile photo for %s differs but no empty namesake slot — not minting a phantom",
+                            name,
+                        )
+                        return False
         dest_path = photo_file(dest)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         existed = dest_path.is_file() and dest_path.stat().st_size > 80

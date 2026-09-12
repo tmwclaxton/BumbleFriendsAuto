@@ -401,7 +401,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(guess_status())
             return
         if parsed.path == "/api/health":
-            self._json({"ok": True})
+            from src.phones import public_phones
+
+            phones = public_phones()
+            offline = [p["label"] for p in phones if p.get("ready") and not p.get("online")]
+            self._json({"ok": True, "phones": phones, "offline": offline})
             return
         if parsed.path == "/api/whatsapp/groups":
             from src.whatsapp import listed_groups
@@ -723,7 +727,13 @@ class Handler(BaseHTTPRequestHandler):
         if not name or not text:
             self._json({"ok": False, "error": "name and text required"}, 400)
             return
-        job = enqueue("reply", name, text, phone_id=str(data.get("phone_id") or "") or None)
+        job = enqueue(
+            "reply",
+            name,
+            text,
+            phone_id=str(data.get("phone_id") or "") or None,
+            force=bool(data.get("force")),
+        )
         self._json({"ok": True, "queued": True, "job": job, "message": f"queued reply to {name}"})
 
 

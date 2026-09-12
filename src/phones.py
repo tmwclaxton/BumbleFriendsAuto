@@ -179,7 +179,11 @@ def phone_by_serial(serial: str | None, cfg: dict[str, Any] | None = None) -> di
 
 def serial_for(phone_id: str | None, cfg: dict[str, Any] | None = None) -> str:
     row = phone_by_id(phone_id, cfg)
-    return str((row or {}).get("serial") or "").strip()
+    if not row:
+        return ""
+    from src.adb_wireless import wireless_endpoint
+
+    return (wireless_endpoint(row) or str(row.get("serial") or "")).strip()
 
 
 def pin_for(phone_id: str | None, cfg: dict[str, Any] | None = None) -> str:
@@ -187,17 +191,44 @@ def pin_for(phone_id: str | None, cfg: dict[str, Any] | None = None) -> str:
     return str((row or {}).get("unlock_pin") or "").strip()
 
 
-def public_phones(cfg: dict[str, Any] | None = None) -> list[dict[str, str]]:
-    """Safe payload for the dashboard (no PINs)."""
-    return [
-        {
-            "id": str(p["id"]),
-            "label": str(p.get("label") or p["id"]),
-            "device": str(p.get("device") or ""),
-            "ready": bool(str(p.get("serial") or p.get("adb") or "").strip()),
-        }
-        for p in list_phones(cfg)
+def phone_is_online(row: dict[str, Any] | None, devices: str | None = None) -> bool:
+    """True when ADB currently lists this phone as `device`."""
+    if not row:
+        return False
+    from src.adb_wireless import devices_text, line_is_online, wireless_endpoint
+
+    blob = devices if devices is not None else devices_text()
+    hints = [
+        wireless_endpoint(row),
+        str(row.get("serial") or "").strip(),
+        str(row.get("adb") or "").strip(),
     ]
+    for hint in hints:
+        if hint and any(line_is_online(line, hint) for line in blob.splitlines()):
+            return True
+    return False
+
+
+def public_phones(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Safe payload for the dashboard (no PINs)."""
+    from src.adb_wireless import devices_text, wireless_endpoint
+
+    blob = devices_text()
+    out: list[dict[str, Any]] = []
+    for p in list_phones(cfg):
+        ready = bool(
+            str(p.get("serial") or p.get("adb") or wireless_endpoint(p) or "").strip()
+        )
+        out.append(
+            {
+                "id": str(p["id"]),
+                "label": str(p.get("label") or p["id"]),
+                "device": str(p.get("device") or ""),
+                "ready": ready,
+                "online": phone_is_online(p, devices=blob),
+            }
+        )
+    return out
 
 
 def expand_phone_ids(phone_id: str | None, cfg: dict[str, Any] | None = None) -> list[str]:

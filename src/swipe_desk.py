@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -17,6 +18,7 @@ log = logging.getLogger(__name__)
 
 PREFS_PATH = ROOT / "data" / "swipe_desk.json"
 CARD_PATH = ROOT / "data" / "swipe_card.jpg"
+LIKED_THUMB_DIR = ROOT / "data" / "liked_you"
 
 _RACE_IDS = [cid for cid, _ in ETHNICITY_CHOICES]
 _MEN_DEFAULT = ["white", "east_asian", "southeast_asian"]
@@ -41,6 +43,14 @@ _state: dict[str, Any] = {
     "photo_seq": 0,
     "message": "",
     "log": [],
+    "liked_you": {
+        "scanning": False,
+        "running": False,
+        "phone_id": DEFAULT_PHONE_ID,
+        "message": "",
+        "items": [],
+        "thumb_seq": 0,
+    },
 }
 
 
@@ -277,6 +287,135 @@ def snapshot() -> dict[str, Any]:
         snap = dict(_state)
         snap["log"] = list(_state.get("log") or [])
         snap["pending"] = dict(_state["pending"]) if _state.get("pending") else None
+        ly = dict(_state.get("liked_you") or {})
+        ly["items"] = [dict(i) for i in (ly.get("items") or [])]
+        snap["liked_you"] = ly
     snap["prefs"] = load_prefs()
     snap["races"] = [{"id": cid, "label": label} for cid, label in ETHNICITY_CHOICES]
     return snap
+
+
+def _liked() -> dict[str, Any]:
+    ly = _state.get("liked_you")
+    if not isinstance(ly, dict):
+        ly = {
+            "scanning": False,
+            "running": False,
+            "phone_id": DEFAULT_PHONE_ID,
+            "message": "",
+            "items": [],
+            "thumb_seq": 0,
+        }
+        _state["liked_you"] = ly
+    return ly
+
+
+def liked_you_begin_scan(*, phone_id: str) -> None:
+    with _lock:
+        ly = _liked()
+        ly.update(
+            {
+                "scanning": True,
+                "running": False,
+                "phone_id": phone_id,
+                "message": "Scanning Liked You",
+                "items": [],
+            }
+        )
+
+
+def liked_you_set_message(message: str) -> None:
+    with _lock:
+        _liked()["message"] = message
+
+
+def liked_you_set_running(*, phone_id: str, message: str) -> None:
+    with _lock:
+        ly = _liked()
+        ly["scanning"] = False
+        ly["running"] = True
+        ly["phone_id"] = phone_id
+        ly["message"] = message
+
+
+def liked_you_add(item: dict[str, Any]) -> None:
+    with _lock:
+        ly = _liked()
+        items = list(ly.get("items") or [])
+        items.append(dict(item))
+        ly["items"] = items
+        ly["message"] = f"Reviewed {item.get('name') or 'someone'} → {item.get('proposed') or '?'}"
+
+
+def liked_you_items() -> list[dict[str, Any]]:
+    with _lock:
+        return [dict(i) for i in (_liked().get("items") or [])]
+
+
+def liked_you_toggle(item_id: str, decision: str) -> bool:
+    decision = (decision or "").strip().lower()
+    if decision not in {"like", "pass", "skip"}:
+        return False
+    with _lock:
+        for item in _liked().get("items") or []:
+            if str(item.get("id")) == str(item_id):
+                if item.get("status") not in {None, "pending"}:
+                    return False
+                item["decision"] = decision
+                return True
+    return False
+
+
+def liked_you_set_decisions(rows: list[dict[str, Any]]) -> int:
+    changed = 0
+    by_id = {str(r.get("id")): r for r in rows if isinstance(r, dict) and r.get("id")}
+    with _lock:
+        for item in _liked().get("items") or []:
+            row = by_id.get(str(item.get("id")))
+            if not row:
+                continue
+            decision = str(row.get("decision") or "").strip().lower()
+            if decision not in {"like", "pass", "skip"}:
+                continue
+            if item.get("status") not in {None, "pending"}:
+                continue
+            item["decision"] = decision
+            changed += 1
+    return changed
+
+
+def liked_you_mark(item_id: str, **fields: Any) -> None:
+    with _lock:
+        for item in _liked().get("items") or []:
+            if str(item.get("id")) == str(item_id):
+                item.update(fields)
+                return
+
+
+def liked_you_finish(message: str) -> None:
+    with _lock:
+        ly = _liked()
+        ly["scanning"] = False
+        ly["running"] = False
+        ly["message"] = message
+
+
+def save_liked_thumb(src: Path, key: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", (key or "card").strip())[:80] or "card"
+    LIKED_THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    dest = LIKED_THUMB_DIR / f"{safe}.jpg"
+    dest.write_bytes(src.read_bytes())
+    with _lock:
+        ly = _liked()
+        ly["thumb_seq"] = int(ly.get("thumb_seq") or 0) + 1
+    return dest.name
+
+
+def liked_thumb_path(name: str) -> Path | None:
+    safe = Path(name or "").name
+    if not safe or safe.startswith("."):
+        return None
+    path = LIKED_THUMB_DIR / safe
+    if path.is_file():
+        return path
+    return None
