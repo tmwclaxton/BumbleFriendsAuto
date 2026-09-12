@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="com.linkedin.android" class="android.widget.FrameLayout" bounds="[0,0][1080,2400]">
+    <node content-desc="Home" clickable="true" bounds="[40,2280][160,2380]"/>
+    <node content-desc="Messaging" clickable="true" bounds="[700,2280][860,2380]"/>
+    <node content-desc="Conversation with Ada Lovelace: Loved the hiking note" clickable="true" bounds="[0,200][1080,360]"/>
+    <node content-desc="Conversation with Grace Hopper: 1 unread. Can you send the deck?" clickable="true" bounds="[0,360][1080,520]"/>
+    <node text="Compose" clickable="true" bounds="[900,2100][1040,2240]"/>
+  </node>
+</hierarchy>

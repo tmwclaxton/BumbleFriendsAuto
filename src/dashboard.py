@@ -96,23 +96,72 @@ def _preview_already_in_thread(preview: str, msgs: list[dict]) -> bool:
     return False
 
 
-def _thread_payload(conn, name: str, phone_id: str | None = None) -> dict:
+def _thread_payload(conn, name: str, phone_id: str | None = None, *, channel: str = "bumble") -> dict:
     from src.phones import DEFAULT_PHONE_ID, current_phone_id
+    from src.store import normalize_channel
 
     pid = phone_id or current_phone_id() or DEFAULT_PHONE_ID
+    ch = normalize_channel(channel)
+    if ch == "linkedin":
+        from src.linkedin_store import get_person, list_thread as list_li_thread
+
+        row = get_person(conn, name, pid)
+        msgs = [
+            {"side": r["side"], "body": r["body"], "from_preview": False}
+            for r in list_li_thread(conn, name, pid)
+            if (r["body"] or "").strip()
+        ]
+        if row is None:
+            return {
+                "name": name,
+                "phone_id": pid,
+                "messages": msgs,
+                "status": "unknown",
+                "draft": "",
+                "message_until": None,
+                "in_group": False,
+                "archived": False,
+                "draft_status": "idle",
+                "draft_error": "",
+                "draft_attempts": 0,
+                "draft_pending": False,
+            }
+        extras: list[str] = []
+        for candidate in (row["last_text"], row["preview"]):
+            text = (candidate or "").strip()
+            if text and text not in extras:
+                extras.append(text)
+        for text in extras:
+            if _preview_already_in_thread(text, msgs):
+                continue
+            msgs.append({"side": row["last_from"] or "them", "body": text, "from_preview": True})
+        return {
+            "name": row["name"] or name,
+            "phone_id": row["phone_id"] if "phone_id" in row.keys() else pid,
+            "messages": msgs,
+            "status": row["status"] or "unknown",
+            "draft": "",
+            "message_until": None,
+            "in_group": False,
+            "archived": False,
+            "draft_status": "idle",
+            "draft_error": "",
+            "draft_attempts": 0,
+            "draft_pending": False,
+        }
     row = conn.execute(
         """
         SELECT p.name, p.phone_id, c.status, c.last_from, c.last_text, c.preview, c.draft, c.message_until,
                c.in_group, c.archived, c.draft_status, c.draft_error, c.draft_attempts, c.draft_pending_fp
         FROM people p
         LEFT JOIN chats c ON c.person_id = p.id
-        WHERE p.name = ? AND p.phone_id = ?
+        WHERE p.name = ? AND p.phone_id = ? AND p.channel = ?
         """,
-        (name, pid),
+        (name, pid, ch),
     ).fetchone()
     msgs = [
         {"side": r["side"], "body": r["body"], "from_preview": False}
-        for r in list_thread(conn, name)
+        for r in list_thread(conn, name, channel=ch)
         if not parse_hours_left(r["body"])
         and (r["body"] or "").strip().lower() not in {
             "extend",
@@ -165,7 +214,37 @@ def _thread_payload(conn, name: str, phone_id: str | None = None) -> dict:
     }
 
 
-def people_api_payload(conn) -> dict:
+def people_api_payload(conn, *, channel: str = "bumble") -> dict:
+    from src.phones import public_phones
+
+    if channel == "linkedin":
+        from src.linkedin_store import list_people as list_li
+
+        cfg = load_config()
+        phone_meta = {p["id"]: p for p in public_phones(cfg)}
+        people = []
+        for row in list_li(conn):
+            pid = str(row["phone_id"] if "phone_id" in row.keys() else "toby")
+            people.append(
+                {
+                    "name": row["name"],
+                    "phone_id": pid,
+                    "phone_label": (phone_meta.get(pid) or {}).get("label") or pid,
+                    "phone_device": (phone_meta.get(pid) or {}).get("device") or "",
+                    "display_name": row["name"],
+                    "status": row["status"] or "unknown",
+                    "last_from": row["last_from"],
+                    "last_text": row["last_text"],
+                    "preview": row["preview"],
+                    "new_friend": False,
+                    "photo": False,
+                    "dismissed": False,
+                    "in_group": False,
+                    "archived": False,
+                }
+            )
+        return {"people": people, "new_friends": [], "phones": list(phone_meta.values())}
+
     from src.chats import format_opener
 
     cfg = load_config()
@@ -324,8 +403,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _html(self) -> None:
-        body = _load_html()
+    def _html(self, path: Path | None = None) -> None:
+        body = path.read_bytes() if path is not None else _load_html()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -344,12 +423,43 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/index.html"}:
+            self._html(Path(__file__).with_name("home.html"))
+            return
+        if parsed.path in {"/bumble", "/bumble.html"}:
             self._html()
+            return
+        if parsed.path in {"/linkedin", "/linkedin.html"}:
+            self._html(Path(__file__).with_name("linkedin.html"))
             return
         if parsed.path == "/api/people":
             conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
             try:
                 self._json(people_api_payload(conn))
+            finally:
+                conn.close()
+            return
+        if parsed.path == "/api/li/people":
+            conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
+            try:
+                self._json(people_api_payload(conn, channel="linkedin"))
+            finally:
+                conn.close()
+            return
+        if parsed.path == "/api/li/thread":
+            qs = parse_qs(parsed.query)
+            name = (qs.get("name") or [""])[0].strip()
+            phone_id = (qs.get("phone") or [""])[0].strip() or None
+            if not name:
+                self.send_error(400)
+                return
+            conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
+            try:
+                from src.phones import phone_scope
+
+                with phone_scope(phone_id):
+                    payload = _thread_payload(conn, name, phone_id, channel="linkedin")
+                payload["phone_id"] = phone_id or payload.get("phone_id") or ""
+                self._json(payload)
             finally:
                 conn.close()
             return
@@ -385,8 +495,9 @@ class Handler(BaseHTTPRequestHandler):
                     phone_id = str(person["phone_id"] or phone_id or "")
                 from src.phones import phone_scope
 
+                channel = (qs.get("channel") or ["bumble"])[0]
                 with phone_scope(phone_id):
-                    payload = _thread_payload(conn, name, phone_id)
+                    payload = _thread_payload(conn, name, phone_id, channel=channel)
                 payload["phone_id"] = phone_id or payload.get("phone_id") or ""
                 self._json(payload)
             finally:

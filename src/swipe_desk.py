@@ -342,9 +342,22 @@ def liked_you_add(item: dict[str, Any]) -> None:
     with _lock:
         ly = _liked()
         items = list(ly.get("items") or [])
-        items.append(dict(item))
+        incoming = dict(item)
+        want_id = str(incoming.get("id") or "").casefold()
+        want_name = str(incoming.get("name") or "").strip().casefold()
+        for idx, existing in enumerate(items):
+            same_id = want_id and str(existing.get("id") or "").casefold() == want_id
+            same_name = want_name and str(existing.get("name") or "").strip().casefold() == want_name
+            if same_id or same_name:
+                merged = dict(existing)
+                merged.update({k: v for k, v in incoming.items() if v not in (None, "")})
+                items[idx] = merged
+                ly["items"] = items
+                ly["message"] = f"Reviewed {merged.get('name') or 'someone'} → {merged.get('proposed') or '?'}"
+                return
+        items.append(incoming)
         ly["items"] = items
-        ly["message"] = f"Reviewed {item.get('name') or 'someone'} → {item.get('proposed') or '?'}"
+        ly["message"] = f"Reviewed {incoming.get('name') or 'someone'} → {incoming.get('proposed') or '?'}"
 
 
 def liked_you_items() -> list[dict[str, Any]]:

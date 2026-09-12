@@ -37,7 +37,7 @@ def main() -> int:
     url = f"http://127.0.0.1:{port}/api/recapture"
     req = urllib.request.Request(
         url,
-        data=b'{"phone_id":"all"}',
+        data=b'{"phone_id":"all","cron":true}',
         headers={"Content-Type": "application/json", **_basic_header()},
         method="POST",
     )

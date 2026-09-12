@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>BFF inbox</title>
+<title>Bumble inbox</title>
 <style>
   :root {
     --bg: #111114;
@@ -885,8 +885,8 @@
 <body>
 <header class="topbar">
   <div class="brand">
-    <h1>BFF inbox</h1>
-    <p id="meta">Loading…</p>
+    <h1>Bumble inbox</h1>
+    <p id="meta"><a href="/" style="color:inherit">LeadsAuto</a> · Loading…</p>
   </div>
   <div class="top-tools">
     <div class="filter-menu" id="filter-menu">
@@ -2272,6 +2272,8 @@ function jobLabel(job) {
   if (job.kind === "message_new_friends") return who + "Send opener to new friends";
   if (job.kind === "grab_photos") return who + "Grab photos";
   if (job.kind === "refresh_new_friends") return who + "Refresh New friends strip";
+  if (job.kind === "linkedin_scan") return who + "LinkedIn scan";
+  if (job.kind === "linkedin_seed") return who + "LinkedIn seed";
   if (job.kind === "swipe") return who + "Swipe";
   if (job.kind === "unmatch") return who + "Unmatch " + job.name;
   if (job.kind === "unmatch_expired") {

@@ -1,6 +1,8 @@
-# Bumble Friends ADB auto-swiper + LGS inbox pipeline
+# LeadsAuto (Bumble Friends + LinkedIn inbox pipeline)
 
-Mac-side (or server) Python that drives an Android phone over ADB for Bumble For Friends: swipe, message New friends, sync chats into SQLite, and a password-protected inbox UI.
+Product name is **LeadsAuto**. The GitHub repo, GHCR image, and `lgspipeline.grantgunner.org` host stay as they are.
+
+Mac-side (or server) Python that drives Android phones over ADB. `/` picks a channel: **Bumble Friends** (`/bumble` — swipe, New friends, drafts, CRM) or **LinkedIn** (`/linkedin` — messaging capture only, feed cover first, rare scans).
 
 **Warning:** Automating Bumble violates their terms of service and can get your account banned. Use only on a phone and account you own. This project does **not** solve verification, paywalls, or anti-bot checks — it stops when those appear.
 
@@ -34,7 +36,7 @@ python -m src.dump_ui
 python -m src.swiper
 python -m src.messenger --dry-run
 python -m src.sync_chats --full --recapture
-python -m src.dashboard --foreground   # http://127.0.0.1:8765
+python -m src.dashboard --foreground   # http://127.0.0.1:8765  (/  /bumble  /linkedin)
 ```
 
 Send/Refresh go on a phone queue. Status: `needs_reply` / `waiting` / `expired` / `unknown`.

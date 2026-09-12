@@ -18,7 +18,15 @@ from starlette.routing import Route
 from src.config import load_config
 from src.dashboard import _load_html, _thread_payload, people_api_payload
 from src.mcp_server import mcp
-from src.phone_queue import cancel_job, cancel_queued, enqueue, enqueue_many, ensure_worker, queue_snapshot
+from src.phone_queue import (
+    cancel_job,
+    cancel_queued,
+    enqueue,
+    enqueue_cron,
+    enqueue_many,
+    ensure_worker,
+    queue_snapshot,
+)
 from src.phones import DEFAULT_PHONE_ID
 from src.store import connect as db_connect, db_path_from_config
 
@@ -61,7 +69,17 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
 
 
 async def homepage(_: Request) -> Response:
+    path = Path(__file__).with_name("home.html")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
+async def bumble_page(_: Request) -> Response:
     return HTMLResponse(_load_html().decode("utf-8"))
+
+
+async def linkedin_page(_: Request) -> Response:
+    path = Path(__file__).with_name("linkedin.html")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
 async def swipe_page(_: Request) -> Response:
@@ -84,6 +102,68 @@ async def api_people(_: Request) -> JSONResponse:
         return JSONResponse(people_api_payload(conn))
     finally:
         conn.close()
+
+
+async def api_li_people(_: Request) -> JSONResponse:
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        return JSONResponse(people_api_payload(conn, channel="linkedin"))
+    finally:
+        conn.close()
+
+
+async def api_li_thread(request: Request) -> JSONResponse:
+    qs = parse_qs(request.url.query)
+    name = (qs.get("name") or [""])[0].strip()
+    phone_id = (qs.get("phone") or [DEFAULT_PHONE_ID])[0].strip() or DEFAULT_PHONE_ID
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        from src.phones import phone_scope
+
+        with phone_scope(phone_id):
+            payload = _thread_payload(conn, name, phone_id=phone_id, channel="linkedin")
+        payload["ok"] = True
+        payload["phone_id"] = phone_id
+        return JSONResponse(payload)
+    finally:
+        conn.close()
+
+
+async def api_li_seed(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    jobs = enqueue_many("linkedin_seed", phone_id=_phone_from_body(data))
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": bool(jobs),
+            "jobs": jobs,
+            "job": jobs[0] if jobs else None,
+            "message": f"queued LinkedIn seed on {len(jobs)} phone(s)",
+        }
+    )
+
+
+async def api_li_scan(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    jobs, skipped = _enqueue_phone_jobs("linkedin_scan", data, channel="linkedin")
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": bool(jobs),
+            "jobs": jobs,
+            "skipped": skipped,
+            "job": jobs[0] if jobs else None,
+            "message": f"queued LinkedIn scan on {len(jobs)} phone(s)",
+        }
+    )
 
 
 async def api_photo(request: Request) -> Response:
@@ -111,7 +191,8 @@ async def api_thread(request: Request) -> JSONResponse:
         from src.phones import phone_scope
         from src.store import find_person, find_person_by_phone_digits
 
-        if name and find_person(conn, name) is None and number:
+        channel = (qs.get("channel") or ["bumble"])[0]
+        if name and find_person(conn, name, channel=channel) is None and number:
             name = ""
         if not name and number:
             person = find_person_by_phone_digits(conn, number)
@@ -122,7 +203,7 @@ async def api_thread(request: Request) -> JSONResponse:
         if not name:
             return JSONResponse({"ok": False, "error": "name or number required"}, status_code=400)
         with phone_scope(phone_id):
-            payload = _thread_payload(conn, name, phone_id=phone_id)
+            payload = _thread_payload(conn, name, phone_id=phone_id, channel=channel)
         payload["ok"] = True
         payload["phone_id"] = phone_id
         return JSONResponse(payload)
@@ -297,13 +378,27 @@ def _phone_from_body(data: dict) -> str:
     return str(data.get("phone_id") or data.get("phone") or "all").strip() or "all"
 
 
+def _enqueue_phone_jobs(kind: str, data: dict, *, channel: str) -> tuple[list[dict], list[dict]]:
+    phone_id = _phone_from_body(data)
+    if data.get("cron"):
+        return enqueue_cron(kind, channel=channel, phone_id=phone_id)
+    return enqueue_many(kind, phone_id=phone_id), []
+
+
 async def api_recapture(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
         data = {}
-    jobs = enqueue_many("recapture_all", phone_id=_phone_from_body(data))
+    jobs, skipped = _enqueue_phone_jobs("recapture_all", data, channel="bumble")
     return JSONResponse(
-        {"ok": True, "queued": True, "jobs": jobs, "job": jobs[0], "message": f"queued recapture on {len(jobs)} phone(s)"}
+        {
+            "ok": True,
+            "queued": bool(jobs),
+            "jobs": jobs,
+            "skipped": skipped,
+            "job": jobs[0] if jobs else None,
+            "message": f"queued recapture on {len(jobs)} phone(s)",
+        }
     )
 
 
@@ -311,9 +406,16 @@ async def api_fast_scan(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
         data = {}
-    jobs = enqueue_many("fast_scan", phone_id=_phone_from_body(data))
+    jobs, skipped = _enqueue_phone_jobs("fast_scan", data, channel="bumble")
     return JSONResponse(
-        {"ok": True, "queued": True, "jobs": jobs, "job": jobs[0], "message": f"queued fast scan on {len(jobs)} phone(s)"}
+        {
+            "ok": True,
+            "queued": bool(jobs),
+            "jobs": jobs,
+            "skipped": skipped,
+            "job": jobs[0] if jobs else None,
+            "message": f"queued fast scan on {len(jobs)} phone(s)",
+        }
     )
 
 
@@ -793,10 +895,18 @@ def build_app() -> Starlette:
     routes = [
         Route("/", homepage),
         Route("/index.html", homepage),
+        Route("/bumble", bumble_page),
+        Route("/bumble.html", bumble_page),
+        Route("/linkedin", linkedin_page),
+        Route("/linkedin.html", linkedin_page),
         Route("/swipe", swipe_page),
         Route("/swipe.html", swipe_page),
         Route("/api/health", api_health),
         Route("/api/people", api_people),
+        Route("/api/li/people", api_li_people),
+        Route("/api/li/thread", api_li_thread),
+        Route("/api/li/seed", api_li_seed, methods=["POST"]),
+        Route("/api/li/scan", api_li_scan, methods=["POST"]),
         Route("/api/photo", api_photo),
         Route("/api/thread", api_thread),
         Route("/api/queue", api_queue),

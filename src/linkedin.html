@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>LinkedIn inbox</title>
+<style>
+  :root {
+    --bg: #111114;
+    --panel: #1b1b21;
+    --line: #2c2c34;
+    --text: #f2efe8;
+    --muted: #9a9588;
+    --you: #7eb8ff;
+    --them: #2a2a32;
+    --need: #ff8a5b;
+    --wait: #7eb8a4;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    font: 14px/1.4 "Avenir Next", "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: grid;
+    grid-template-rows: auto auto 1fr;
+    min-height: 0;
+  }
+  #phone-warn {
+    padding: 8px 16px;
+    background: #3a2218;
+    color: #ffc4a8;
+    border-bottom: 1px solid #6a3a28;
+    font-size: 13px;
+  }
+  #phone-warn[hidden] { display: none !important; }
+  .phone-col.offline .col-head h2 { color: var(--need); }
+  .topbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: #16161b;
+  }
+  .brand h1 { margin: 0; font-size: 16px; font-weight: 650; color: var(--you); }
+  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+  .brand a { color: inherit; }
+  .top-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1; }
+  #filter {
+    min-width: 160px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  select, button {
+    font: inherit;
+    background: #24242c;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  button:hover { background: #2c2c36; }
+  #queue { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; }
+  #queue button { padding: 2px 6px; font-size: 11px; background: transparent; color: var(--muted); }
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr);
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+  .phone-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border-right: 1px solid var(--line);
+  }
+  .phone-col.toby { --col: #9ecbff; --col-bg: #152232; }
+  .phone-col.archie { --col: #f0c674; --col-bg: #2a2212; }
+  .col-head {
+    flex-shrink: 0;
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--line);
+    background: var(--col-bg);
+  }
+  .col-head h2 { margin: 0; font-size: 15px; color: var(--col); }
+  .col-meta { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+  .col-scroll { flex: 1; min-height: 0; overflow: auto; }
+  .chat {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    padding: 10px 12px;
+    color: inherit;
+  }
+  .chat:hover { background: #1a1a20; }
+  .chat.on { background: #24242c; }
+  .chat .name { font-weight: 650; }
+  .chat .preview { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .chat.need .name { color: var(--need); }
+  .thread {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--panel);
+  }
+  .thread-head {
+    flex-shrink: 0;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .thread-head h2 { margin: 0; font-size: 16px; }
+  .thread-msgs { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; }
+  .bubble {
+    max-width: 86%;
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--them);
+    white-space: pre-wrap;
+  }
+  .bubble.you { margin-left: auto; background: #1d3048; color: #d6e8ff; }
+  .empty { margin: auto; color: var(--muted); padding: 24px; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>LinkedIn inbox</h1>
+    <p id="meta"><a href="/">LeadsAuto</a> · Messaging only · no drafts or CRM</p>
+  </div>
+  <div class="top-tools">
+    <input id="filter" placeholder="Filter names" autocomplete="off"/>
+    <select id="phone-target" title="Which phone Seed/Scan use">
+      <option value="all">Both phones</option>
+      <option value="toby">Toby / Pixel</option>
+      <option value="archie">Archie / Galaxy</option>
+    </select>
+    <button type="button" id="seed" title="Open the first 9 chats on each selected phone">Seed 9</button>
+    <button type="button" id="scan" title="Feed cover, then open unread/changed chats (max 4)">Scan</button>
+    <div id="queue"></div>
+  </div>
+</header>
+<div id="phone-warn" hidden role="status"></div>
+<div class="workspace">
+  <section class="phone-col toby" data-phone="toby">
+    <div class="col-head">
+      <h2>Toby · Pixel</h2>
+      <p class="col-meta" data-col-meta>Loading…</p>
+    </div>
+    <div class="col-scroll" data-chat-list></div>
+  </section>
+  <section class="phone-col archie" data-phone="archie">
+    <div class="col-head">
+      <h2>Archie · Galaxy</h2>
+      <p class="col-meta" data-col-meta>Loading…</p>
+    </div>
+    <div class="col-scroll" data-chat-list></div>
+  </section>
+  <section class="thread">
+    <div class="thread-head">
+      <h2 id="thread-name">Select a chat</h2>
+      <p id="status" class="col-meta"></p>
+    </div>
+    <div class="thread-msgs" id="msgs"><p class="empty">Seed 9 once per account, then Scan when you want a refresh.</p></div>
+  </section>
+</div>
+<script>
+const filterEl = document.getElementById("filter");
+const statusEl = document.getElementById("status");
+const msgsEl = document.getElementById("msgs");
+const nameEl = document.getElementById("thread-name");
+const queueEl = document.getElementById("queue");
+const warnEl = document.getElementById("phone-warn");
+let people = [];
+let phones = [];
+let current = "";
+let currentPhone = "toby";
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+function phoneTarget() { return document.getElementById("phone-target").value || "all"; }
+function jobPhoneLabel(job) {
+  const id = job.phone_id || "toby";
+  const meta = phones.find(p => p.id === id);
+  return (meta && meta.label) || (id === "archie" ? "Archie" : "Toby");
+}
+function jobLabel(job) {
+  const who = "[" + jobPhoneLabel(job) + "] ";
+  if (job.kind === "linkedin_scan") return who + "LinkedIn scan";
+  if (job.kind === "linkedin_seed") return who + "LinkedIn seed";
+  return who + (job.kind || "job");
+}
+
+async function loadPeople() {
+  const res = await fetch("/api/li/people");
+  const data = await res.json();
+  people = data.people || [];
+  phones = data.phones || [];
+  const q = filterEl.value.trim().toLowerCase();
+  for (const col of document.querySelectorAll(".phone-col")) {
+    const pid = col.dataset.phone;
+    const list = col.querySelector("[data-chat-list]");
+    const rows = people.filter(p => p.phone_id === pid && (!q || String(p.name).toLowerCase().includes(q)));
+    col.querySelector("[data-col-meta]").textContent = rows.length + " chat" + (rows.length === 1 ? "" : "s");
+    list.innerHTML = rows.map(p => {
+      const on = current === p.name && currentPhone === p.phone_id ? " on" : "";
+      const need = (p.status === "needs_reply" || p.badge === "unread") ? " need" : "";
+      return `<button type="button" class="chat${on}${need}" data-name="${esc(p.name)}" data-phone="${esc(p.phone_id)}">
+        <div class="name">${esc(p.display_name || p.name)}</div>
+        <div class="preview">${esc(p.last_text || p.preview || "")}</div>
+      </button>`;
+    }).join("") || `<p class="empty">No LinkedIn chats stored yet.</p>`;
+  }
+  document.getElementById("meta").innerHTML =
+    `<a href="/">LeadsAuto</a> · ${people.length} stored · Messaging only`;
+}
+
+async function openThread(name, phone) {
+  current = name;
+  currentPhone = phone;
+  nameEl.textContent = name;
+  const res = await fetch("/api/li/thread?name=" + encodeURIComponent(name) + "&phone=" + encodeURIComponent(phone));
+  const data = await res.json();
+  const msgs = data.messages || [];
+  msgsEl.innerHTML = msgs.length
+    ? msgs.map(m => `<div class="bubble ${m.side === "you" ? "you" : "them"}">${esc(m.body)}</div>`).join("")
+    : `<p class="empty">No messages captured yet. Seed or Scan to open this chat.</p>`;
+  statusEl.textContent = data.status || "";
+  document.querySelectorAll(".chat").forEach(btn => {
+    btn.classList.toggle("on", btn.dataset.name === name && btn.dataset.phone === phone);
+  });
+}
+
+document.querySelector(".workspace").addEventListener("click", e => {
+  const btn = e.target.closest(".chat");
+  if (!btn) return;
+  openThread(btn.dataset.name, btn.dataset.phone);
+});
+filterEl.addEventListener("input", loadPeople);
+
+async function postJob(url) {
+  statusEl.textContent = "Queueing…";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({phone_id: phoneTarget()}),
+  });
+  const data = await res.json();
+  statusEl.textContent = data.message || (data.ok ? "queued" : (data.error || "failed"));
+  pollQueue();
+}
+document.getElementById("seed").addEventListener("click", () => postJob("/api/li/seed"));
+document.getElementById("scan").addEventListener("click", () => postJob("/api/li/scan"));
+
+async function pollQueue() {
+  const res = await fetch("/api/queue");
+  const data = await res.json();
+  const jobs = (data.jobs || []).filter(j =>
+    ["linkedin_scan", "linkedin_seed"].includes(j.kind) &&
+    ["queued", "running"].includes(j.status)
+  );
+  queueEl.innerHTML = jobs.map(j =>
+    `<span>${esc(jobLabel(j))} · ${esc(j.status)}</span>
+     <button type="button" data-cancel="${j.id}">stop</button>`
+  ).join("");
+}
+queueEl.addEventListener("click", async e => {
+  const id = e.target.dataset.cancel;
+  if (!id) return;
+  await fetch("/api/queue/cancel", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({id: Number(id)}),
+  });
+  pollQueue();
+});
+
+async function health() {
+  const res = await fetch("/api/health");
+  const data = await res.json();
+  const offline = data.offline || [];
+  warnEl.hidden = !offline.length;
+  warnEl.textContent = offline.length ? ("Offline: " + offline.join(", ")) : "";
+  document.querySelectorAll(".phone-col").forEach(col => {
+    const meta = (data.phones || []).find(p => p.id === col.dataset.phone);
+    col.classList.toggle("offline", !!(meta && meta.ready && !meta.online));
+  });
+}
+
+loadPeople();
+health();
+pollQueue();
+setInterval(loadPeople, 8000);
+setInterval(health, 15000);
+setInterval(pollQueue, 4000);
+</script>
+</body>
+</html>

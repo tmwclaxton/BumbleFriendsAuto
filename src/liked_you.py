@@ -30,6 +30,28 @@ class LikedYouHit:
     key: str
 
 
+def _person_key(name: str, age: int | None = None) -> str:
+    """Stable identity: name only so 'James' and 'James, 26' don't double-scan."""
+    return (name or "").strip().casefold()
+
+
+def _already_seen(seen: set[str], name: str, age: int | None = None, key: str = "") -> bool:
+    tokens = {_person_key(name, age)}
+    if key:
+        tokens.add(key.casefold())
+        tokens.add(key.split("|", 1)[0].casefold())
+    tokens.discard("")
+    return bool(tokens & seen)
+
+
+def _mark_seen(seen: set[str], name: str, age: int | None = None, key: str = "") -> None:
+    if name:
+        seen.add(_person_key(name, age))
+    if key:
+        seen.add(key.casefold())
+        seen.add(key.split("|", 1)[0].casefold())
+
+
 def _parse_bounds(bounds: str) -> tuple[int, int, int, int] | None:
     m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
     if not m:
@@ -69,6 +91,7 @@ def parse_liked_you_list(xml: str) -> list[LikedYouHit]:
         if box is None:
             continue
         x1, y1, x2, y2 = box
+        best: tuple[int, str, object] | None = None
         for other in root.iter():
             if (other.attrib.get("clickable") or "").lower() != "true":
                 continue
@@ -76,15 +99,15 @@ def parse_liked_you_list(xml: str) -> list[LikedYouHit]:
             if not ob:
                 continue
             if ob[0] <= x1 and ob[1] <= y1 and ob[2] >= x2 and ob[3] >= y2:
-                # Prefer the tightest clickable that still contains the desc node
-                # and is not the whole screen.
                 ow, oh = ob[2] - ob[0], ob[3] - ob[1]
-                if ow < 200 or oh < 80:
+                if ow < 200 or oh < 80 or ow > 2000:
                     continue
-                if ow > 2000:
-                    continue
-                bounds = other.attrib.get("bounds") or bounds
-                clickable = other
+                area = ow * oh
+                if best is None or area < best[0]:
+                    best = (area, other.attrib.get("bounds") or bounds, other)
+        if best is not None:
+            bounds = best[1]
+            clickable = best[2]
         for child in clickable.iter():
             text = (child.attrib.get("text") or "").strip()
             am = _NAME_AGE.match(text)
@@ -95,10 +118,11 @@ def parse_liked_you_list(xml: str) -> list[LikedYouHit]:
         center = _bounds_center(bounds)
         if center is None:
             continue
-        key = f"{name.casefold()}|{age or ''}"
-        if key in seen:
+        key = _person_key(name, age)
+        if key in seen or name.casefold() in seen:
             continue
         seen.add(key)
+        seen.add(name.casefold())
         hits.append(
             LikedYouHit(
                 name=name,
@@ -197,6 +221,7 @@ def run_scan(cfg: dict, serial: str | None = None) -> tuple[bool, str]:
         liked_you_add,
         liked_you_begin_scan,
         liked_you_finish,
+        liked_you_items,
         liked_you_set_message,
         save_liked_thumb,
     )
@@ -226,7 +251,7 @@ def run_scan(cfg: dict, serial: str | None = None) -> tuple[bool, str]:
 
         seen: set[str] = set()
         stagnant = 0
-        while stagnant < 3:
+        while stagnant < 4:
             check_cancel()
             state, xml = _read(device, package)
             if state.kind == ScreenKind.PAYWALL:
@@ -242,15 +267,20 @@ def run_scan(cfg: dict, serial: str | None = None) -> tuple[bool, str]:
                     }
                 )
                 break
+            if state.kind == ScreenKind.LIKED_YOU_CARD:
+                _dismiss_preview(device, package)
+                continue
             if state.kind != ScreenKind.LIKED_YOU:
                 go_to_liked_you(device, xml)
                 continue
             hits = parse_liked_you_list(xml)
-            new_hits = [h for h in hits if h.key not in seen]
-            if not new_hits:
+            hit = next(
+                (h for h in hits if not _already_seen(seen, h.name, h.age, h.key)),
+                None,
+            )
+            if hit is None:
                 info = device.info
                 w, h = int(info["displayWidth"]), int(info["displayHeight"])
-                # Scroll the list.
                 try:
                     device.swipe(w // 2, int(h * 0.78), w // 2, int(h * 0.38), 0.4)
                 except Exception:
@@ -259,73 +289,75 @@ def run_scan(cfg: dict, serial: str | None = None) -> tuple[bool, str]:
                 stagnant += 1
                 continue
             stagnant = 0
-            for hit in new_hits:
-                check_cancel()
-                seen.add(hit.key)
-                liked_you_set_message(f"Opening {hit.name}")
-                tap(device, hit.x, hit.y)
-                wait_idle(device, 1.2)
-                state, xml = _read(device, package)
-                if state.kind == ScreenKind.PAYWALL:
-                    liked_you_add(
-                        {
-                            "id": hit.key,
-                            "name": hit.name,
-                            "age": hit.age,
-                            "proposed": "skip",
-                            "decision": "skip",
-                            "status": "skipped",
-                            "skip_reason": "paywall",
-                            "reason": "paywall",
-                        }
-                    )
-                    _dismiss_preview(device, package)
-                    continue
-                if state.kind != ScreenKind.LIKED_YOU_CARD:
-                    liked_you_add(
-                        {
-                            "id": hit.key,
-                            "name": hit.name,
-                            "age": hit.age,
-                            "proposed": "skip",
-                            "decision": "skip",
-                            "status": "skipped",
-                            "skip_reason": "unopenable",
-                            "reason": f"opened as {state.kind.value}",
-                        }
-                    )
-                    _dismiss_preview(device, package)
-                    continue
-                like, reason, meta = evaluate_card(device, list(state.texts), cfg)
-                vision = dict(meta.get("vision") or {})
-                proposed = "like" if like else "pass"
-                thumb = ""
-                try:
-                    from src.swipe_vision import screenshot_card
-
-                    shot = screenshot_card(device)
-                    thumb = save_liked_thumb(shot, hit.key)
-                    shot.unlink(missing_ok=True)
-                except Exception:
-                    log.debug("liked you thumb skip", exc_info=True)
+            _mark_seen(seen, hit.name, hit.age, hit.key)
+            liked_you_set_message(f"Opening {hit.name}")
+            tap(device, hit.x, hit.y)
+            wait_idle(device, 1.2)
+            state, xml = _read(device, package)
+            if state.kind == ScreenKind.PAYWALL:
                 liked_you_add(
                     {
                         "id": hit.key,
-                        "name": vision.get("name") or hit.name,
+                        "name": hit.name,
                         "age": hit.age,
-                        "gender": vision.get("gender") or "",
-                        "ethnicity": vision.get("ethnicity") or "",
-                        "crazy": vision.get("crazy") or "no",
-                        "proposed": proposed,
-                        "decision": proposed,
-                        "reason": reason,
-                        "status": "pending",
-                        "thumb": thumb,
+                        "proposed": "skip",
+                        "decision": "skip",
+                        "status": "skipped",
+                        "skip_reason": "paywall",
+                        "reason": "paywall",
                     }
                 )
                 _dismiss_preview(device, package)
-        liked_you_finish(f"scanned {len(seen)} Liked You")
-        return True, f"scanned {len(seen)}"
+                continue
+            if state.kind != ScreenKind.LIKED_YOU_CARD:
+                liked_you_add(
+                    {
+                        "id": hit.key,
+                        "name": hit.name,
+                        "age": hit.age,
+                        "proposed": "skip",
+                        "decision": "skip",
+                        "status": "skipped",
+                        "skip_reason": "unopenable",
+                        "reason": f"opened as {state.kind.value}",
+                    }
+                )
+                _dismiss_preview(device, package)
+                continue
+            like, reason, meta = evaluate_card(device, list(state.texts), cfg)
+            vision = dict(meta.get("vision") or {})
+            vision_name = str(vision.get("name") or "").strip()
+            if vision_name:
+                _mark_seen(seen, vision_name)
+            proposed = "like" if like else "pass"
+            thumb = ""
+            try:
+                from src.swipe_vision import screenshot_card
+
+                shot = screenshot_card(device)
+                thumb = save_liked_thumb(shot, hit.key)
+                shot.unlink(missing_ok=True)
+            except Exception:
+                log.debug("liked you thumb skip", exc_info=True)
+            liked_you_add(
+                {
+                    "id": hit.key,
+                    "name": vision_name or hit.name,
+                    "age": hit.age,
+                    "gender": vision.get("gender") or "",
+                    "ethnicity": vision.get("ethnicity") or "",
+                    "crazy": vision.get("crazy") or "no",
+                    "proposed": proposed,
+                    "decision": proposed,
+                    "reason": reason,
+                    "status": "pending",
+                    "thumb": thumb,
+                }
+            )
+            _dismiss_preview(device, package)
+        count = len(liked_you_items())
+        liked_you_finish(f"scanned {count} Liked You")
+        return True, f"scanned {count}"
     except Exception as exc:
         from src.phone_queue import QueueCancelled
 
@@ -427,8 +459,11 @@ def run_go(cfg: dict, serial: str | None = None) -> tuple[bool, str]:
 def _find_hit(xml: str, name: str, key: str) -> LikedYouHit | None:
     want = (name or "").strip().casefold()
     key_cf = (key or "").casefold()
+    key_name = key_cf.split("|", 1)[0] if key_cf else ""
     for hit in parse_liked_you_list(xml):
         if key_cf and hit.key.casefold() == key_cf:
+            return hit
+        if key_name and hit.name.casefold() == key_name:
             return hit
         if want and hit.name.casefold() == want:
             return hit

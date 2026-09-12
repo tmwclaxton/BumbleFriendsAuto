@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS people (
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     phone_id TEXT NOT NULL DEFAULT 'toby',
-    UNIQUE (phone_id, name COLLATE NOCASE)
+    channel TEXT NOT NULL DEFAULT 'bumble',
+    UNIQUE (phone_id, channel, name COLLATE NOCASE)
 );
 
 CREATE TABLE IF NOT EXISTS chats (
@@ -85,6 +86,10 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     _migrate(conn)
+    from src.linkedin_store import ensure_schema as _ensure_li
+
+    _ensure_li(conn)
+    conn.commit()
     return conn
 
 
@@ -148,6 +153,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE people ADD COLUMN crm_sync_attempts INTEGER NOT NULL DEFAULT 0")
     if "crm_sync_next_at" not in people_cols:
         conn.execute("ALTER TABLE people ADD COLUMN crm_sync_next_at TEXT")
+    _migrate_people_channel(conn)
     _backfill_message_until(conn)
     _reapply_dismissals(conn)
     conn.commit()
@@ -158,8 +164,9 @@ def _rebuild_people_unique(conn: sqlite3.Connection) -> None:
     for idx in conn.execute("PRAGMA index_list(people)"):
         if not idx[2]:
             continue
-        cols = [str(r[2]) for r in conn.execute(f"PRAGMA index_info('{idx[1]}')")]
-        if cols == ["phone_id", "name"] or set(cols) == {"phone_id", "name"}:
+        cols = set(str(r[2]) for r in conn.execute(f"PRAGMA index_info('{idx[1]}')"))
+        # Already scoped by phone — including (phone_id, channel, name).
+        if {"phone_id", "name"} <= cols:
             return
     conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute(
@@ -199,6 +206,90 @@ def _rebuild_people_unique(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
 
 
+def normalize_channel(raw: str | None) -> str:
+    val = (raw or "bumble").strip().lower()
+    return val if val in {"bumble", "linkedin"} else "bumble"
+
+
+def _migrate_people_channel(conn: sqlite3.Connection) -> None:
+    cols = {str(row[1]) for row in conn.execute("PRAGMA table_info(people)")}
+    if "channel" not in cols:
+        conn.execute("ALTER TABLE people ADD COLUMN channel TEXT NOT NULL DEFAULT 'bumble'")
+    for idx in conn.execute("PRAGMA index_list(people)"):
+        if not idx[2]:
+            continue
+        icols = [str(r[2]) for r in conn.execute(f"PRAGMA index_info('{idx[1]}')")]
+        if icols == ["phone_id", "channel", "name"] or set(icols) == {"phone_id", "channel", "name"}:
+            return
+    # Unique is still (phone_id, name). Recreate with channel.
+    extra = [c for c in cols if c not in {
+        "id", "name", "location", "distance", "age", "notes", "phone_provided",
+        "ethnicity", "ethnicity_source", "in_contacts", "first_seen_at",
+        "last_seen_at", "phone_id", "channel",
+    }]
+    extra_sql = "".join(f", {c} TEXT" for c in extra if c not in cols)
+    # Keep existing extra columns as-is via SELECT *
+    names = [str(row[1]) for row in conn.execute("PRAGMA table_info(people)")]
+    if "channel" not in names:
+        names.append("channel")
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute(
+        """
+        CREATE TABLE people_ch (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL COLLATE NOCASE,
+            location TEXT,
+            distance TEXT,
+            age INTEGER,
+            notes TEXT,
+            phone_provided INTEGER NOT NULL DEFAULT 0,
+            ethnicity TEXT,
+            ethnicity_source TEXT,
+            in_contacts INTEGER NOT NULL DEFAULT 0,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            phone_id TEXT NOT NULL DEFAULT 'toby',
+            channel TEXT NOT NULL DEFAULT 'bumble',
+            lgs_lead_id INTEGER,
+            crm_sync_fp TEXT,
+            crm_sync_status TEXT NOT NULL DEFAULT 'idle',
+            crm_sync_error TEXT,
+            crm_sync_attempts INTEGER NOT NULL DEFAULT 0,
+            crm_sync_next_at TEXT,
+            UNIQUE (phone_id, channel, name COLLATE NOCASE)
+        )
+        """
+    )
+    have = {str(row[1]) for row in conn.execute("PRAGMA table_info(people)")}
+    def col(name: str, default: str | None = "NULL") -> str:
+        return name if name in have else default
+    conn.execute(
+        f"""
+        INSERT INTO people_ch (
+            id, name, location, distance, age, notes, phone_provided, ethnicity,
+            ethnicity_source, in_contacts, first_seen_at, last_seen_at, phone_id,
+            channel, lgs_lead_id, crm_sync_fp, crm_sync_status, crm_sync_error,
+            crm_sync_attempts, crm_sync_next_at
+        )
+        SELECT
+            id, name, location, distance, age, notes, phone_provided, ethnicity,
+            ethnicity_source, in_contacts, first_seen_at, last_seen_at,
+            IFNULL(phone_id, 'toby'),
+            {col("channel", "'bumble'")},
+            {col("lgs_lead_id")},
+            {col("crm_sync_fp")},
+            {col("crm_sync_status", "'idle'")},
+            {col("crm_sync_error")},
+            {col("crm_sync_attempts", "0")},
+            {col("crm_sync_next_at")}
+        FROM people
+        """
+    )
+    conn.execute("DROP TABLE people")
+    conn.execute("ALTER TABLE people_ch RENAME TO people")
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
 def _scope_phone(phone_id: str | None = None) -> str:
     pid = normalize_phone_id(phone_id) if phone_id else current_phone_id()
     if pid == "all":
@@ -207,20 +298,32 @@ def _scope_phone(phone_id: str | None = None) -> str:
 
 
 def find_person(
-    conn: sqlite3.Connection, name: str, phone_id: str | None = None
+    conn: sqlite3.Connection,
+    name: str,
+    phone_id: str | None = None,
+    *,
+    channel: str | None = "bumble",
 ) -> sqlite3.Row | None:
     name = (name or "").strip()
     if not name:
         return None
     pid = _scope_phone(phone_id)
+    ch = normalize_channel(channel)
+    if ch == "linkedin":
+        from src.linkedin_store import get_person
+
+        return get_person(conn, name, pid)
     row = conn.execute(
-        "SELECT * FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ?",
+        "SELECT * FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ? AND IFNULL(channel, 'bumble') != 'linkedin'",
         (name, pid),
     ).fetchone()
     if row is not None:
         return row
     rows = list(
-        conn.execute("SELECT * FROM people WHERE name = ? COLLATE NOCASE", (name,))
+        conn.execute(
+            "SELECT * FROM people WHERE name = ? COLLATE NOCASE AND IFNULL(channel, 'bumble') != 'linkedin'",
+            (name,),
+        )
     )
     if len(rows) == 1:
         return rows[0]
@@ -597,21 +700,27 @@ def upsert_person(
     distance: str | None = None,
     age: int | None = None,
     notes: str | None = None,
+    channel: str | None = "bumble",
 ) -> int:
+    if normalize_channel(channel) == "linkedin":
+        from src.linkedin_store import upsert_person as li_upsert_person
+
+        return li_upsert_person(conn, name)
     name = name.strip()
     now = _now()
     pid = _scope_phone()
+    ch = "bumble"
     row = conn.execute(
-        "SELECT id FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ?",
-        (name, pid),
+        "SELECT id FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ? AND channel = ?",
+        (name, pid, ch),
     ).fetchone()
     if row is None:
         cur = conn.execute(
             """
-            INSERT INTO people (name, phone_id, location, distance, age, notes, first_seen_at, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO people (name, phone_id, channel, location, distance, age, notes, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (name, pid, location, distance, age, notes, now, now),
+            (name, pid, ch, location, distance, age, notes, now, now),
         )
         return int(cur.lastrowid)
     fields: list[str] = ["last_seen_at = ?"]
@@ -1091,17 +1200,20 @@ def _resync_chat_heads(conn: sqlite3.Connection) -> None:
 
 def namesake_meta(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
     """How to tell same-name people apart in the inbox / MCP."""
-    groups: dict[tuple[str, str], list[str]] = {}
-    for row in conn.execute("SELECT name, phone_id FROM people"):
+    groups: dict[tuple[str, str, str], list[str]] = {}
+    people_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(people)")}
+    channel_sql = " AND IFNULL(channel, 'bumble') != 'linkedin'" if "channel" in people_cols else ""
+    for row in conn.execute(f"SELECT name, phone_id FROM people WHERE 1=1{channel_sql}"):
         name = str(row["name"])
         pid = str(row["phone_id"] or DEFAULT_PHONE_ID)
-        groups.setdefault((pid, base_person_name(name)), []).append(name)
+        ch = "bumble"
+        groups.setdefault((pid, ch, base_person_name(name)), []).append(name)
     out: dict[str, dict[str, object]] = {}
-    for (pid, base), names in groups.items():
+    for (pid, ch, base), names in groups.items():
         count = len(names)
         for name in names:
             loc = conn.execute(
-                "SELECT location FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ?",
+                "SELECT location FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ? AND IFNULL(channel, 'bumble') != 'linkedin'",
                 (name, pid),
             ).fetchone()
             location = (loc["location"] or "").strip() if loc else ""
@@ -1111,10 +1223,10 @@ def namesake_meta(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
                     """
                     SELECT m.body FROM messages m
                     JOIN people p ON p.id = m.person_id
-                    WHERE p.name = ? AND p.phone_id = ? AND m.side = 'them'
+                    WHERE p.name = ? AND p.phone_id = ? AND p.channel = ? AND m.side = 'them'
                     ORDER BY m.id
                     """,
-                    (name, pid),
+                    (name, pid, ch),
                 )
                 if not _is_thread_chrome(str(r[0])) and len(str(r[0]).strip()) > 2
             ]
@@ -1125,9 +1237,10 @@ def namesake_meta(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
                 chat = conn.execute(
                     """
                     SELECT c.last_text, c.preview FROM chats c
-                    JOIN people p ON p.id = c.person_id WHERE p.name = ? AND p.phone_id = ?
+                    JOIN people p ON p.id = c.person_id
+                    WHERE p.name = ? AND p.phone_id = ? AND p.channel = ?
                     """,
-                    (name, pid),
+                    (name, pid, ch),
                 ).fetchone()
                 hint = ((chat["last_text"] or chat["preview"] or "") if chat else "").strip()
             hint = " ".join(hint.split())
@@ -1141,8 +1254,10 @@ def namesake_meta(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
                 "same_name_count": count,
                 "phone_id": pid,
             }
-            out[f"{pid}:{name}"] = payload
-            out.setdefault(name, payload)
+            out[f"{pid}:{ch}:{name}"] = payload
+            if ch == "bumble":
+                out[f"{pid}:{name}"] = payload
+                out.setdefault(name, payload)
     return out
 
 
@@ -1364,8 +1479,22 @@ def upsert_chat(
     distance: str | None = None,
     age: int | None = None,
     list_time: str | None = None,
+    channel: str | None = "bumble",
 ) -> int:
-    person_id = upsert_person(conn, name, location=location, distance=distance, age=age)
+    if normalize_channel(channel) == "linkedin":
+        from src.linkedin_store import upsert_chat as li_upsert_chat
+
+        return li_upsert_chat(
+            conn,
+            name,
+            preview=preview,
+            badge=badge,
+            last_from=last_from,
+            last_text=last_text,
+        )
+    person_id = upsert_person(
+        conn, name, location=location, distance=distance, age=age, channel="bumble"
+    )
     existing = conn.execute(
         "SELECT preview, badge, last_from, last_text, opener_sent, dismissed_reply_text, message_until, last_active_at FROM chats WHERE person_id = ?",
         (person_id,),
@@ -2003,14 +2132,20 @@ def auto_draft_fields(row: sqlite3.Row | dict) -> dict[str, object]:
     }
 
 
-def list_thread(conn: sqlite3.Connection, name: str) -> list[sqlite3.Row]:
+def list_thread(
+    conn: sqlite3.Connection, name: str, *, channel: str | None = "bumble"
+) -> list[sqlite3.Row]:
+    if normalize_channel(channel) == "linkedin":
+        from src.linkedin_store import list_thread as list_li_thread
+
+        return list_li_thread(conn, name)
     return list(
         conn.execute(
             """
             SELECT m.side, m.body, m.captured_at
             FROM messages m
             JOIN people p ON p.id = m.person_id
-            WHERE p.name = ? AND p.phone_id = ?
+            WHERE p.name = ? AND p.phone_id = ? AND IFNULL(p.channel, 'bumble') != 'linkedin'
             ORDER BY m.id
             """,
             (name, _scope_phone()),
@@ -2099,11 +2234,19 @@ def is_new_friend(row: sqlite3.Row | dict) -> bool:
     return n == 0 and not last
 
 
-def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def list_people(conn: sqlite3.Connection, *, channel: str | None = "bumble") -> list[sqlite3.Row]:
+    if normalize_channel(channel) == "linkedin":
+        from src.linkedin_store import list_people as list_li_people
+
+        return list_li_people(conn)
     refresh_phone_flags(conn)
+    people_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(people)")}
+    channel_filter = (
+        "AND IFNULL(p.channel, 'bumble') != 'linkedin'" if "channel" in people_cols else ""
+    )
     return list(
         conn.execute(
-            """
+            f"""
             SELECT p.name, p.phone_id, p.location, p.distance, p.age, p.phone_provided, p.ethnicity,
                    p.ethnicity_source, p.in_contacts, p.lgs_lead_id,
                    c.badge, c.status, c.last_from, c.last_text, c.preview,
@@ -2114,6 +2257,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    (SELECT COUNT(*) FROM messages m WHERE m.person_id = p.id) AS message_count
             FROM people p
             LEFT JOIN chats c ON c.person_id = p.id
+            WHERE 1=1 {channel_filter}
             ORDER BY
                 CASE c.status
                     WHEN 'needs_reply' THEN 0
@@ -2124,7 +2268,7 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                     ELSE 5
                 END,
                 p.name COLLATE NOCASE
-            """
+            """,
         )
     )
 
@@ -2153,6 +2297,7 @@ def list_needs_reply(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             WHERE c.status = 'needs_reply'
               AND IFNULL(c.in_group, 0) = 0
               AND IFNULL(c.archived, 0) = 0
+              AND IFNULL(p.channel, 'bumble') != 'linkedin'
             ORDER BY p.name COLLATE NOCASE
             """
         )

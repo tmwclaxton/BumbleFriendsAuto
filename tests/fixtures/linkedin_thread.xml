@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="com.linkedin.android" class="android.widget.FrameLayout" bounds="[0,0][1080,2400]">
+    <node resource-id="com.linkedin.android:id/toolbar_title" text="Grace Hopper" bounds="[80,80][600,160]"/>
+    <node text="Can you send the deck?" content-desc="Incoming message" bounds="[40,400][700,500]"/>
+    <node text="Yes — I'll email it tonight" content-desc="You sent" resource-id="com.linkedin.android:id/outgoing_text" bounds="[380,520][1040,620]"/>
+    <node text="Write a message" bounds="[40,2200][900,2320]"/>
+  </node>
+</hierarchy>

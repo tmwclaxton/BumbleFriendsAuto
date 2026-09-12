@@ -30,6 +30,8 @@ _INBOX_KINDS = {
     "swipe",
     "liked_you_scan",
     "liked_you_run",
+    "linkedin_scan",
+    "linkedin_seed",
     "unmatch_expired",
     "rematch_expired",
     "whatsapp_group",
@@ -97,6 +99,57 @@ def running_cancelled(phone_id: str | None = None) -> bool:
 def check_cancel() -> None:
     if running_cancelled():
         raise QueueCancelled("cancelled")
+
+
+BUMBLE_OCCUPY = frozenset(
+    {
+        "recapture_all",
+        "fast_scan",
+        "refresh",
+        "refresh_new_friends",
+        "swipe",
+        "liked_you_scan",
+        "liked_you_run",
+        "message_new_friends",
+        "unmatch",
+        "unmatch_expired",
+        "rematch",
+        "rematch_expired",
+        "grab_photos",
+        "reply",
+    }
+)
+LINKEDIN_OCCUPY = frozenset({"linkedin_scan", "linkedin_seed"})
+
+
+def cron_skip_reason(phone_id: str, incoming_channel: str) -> str | None:
+    """If cron should not enqueue incoming_channel on this phone, return why."""
+    pid = phone_id or DEFAULT_PHONE_ID
+    occupy = set()
+    for job in queue_snapshot():
+        if str(job.get("phone_id") or "") != pid:
+            continue
+        if job.get("status") not in {"queued", "running"}:
+            continue
+        occupy.add(str(job.get("kind") or ""))
+    if incoming_channel == "linkedin" and occupy & BUMBLE_OCCUPY:
+        return "waiting for Bumble job"
+    if incoming_channel == "bumble" and occupy & LINKEDIN_OCCUPY:
+        return "waiting for LinkedIn job"
+    return None
+
+
+def enqueue_cron(kind: str, *, channel: str, phone_id: str | None = "all") -> tuple[list[dict], list[dict]]:
+    """Enqueue occupying jobs only on phones the other channel is not using."""
+    jobs: list[dict] = []
+    skipped: list[dict] = []
+    for pid in expand_phone_ids(phone_id):
+        reason = cron_skip_reason(pid, channel)
+        if reason:
+            skipped.append({"phone_id": pid, "reason": reason})
+            continue
+        jobs.append(enqueue(kind, phone_id=pid))
+    return jobs, skipped
 
 
 def queue_snapshot() -> list[dict]:
@@ -416,6 +469,12 @@ def _run_job(job: dict) -> tuple[bool, str]:
         if kind == "liked_you_scan":
             return run_scan(cfg, serial=serial)
         return run_go(cfg, serial=serial)
+    if kind in {"linkedin_scan", "linkedin_seed"}:
+        from src.linkedin_sync import run_scan, run_seed
+
+        if kind == "linkedin_seed":
+            return run_seed(load_config(), serial=serial, phone_id=pid)
+        return run_scan(load_config(), serial=serial, phone_id=pid)
     if kind == "add_contact":
         if pid != DEFAULT_PHONE_ID:
             return False, "add_contact is Pixel/Toby only"
