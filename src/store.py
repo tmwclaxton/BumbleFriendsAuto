@@ -707,6 +707,14 @@ def upsert_person(
 
         return li_upsert_person(conn, name)
     name = name.strip()
+    from src.linkedin_store import is_linkedin_ui_name
+
+    if is_linkedin_ui_name(name):
+        row = conn.execute(
+            "SELECT id FROM people WHERE name = ? COLLATE NOCASE AND phone_id = ? AND channel = ?",
+            (name, _scope_phone(), "bumble"),
+        ).fetchone()
+        return int(row["id"]) if row else 0
     now = _now()
     pid = _scope_phone()
     ch = "bumble"
@@ -1495,6 +1503,8 @@ def upsert_chat(
     person_id = upsert_person(
         conn, name, location=location, distance=distance, age=age, channel="bumble"
     )
+    if not person_id:
+        return 0
     existing = conn.execute(
         "SELECT preview, badge, last_from, last_text, opener_sent, dismissed_reply_text, message_until, last_active_at FROM chats WHERE person_id = ?",
         (person_id,),
@@ -1887,6 +1897,8 @@ def replace_thread(
     messages: list[tuple[str, str]],
 ) -> None:
     """Replace stored transcript with a chronological (oldest-first) capture."""
+    if not person_id:
+        return
     prev = [
         (str(r["side"]), str(r["body"]))
         for r in conn.execute(

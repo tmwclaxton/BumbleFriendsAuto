@@ -342,6 +342,8 @@ def _tap_chats_tab(device) -> bool:
 
 def recover_to_list(device, package: str) -> str:
     """Leave threads/profiles and land on the Chats inbox. Never tap the composer."""
+    from src.device import current_package
+    from src.linkedin_screen import hierarchy_is_linkedin
     from src.unlock import hierarchy_looks_locked, screen_lock_state, wake_and_unlock
 
     device.shell("cmd statusbar collapse")
@@ -354,6 +356,13 @@ def recover_to_list(device, package: str) -> str:
         wait_idle(device, 0.8)
         xml = dump_hierarchy(device)
     for attempt in range(8):
+        pkg = current_package(device, xml)
+        if hierarchy_is_linkedin(xml) or "linkedin" in (pkg or "").lower():
+            log.warning("LinkedIn on screen during Bumble recover — returning to %s", package)
+            bring_app_foreground(device, package)
+            wait_idle(device, 1.2)
+            xml = dump_hierarchy(device)
+            continue
         if any(rid in xml for rid in _SEARCH_FIELD_RIDS):
             log.info("leave chats search (%d)", attempt)
             device.press("back")
@@ -1298,7 +1307,7 @@ def _save_name_for_thread(
     )
 
     matched = match_face_to_namesakes(face, partner, conn=conn) if face is not None else None
-    if matched:
+    if matched and not (not them_new and _is_established_namesake(conn, matched)):
         log.info("namesake %s identified as %s by photo", partner, matched)
         _remember_face(matched, face)
         return matched
@@ -1326,19 +1335,20 @@ def _save_name_for_thread(
             log.info("empty/expired %s is a new face → %s", partner, save_as)
             return save_as
     if not them_new:
-        for alias in stubs:
-            if alias.casefold() == partner.casefold():
-                _remember_face(alias, face)
-                return alias
-        if stubs:
-            _remember_face(stubs[0], face)
-            return stubs[0]
-        for alias in aliases:
-            if alias.casefold() == partner.casefold():
-                _remember_face(alias, face)
-                return alias
-        _remember_face(aliases[0], face)
-        return aliases[0]
+        attachable = [a for a in aliases if not _is_established_namesake(conn, a)]
+        pool = [a for a in attachable if a in stubs] or attachable
+        if pool:
+            for alias in pool:
+                if alias.casefold() == partner.casefold():
+                    _remember_face(alias, face)
+                    return alias
+            _remember_face(pool[0], face)
+            return pool[0]
+        save_as = next_duplicate_name(conn, partner)
+        if face is not None:
+            save_face_image(face, save_as)
+        log.info("empty new-friend %s is not the stored chat → %s", partner, save_as)
+        return save_as
     # New them-text, existing row is still a stub → fill that row rather than clone.
     for alias in stubs:
         if alias.casefold() == partner.casefold():
@@ -2585,15 +2595,41 @@ def _people_names(conn) -> set[str]:
     return {str(r[0]) for r in conn.execute("SELECT name FROM people")}
 
 
-def _new_friend_already_saved(conn, name: str) -> bool:
-    if name in names_with_messages(conn):
+def _is_established_namesake(conn, name: str) -> bool:
+    """True for a past chat / dismissed person, not a blank New-friends stub."""
+    if _them_bodies(conn, name):
         return True
+    from src.phones import current_phone_id
+
+    row = conn.execute(
+        """
+        SELECT c.status,
+               (SELECT COUNT(*) FROM messages m WHERE m.person_id = p.id) AS n
+        FROM people p
+        LEFT JOIN chats c ON c.person_id = p.id
+        WHERE p.name = ? COLLATE NOCASE AND p.phone_id = ?
+        """,
+        (name, current_phone_id()),
+    ).fetchone()
+    if row is None:
+        return False
+    if (row["status"] or "") in ("dismissed", "expired"):
+        return True
+    return int(row["n"] or 0) >= 2
+
+
+def _new_friend_already_saved(conn, name: str) -> bool:
+    if _is_established_namesake(conn, name):
+        return False
+    from src.phones import current_phone_id
+
     row = conn.execute(
         """
         SELECT c.last_text, c.message_until FROM chats c
-        JOIN people p ON p.id = c.person_id WHERE p.name = ?
+        JOIN people p ON p.id = c.person_id
+        WHERE p.name = ? COLLATE NOCASE AND p.phone_id = ?
         """,
-        (name,),
+        (name, current_phone_id()),
     ).fetchone()
     if row is None:
         return False

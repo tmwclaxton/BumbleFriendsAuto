@@ -6,9 +6,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from src.phones import phone_scope
 from src.store import connect, namesake_same_person, replace_thread, upsert_chat
 from src.sync_chats import (
     _list_row_key,
+    _new_friend_already_saved,
+    _save_name_for_thread,
     namesake_identity_from_screen,
     namesake_screen_scores,
 )
@@ -105,6 +108,39 @@ class ExpiredNamesakeSplitTests(unittest.TestCase):
         live = _list_row_key({"name": "Hannah", "preview": "Yea it’s my fav!"})
         dead = _list_row_key({"name": "Hannah", "preview": "Match expired"})
         self.assertNotEqual(live, dead)
+
+
+class EmptyNewFriendNamesakeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = connect(Path(self.tmp.name) / "t.db")
+        self.scope = phone_scope("toby")
+        self.scope.__enter__()
+
+    def tearDown(self):
+        self.scope.__exit__(None, None, None)
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_empty_strip_does_not_reuse_past_hannah(self):
+        hid = upsert_chat(self.conn, "Hannah", last_from="them", last_text="Can't do tomorrow")
+        replace_thread(
+            self.conn,
+            hid,
+            [("them", "Can't do tomorrow"), ("you", "no worries")],
+        )
+        self.conn.execute("UPDATE chats SET status = 'dismissed' WHERE person_id = ?", (hid,))
+        self.conn.commit()
+        self.assertFalse(_new_friend_already_saved(self.conn, "Hannah"))
+        self.assertEqual(_save_name_for_thread(self.conn, "Hannah", []), "Hannah 2")
+
+    def test_recapture_reuses_existing_new_friend_stub(self):
+        hid = upsert_chat(self.conn, "Hannah", last_from="them", last_text="old chat")
+        replace_thread(self.conn, hid, [("them", "old chat"), ("you", "ok")])
+        upsert_chat(self.conn, "Hannah 2", message_until="2026-09-20T12:00:00+00:00")
+        self.conn.commit()
+        self.assertTrue(_new_friend_already_saved(self.conn, "Hannah 2"))
+        self.assertEqual(_save_name_for_thread(self.conn, "Hannah", []), "Hannah 2")
 
 
 if __name__ == "__main__":

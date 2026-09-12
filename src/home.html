@@ -6,64 +6,146 @@
 <title>LeadsAuto</title>
 <style>
   :root {
-    --bg: #111114;
-    --panel: #1b1b21;
-    --line: #2c2c34;
-    --text: #f2efe8;
-    --muted: #9a9588;
-    --you: #e8c547;
-    --li: #7eb8ff;
+    --bg: #0e0d0b;
+    --text: #f6f1e4;
+    --muted: #a89c86;
+    --line: #322c22;
+    --you: #f0c94a;
+    --you-deep: #c89a14;
+    --li: #70b5ff;
+    --li-deep: #0a66c2;
+    --shadow: 0 22px 48px #05030266;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+  html, body { height: 100%; margin: 0; }
   body {
-    font: 16px/1.45 "Avenir Next", "Segoe UI", sans-serif;
     min-height: 100vh;
+    min-height: 100dvh;
+    font: 16px/1.5 "Avenir Next", "Segoe UI", sans-serif;
+    color: var(--text);
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 32px 20px;
+    padding: 36px 20px;
+    background:
+      radial-gradient(900px 420px at 12% -16%, #f0c94a26, transparent 55%),
+      radial-gradient(800px 400px at 92% 0%, #0a66c233, transparent 50%),
+      #0e0d0b;
   }
-  h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: 0.02em; }
-  .sub { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(180deg, #f6d56a, var(--you-deep));
+    color: #1a1508;
+    font: 800 16px/1 "Segoe UI", sans-serif;
+    box-shadow: 0 8px 18px #c89a1455;
+  }
+  h1 { margin: 0; font-size: 28px; letter-spacing: -0.02em; }
+  .sub {
+    color: var(--muted);
+    margin: 0 0 32px;
+    font-size: 14px;
+    text-align: center;
+    max-width: 420px;
+  }
   .cards {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 16px;
-    width: min(720px, 100%);
+    width: min(980px, 100%);
   }
   a.card {
-    display: block;
+    display: flex;
+    flex-direction: column;
     text-decoration: none;
     color: inherit;
-    background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 28px 22px;
-    min-height: 160px;
+    border-radius: 18px;
+    padding: 26px 24px 24px;
+    min-height: 210px;
+    background: #17140fcc;
+    box-shadow: var(--shadow);
+    transition: border-color 0.15s, transform 0.15s, background 0.15s;
   }
-  a.card:hover { border-color: #4a4a56; background: #22222a; }
-  a.card h2 { margin: 0 0 8px; font-size: 20px; }
+  a.card:hover { transform: translateY(-2px); }
+  a.card.bumble:hover { border-color: #8a6f28; background: #221c12; }
+  a.card.jobs:hover { border-color: #4a4030; background: #1b1813; }
+  a.card.li:hover { border-color: #2d5688; background: #121c2c; }
+  .icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    font: 800 14px/1 "Segoe UI", sans-serif;
+    margin-bottom: 16px;
+  }
+  a.card.bumble .icon {
+    background: linear-gradient(180deg, #f6d56a, var(--you-deep));
+    color: #1a1508;
+  }
+  a.card.jobs .icon {
+    background: linear-gradient(180deg, #3a3428, #1c1914);
+    color: var(--text);
+    border: 1px solid #4a4030;
+  }
+  a.card.li .icon {
+    background: linear-gradient(180deg, #3d9eff, var(--li-deep));
+    color: #fff;
+  }
+  a.card h2 { margin: 0 0 8px; font-size: 20px; letter-spacing: -0.02em; }
   a.card.bumble h2 { color: var(--you); }
+  a.card.jobs h2 { color: var(--text); }
   a.card.li h2 { color: var(--li); }
-  a.card p { margin: 0; color: var(--muted); font-size: 13px; }
-  @media (max-width: 640px) {
+  a.card p { margin: 0; color: var(--muted); font-size: 13.5px; flex: 1; }
+  a.card .go {
+    margin-top: 18px;
+    font-size: 13px;
+    font-weight: 650;
+  }
+  a.card.bumble .go { color: var(--you); }
+  a.card.jobs .go { color: var(--muted); }
+  a.card.li .go { color: var(--li); }
+  @media (max-width: 800px) {
     .cards { grid-template-columns: 1fr; }
+    a.card { min-height: 0; }
   }
 </style>
 </head>
 <body>
-  <h1>LeadsAuto</h1>
-  <p class="sub">Toby / Pixel and Archie / Galaxy — pick a channel</p>
+  <div class="brand">
+    <div class="mark" aria-hidden="true">LA</div>
+    <h1>LeadsAuto</h1>
+  </div>
+  <p class="sub">Toby · Pixel and Archie · Galaxy. Pick a channel, or watch both queues.</p>
   <div class="cards">
     <a class="card bumble" href="/bumble">
+      <div class="icon" aria-hidden="true">B</div>
       <h2>Bumble Friends</h2>
-      <p>Inbox, drafts, New friends, swipe desk. Same two-phone pipeline as before.</p>
+      <p>Inbox, drafts, New friends, CRM, and the swipe desk — the two-phone pipeline.</p>
+      <span class="go">Open inbox →</span>
+    </a>
+    <a class="card jobs" href="/jobs">
+      <div class="icon" aria-hidden="true">Q</div>
+      <h2>Phone jobs</h2>
+      <p>See queued work on each phone, and when Bumble and LinkedIn wait for each other.</p>
+      <span class="go">Open queues →</span>
     </a>
     <a class="card li" href="/linkedin">
+      <div class="icon" aria-hidden="true">in</div>
       <h2>LinkedIn</h2>
-      <p>Messaging list only. Slow scans, feed cover first. No drafts or CRM yet.</p>
+      <p>Messaging capture and scan. Older chats come in slowly in the evening.</p>
+      <span class="go">Open inbox →</span>
     </a>
   </div>
 </body>

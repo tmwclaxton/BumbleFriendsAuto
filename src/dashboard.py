@@ -33,6 +33,12 @@ from src.store import (
 log = logging.getLogger(__name__)
 
 _HTML_PATH = Path(__file__).with_name("dashboard.html")
+_PRODUCT_STATIC = Path(__file__).with_name("static") / "products"
+_PRODUCT_FILES = {
+    "snitch.svg": "image/svg+xml",
+    "grantgunner.svg": "image/svg+xml",
+    "canvassr.png": "image/png",
+}
 _PID_PATH = ROOT / "data" / "dashboard.pid"
 _LOG_PATH = ROOT / "data" / "dashboard.log"
 _ENV_SUPERVISOR = "BFF_DASHBOARD_SUPERVISOR"
@@ -76,7 +82,10 @@ def _unauthorized(handler: BaseHTTPRequestHandler) -> None:
 
 
 def _norm_body(text: str) -> str:
-    return " ".join((text or "").split()).casefold()
+    raw = (text or "").strip()
+    if raw[:4].casefold() == "you:":
+        raw = raw[4:].strip()
+    return " ".join(raw.split()).casefold()
 
 
 def _is_day_label(text: str) -> bool:
@@ -103,24 +112,57 @@ def _thread_payload(conn, name: str, phone_id: str | None = None, *, channel: st
     pid = phone_id or current_phone_id() or DEFAULT_PHONE_ID
     ch = normalize_channel(channel)
     if ch == "linkedin":
-        from src.linkedin_store import get_person, list_thread as list_li_thread
+        from src.linkedin_store import get_person, list_thread as list_li_thread, public_profile_href
+        from src.linkedin_screen import inmail_kind, is_thread_chrome, looks_like_inmail_promo, polish_message, sender_stamp_side
 
         row = get_person(conn, name, pid)
-        msgs = [
-            {"side": r["side"], "body": r["body"], "from_preview": False}
-            for r in list_li_thread(conn, name, pid)
-            if (r["body"] or "").strip()
-        ]
+        msgs = []
+
+        pending = None
+        for r in list_li_thread(conn, name, pid):
+            body = (r["body"] or "").strip()
+            if not body:
+                continue
+            stamp = sender_stamp_side(body)
+            if stamp is not None or is_thread_chrome(body, name):
+                if stamp is not None:
+                    pending = stamp
+                continue
+            side = pending or str(r["side"])
+            pending = None
+            side, body = polish_message(side, body, name)
+            when = r["captured_at"] if "captured_at" in r.keys() else ""
+            msgs.append(
+                {
+                    "side": side,
+                    "body": body,
+                    "from_preview": False,
+                    "captured_at": when.split("#", 1)[0] if when else "",
+                }
+            )
+        spam = str(row["spam"] or "") if row is not None and "spam" in row.keys() else ""
+        spam_reason = str(row["spam_reason"] or "") if row is not None and "spam_reason" in row.keys() else ""
+        archived = bool(row["archived"]) if row is not None and "archived" in row.keys() else False
         if row is None:
             return {
                 "name": name,
                 "phone_id": pid,
+                "profile_url": public_profile_href(name),
                 "messages": msgs,
                 "status": "unknown",
                 "draft": "",
                 "message_until": None,
                 "in_group": False,
+                "headline": "",
+                "verified": False,
                 "archived": False,
+                "spam": "",
+                "spam_reason": "",
+                "spam_fp": "",
+                "product": "",
+                "product_reason": "",
+                "product_fp": "",
+                "inmail_kind": "",
                 "draft_status": "idle",
                 "draft_error": "",
                 "draft_attempts": 0,
@@ -129,25 +171,52 @@ def _thread_payload(conn, name: str, phone_id: str | None = None, *, channel: st
         extras: list[str] = []
         for candidate in (row["last_text"], row["preview"]):
             text = (candidate or "").strip()
-            if text and text not in extras:
-                extras.append(text)
+            if not text or text in extras:
+                continue
+            promo = looks_like_inmail_promo(text)
+            if is_thread_chrome(text, name) and not promo:
+                continue
+            if promo and (msgs or extras):
+                continue
+            extras.append(text)
         for text in extras:
             if _preview_already_in_thread(text, msgs):
                 continue
             msgs.append({"side": row["last_from"] or "them", "body": text, "from_preview": True})
+        headline = str(row["headline"] or "") if "headline" in row.keys() else ""
+        verified = bool(row["verified"]) if "verified" in row.keys() else False
         return {
             "name": row["name"] or name,
             "phone_id": row["phone_id"] if "phone_id" in row.keys() else pid,
+            "profile_url": public_profile_href(
+                row["name"] or name,
+                row["profile_url"] if "profile_url" in row.keys() else "",
+            ),
+            "headline": headline,
+            "verified": verified,
+            "about": str(row["about"] or "") if "about" in row.keys() else "",
+            "location": str(row["location"] or "") if "location" in row.keys() else "",
+            "title": str(row["title"] or "") if "title" in row.keys() else "",
+            "posts_json": str(row["posts_json"] or "") if "posts_json" in row.keys() else "",
+            "profile_captured_at": str(row["profile_captured_at"] or "") if "profile_captured_at" in row.keys() else "",
+            "profile_fp": str(row["profile_fp"] or "") if "profile_fp" in row.keys() else "",
             "messages": msgs,
             "status": row["status"] or "unknown",
-            "draft": "",
+            "draft": str(row["draft"] or "") if "draft" in row.keys() else "",
             "message_until": None,
             "in_group": False,
-            "archived": False,
-            "draft_status": "idle",
-            "draft_error": "",
-            "draft_attempts": 0,
-            "draft_pending": False,
+            "archived": archived,
+            "spam": spam,
+            "spam_reason": spam_reason,
+            "spam_fp": str(row["spam_fp"] or "") if "spam_fp" in row.keys() else "",
+            "product": str(row["product"] or "") if "product" in row.keys() else "",
+            "product_reason": str(row["product_reason"] or "") if "product_reason" in row.keys() else "",
+            "product_fp": str(row["product_fp"] or "") if "product_fp" in row.keys() else "",
+            "inmail_kind": inmail_kind(row["preview"], row["last_text"]),
+            "draft_status": str(row["draft_status"] or "idle") if "draft_status" in row.keys() else "idle",
+            "draft_error": str(row["draft_error"] or "") if "draft_error" in row.keys() else "",
+            "draft_attempts": int(row["draft_attempts"] or 0) if "draft_attempts" in row.keys() else 0,
+            "draft_pending": bool(row["draft_pending_fp"]) if "draft_pending_fp" in row.keys() else False,
         }
     row = conn.execute(
         """
@@ -218,7 +287,8 @@ def people_api_payload(conn, *, channel: str = "bumble") -> dict:
     from src.phones import public_phones
 
     if channel == "linkedin":
-        from src.linkedin_store import list_people as list_li
+        from src.linkedin_screen import inmail_kind
+        from src.linkedin_store import list_people as list_li, public_profile_href
 
         cfg = load_config()
         phone_meta = {p["id"]: p for p in public_phones(cfg)}
@@ -233,14 +303,38 @@ def people_api_payload(conn, *, channel: str = "bumble") -> dict:
                     "phone_device": (phone_meta.get(pid) or {}).get("device") or "",
                     "display_name": row["name"],
                     "status": row["status"] or "unknown",
+                    "badge": row["badge"] if "badge" in row.keys() else "",
                     "last_from": row["last_from"],
                     "last_text": row["last_text"],
                     "preview": row["preview"],
+                    "updated_at": row["updated_at"] if "updated_at" in row.keys() else "",
+                    "message_count": row["message_count"] if "message_count" in row.keys() else 0,
+                    "profile_url": public_profile_href(
+                        row["name"],
+                        row["profile_url"] if "profile_url" in row.keys() else "",
+                    ),
+                    "headline": str(row["headline"] or "") if "headline" in row.keys() else "",
+                    "about": str(row["about"] or "") if "about" in row.keys() else "",
+                    "location": str(row["location"] or "") if "location" in row.keys() else "",
+                    "title": str(row["title"] or "") if "title" in row.keys() else "",
+                    "posts_json": str(row["posts_json"] or "") if "posts_json" in row.keys() else "",
+                    "profile_captured_at": str(row["profile_captured_at"] or "") if "profile_captured_at" in row.keys() else "",
+                    "profile_fp": str(row["profile_fp"] or "") if "profile_fp" in row.keys() else "",
+                    "verified": bool(row["verified"]) if "verified" in row.keys() else False,
                     "new_friend": False,
                     "photo": False,
                     "dismissed": False,
                     "in_group": False,
-                    "archived": False,
+                    "archived": bool(row["archived"]) if "archived" in row.keys() else False,
+                    "spam": str(row["spam"] or "") if "spam" in row.keys() else "",
+                    "spam_reason": str(row["spam_reason"] or "") if "spam_reason" in row.keys() else "",
+                    "product": str(row["product"] or "") if "product" in row.keys() else "",
+                    "product_reason": str(row["product_reason"] or "") if "product_reason" in row.keys() else "",
+                    "draft": str(row["draft"] or "") if "draft" in row.keys() else "",
+                    "draft_status": str(row["draft_status"] or "idle") if "draft_status" in row.keys() else "idle",
+                    "draft_error": str(row["draft_error"] or "") if "draft_error" in row.keys() else "",
+                    "inmail_kind": inmail_kind(row["preview"], row["last_text"]),
+                    "lgs_lead_id": row["lgs_lead_id"] if "lgs_lead_id" in row.keys() else None,
                 }
             )
         return {"people": people, "new_friends": [], "phones": list(phone_meta.values())}
@@ -431,6 +525,21 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path in {"/linkedin", "/linkedin.html"}:
             self._html(Path(__file__).with_name("linkedin.html"))
             return
+        if parsed.path.startswith("/static/products/"):
+            name = Path(parsed.path).name
+            ctype = _PRODUCT_FILES.get(name)
+            path = _PRODUCT_STATIC / name
+            if not ctype or not path.is_file():
+                self.send_error(404)
+                return
+            data = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if parsed.path == "/api/people":
             conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
             try:
@@ -444,6 +553,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(people_api_payload(conn, channel="linkedin"))
             finally:
                 conn.close()
+            return
+        if parsed.path == "/api/li/session/prefs":
+            from src.jobs.linkedin_session_cron import due_map
+            from src.linkedin_session import load_audit, load_prefs
+
+            self._json({"ok": True, "prefs": load_prefs(), "due": due_map(), "audit": load_audit()[-8:]})
             return
         if parsed.path == "/api/li/thread":
             qs = parse_qs(parsed.query)
@@ -459,20 +574,31 @@ class Handler(BaseHTTPRequestHandler):
                 with phone_scope(phone_id):
                     payload = _thread_payload(conn, name, phone_id, channel="linkedin")
                 payload["phone_id"] = phone_id or payload.get("phone_id") or ""
+                from src.linkedin_product import needs_product_check, schedule_product_check
+
+                pairs = [(str(m.get("side") or ""), str(m.get("body") or "")) for m in payload.get("messages") or []]
+                if needs_product_check(payload.get("product_fp"), pairs):
+                    schedule_product_check(name, phone_id or payload.get("phone_id") or "toby")
                 self._json(payload)
             finally:
                 conn.close()
             return
         if parsed.path == "/api/photo":
-            name = (parse_qs(parsed.query).get("name") or [""])[0]
-            path = photo_file(name)
-            if not name or not photo_exists(name):
+            qs = parse_qs(parsed.query)
+            name = (qs.get("name") or [""])[0]
+            phone_id = (qs.get("phone") or [""])[0].strip() or None
+            from src.phones import phone_scope
+
+            with phone_scope(phone_id):
+                path = photo_file(name, phone_id)
+                exists = bool(name) and photo_exists(name, phone_id)
+            if not exists:
                 self.send_error(404)
                 return
             data = path.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "image/jpeg")
-            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Cache-Control", "public, max-age=120")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -504,7 +630,9 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
             return
         if parsed.path == "/api/queue":
-            self._json({"jobs": queue_snapshot()})
+            from src.phone_queue import queue_board
+
+            self._json(queue_board())
             return
         if parsed.path == "/api/ethnicity/guess":
             from src.ethnicity_vision import guess_status
@@ -730,11 +858,13 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._json({"ok": False, "error": "name required"}, 400)
                 return
+            from src.phones import phone_scope
             from src.store import set_draft
 
             conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
             try:
-                ok = set_draft(conn, name, text)
+                with phone_scope(str(data.get("phone_id") or "") or None):
+                    ok = set_draft(conn, name, text)
             finally:
                 conn.close()
             if not ok:
@@ -825,6 +955,142 @@ class Handler(BaseHTTPRequestHandler):
                     "job": job,
                     "message": f"queued add to WhatsApp group {group!r}",
                 }
+            )
+            return
+        if self.path == "/api/li/session/prefs":
+            data = self._read_json()
+            if data is None:
+                return
+            from src.jobs.linkedin_session_cron import due_map, ensure_due
+            from src.linkedin_session import load_audit, save_prefs
+            from src.phones import expand_phone_ids
+
+            prefs = save_prefs(data)
+            for pid in expand_phone_ids(prefs["phone_id"]):
+                ensure_due(pid)
+            self._json({"ok": True, "prefs": prefs, "due": due_map(), "audit": load_audit()[-8:]})
+            return
+        if self.path == "/api/li/session":
+            data = self._read_json()
+            if data is None:
+                data = {}
+            from src.linkedin_session import load_prefs, normalize_prefs, save_prefs
+            from src.phone_queue import cron_skip_reason
+            from src.phones import expand_phone_ids
+
+            prefs = save_prefs(data) if data else load_prefs()
+            prefs = normalize_prefs(prefs)
+            phone_id = str(data.get("phone_id") or data.get("phone") or prefs["phone_id"] or "all")
+            jobs = []
+            skipped = []
+            payload = json.dumps(prefs)
+            for pid in expand_phone_ids(phone_id):
+                if data.get("cron"):
+                    reason = cron_skip_reason(pid, "linkedin")
+                    if reason:
+                        skipped.append({"phone_id": pid, "reason": reason})
+                        continue
+                jobs.append(enqueue("linkedin_session", text=payload, phone_id=pid))
+            self._json(
+                {
+                    "ok": True,
+                    "queued": bool(jobs),
+                    "jobs": jobs,
+                    "skipped": skipped,
+                    "prefs": prefs,
+                    "job": jobs[0] if jobs else None,
+                    "message": f"queued LinkedIn session on {len(jobs)} phone(s)",
+                }
+            )
+            return
+        if self.path == "/api/li/spam/scan":
+            data = self._read_json()
+            if data is None:
+                data = {}
+            from src.linkedin_spam import classify_person
+
+            name = str(data.get("name") or "").strip()
+            phone_id = str(data.get("phone_id") or data.get("phone") or "") or None
+            force = bool(data.get("force"))
+            if not name:
+                self._json({"ok": False, "error": "name required; bulk spam scans are disabled"}, status=400)
+            else:
+                self._json(classify_person(name, phone_id or "toby", force=force))
+            return
+        if self.path == "/api/li/refresh":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            if not name:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            job = enqueue(
+                "linkedin_refresh",
+                name,
+                phone_id=str(data.get("phone_id") or data.get("phone") or "") or None,
+            )
+            self._json({"ok": True, "queued": True, "job": job, "message": f"queued LinkedIn refresh of {name}"})
+            return
+        if self.path == "/api/li/archive":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            if not name:
+                self._json({"ok": False, "error": "name required"}, 400)
+                return
+            phone_id = str(data.get("phone_id") or data.get("phone") or "toby").strip() or "toby"
+            from src.linkedin_spam import archive_in_crm, is_flagged
+            from src.linkedin_store import get_person, set_archived, set_spam
+            from src.phones import phone_scope
+
+            conn = db_connect(self.server.db_path)  # type: ignore[attr-defined]
+            try:
+                with phone_scope(phone_id):
+                    row = get_person(conn, name, phone_id)
+                    if row is None:
+                        self._json({"ok": False, "error": "person not found"}, 404)
+                        return
+                    if not is_flagged(str(row["spam"] or "") if "spam" in row.keys() else ""):
+                        set_spam(conn, name, "spam", str(data.get("reason") or "archived as spam"), phone_id=phone_id)
+                    set_archived(conn, name, True, phone_id=phone_id)
+                    conn.commit()
+                    lead_id = int(row["lgs_lead_id"]) if "lgs_lead_id" in row.keys() and row["lgs_lead_id"] else None
+                    reason = str(row["spam_reason"] or "") if "spam_reason" in row.keys() else ""
+            finally:
+                conn.close()
+            crm = archive_in_crm(name, reason, lead_id=lead_id) if data.get("crm", True) else {"ok": True, "skipped": True}
+            job = enqueue("linkedin_archive", name, phone_id=phone_id) if data.get("linkedin", True) else None
+            self._json(
+                {
+                    "ok": True,
+                    "archived": True,
+                    "crm": crm,
+                    "job": job,
+                    "message": f"archived {name} in the LinkedIn CRM"
+                    + (" and queued LinkedIn archive" if job else ""),
+                }
+            )
+            return
+        if self.path == "/api/li/reply":
+            data = self._read_json()
+            if data is None:
+                return
+            name = str(data.get("name") or "").strip()
+            text = str(data.get("text") or "").strip()
+            if not name or not text:
+                self._json({"ok": False, "error": "name and text required"}, 400)
+                return
+            job = enqueue(
+                "linkedin_reply",
+                name,
+                text,
+                phone_id=str(data.get("phone_id") or "") or None,
+                force=bool(data.get("force")),
+            )
+            self._json(
+                {"ok": True, "queued": True, "job": job, "message": f"queued LinkedIn reply to {name}"}
             )
             return
         if self.path != "/api/reply":

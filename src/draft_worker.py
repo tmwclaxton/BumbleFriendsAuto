@@ -209,12 +209,86 @@ def process_due_drafts(*, limit: int = 5) -> int:
     return tried
 
 
+def process_due_linkedin_drafts(*, limit: int = 3) -> int:
+    """Generate queued LinkedIn drafts without blocking the inbox request."""
+    from src.linkedin_draft import generate_draft as generate_linkedin_draft
+    from src.linkedin_store import (
+        claim_draft,
+        complete_draft,
+        fail_draft,
+        incoming_turn_fingerprint as linkedin_turn_fingerprint,
+        list_pending_drafts,
+        list_thread as list_linkedin_thread,
+    )
+    from src.phones import phone_scope
+
+    cfg = load_config()
+    if not api_key(cfg):
+        return 0
+    conn = db_connect(db_path_from_config(cfg))
+    tried = 0
+    try:
+        for row in list_pending_drafts(conn, limit=limit):
+            tried += 1
+            person_id = int(row["person_id"])
+            name = str(row["name"])
+            phone_id = str(row["phone_id"] or "toby")
+            pending_fp = str(row["draft_pending_fp"] or "")
+            attempts = int(row["draft_attempts"] or 0) + 1
+            if not pending_fp or not claim_draft(conn, person_id, pending_fp):
+                continue
+            try:
+                with phone_scope(phone_id):
+                    pairs = [
+                        (str(item["side"]), str(item["body"]))
+                        for item in list_linkedin_thread(conn, name, phone_id=phone_id)
+                    ]
+                    if linkedin_turn_fingerprint(pairs) != pending_fp:
+                        fail_draft(
+                            conn,
+                            person_id,
+                            pending_fp,
+                            "stale thread — newer messages arrived",
+                            attempts,
+                            give_up=True,
+                        )
+                        continue
+                    text = generate_linkedin_draft(
+                        conn,
+                        name,
+                        phone_id,
+                        cfg,
+                        composer_text=str(row["composer_text"] or ""),
+                    )
+                    complete_draft(
+                        conn,
+                        name,
+                        pending_fp,
+                        text,
+                        phone_id=phone_id,
+                    )
+            except Exception as exc:
+                log.warning("LinkedIn draft failed for %s: %s", name, exc)
+                fail_draft(
+                    conn,
+                    person_id,
+                    pending_fp,
+                    str(exc),
+                    attempts,
+                    give_up=attempts >= _max_attempts(cfg),
+                )
+    finally:
+        conn.close()
+    return tried
+
+
 def _loop() -> None:
     _bump(running=True, message="started")
     try:
         while not _stop.is_set():
             try:
                 process_due_drafts()
+                process_due_linkedin_drafts()
                 from src.crm import process_due_crm_syncs
 
                 process_due_crm_syncs()

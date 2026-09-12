@@ -73,6 +73,11 @@ async def homepage(_: Request) -> Response:
     return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
+async def jobs_page(_: Request) -> Response:
+    path = Path(__file__).with_name("jobs.html")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
 async def bumble_page(_: Request) -> Response:
     return HTMLResponse(_load_html().decode("utf-8"))
 
@@ -80,6 +85,23 @@ async def bumble_page(_: Request) -> Response:
 async def linkedin_page(_: Request) -> Response:
     path = Path(__file__).with_name("linkedin.html")
     return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
+_PRODUCT_STATIC = Path(__file__).with_name("static") / "products"
+_PRODUCT_FILES = {
+    "snitch.svg": "image/svg+xml",
+    "grantgunner.svg": "image/svg+xml",
+    "canvassr.png": "image/png",
+}
+
+
+async def product_logo(request: Request) -> Response:
+    name = (request.path_params.get("name") or "").strip()
+    ctype = _PRODUCT_FILES.get(name)
+    path = _PRODUCT_STATIC / name
+    if not ctype or not path.is_file():
+        return Response(status_code=404)
+    return FileResponse(path, media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
 
 
 async def swipe_page(_: Request) -> Response:
@@ -128,23 +150,169 @@ async def api_li_thread(request: Request) -> JSONResponse:
             payload = _thread_payload(conn, name, phone_id=phone_id, channel="linkedin")
         payload["ok"] = True
         payload["phone_id"] = phone_id
+        from src.linkedin_product import needs_product_check, schedule_product_check
+        from src.linkedin_spam import needs_spam_check, schedule_spam_check
+
+        pairs = [(str(m.get("side") or ""), str(m.get("body") or "")) for m in payload.get("messages") or []]
+        if needs_spam_check(payload.get("spam_fp"), pairs):
+            schedule_spam_check(name, phone_id)
+        if needs_product_check(payload.get("product_fp"), pairs):
+            schedule_product_check(name, phone_id)
         return JSONResponse(payload)
     finally:
         conn.close()
 
 
-async def api_li_seed(request: Request) -> JSONResponse:
+async def api_li_backfill(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
         data = {}
-    jobs = enqueue_many("linkedin_seed", phone_id=_phone_from_body(data))
+    jobs, skipped = _enqueue_phone_jobs("linkedin_backfill", data, channel="linkedin")
     return JSONResponse(
         {
             "ok": True,
             "queued": bool(jobs),
             "jobs": jobs,
+            "skipped": skipped,
             "job": jobs[0] if jobs else None,
-            "message": f"queued LinkedIn seed on {len(jobs)} phone(s)",
+            "message": f"queued LinkedIn older-chat import on {len(jobs)} phone(s)",
+        }
+    )
+
+
+async def api_li_seed(request: Request) -> JSONResponse:
+    return await api_li_backfill(request)
+
+
+async def api_instagram_prune(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    pid = str(data.get("phone_id") or data.get("phone") or "toby").strip() or "toby"
+    if pid not in {"toby", "pixel"}:
+        return JSONResponse({"ok": False, "error": "instagram prune is Pixel/Toby only"}, status_code=400)
+    job = enqueue("instagram_prune", phone_id="toby")
+    return JSONResponse({"ok": True, "queued": True, "job": job, "jobs": [job]})
+
+
+async def api_li_session_prefs(request: Request) -> JSONResponse:
+    from src.jobs.linkedin_session_cron import due_map, ensure_due
+    from src.linkedin_session import load_audit, load_prefs, save_prefs
+    from src.phones import expand_phone_ids
+
+    if request.method == "POST":
+        data = await _read_json(request)
+        if isinstance(data, JSONResponse):
+            return data
+        prefs = save_prefs(data)
+        for pid in expand_phone_ids(prefs["phone_id"]):
+            ensure_due(pid)
+    else:
+        prefs = load_prefs()
+    dues = due_map()
+    return JSONResponse(
+        {
+            "ok": True,
+            "prefs": prefs,
+            "due": dues,
+            "audit": load_audit()[-8:],
+        }
+    )
+
+
+async def api_li_session(request: Request) -> JSONResponse:
+    from src.linkedin_session import load_prefs, normalize_prefs, save_prefs
+    from src.phone_queue import cron_skip_reason
+    from src.phones import expand_phone_ids
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    prefs = save_prefs(data) if data else load_prefs()
+    prefs = normalize_prefs(prefs)
+    phone_id = _phone_from_body(data) if data.get("phone_id") or data.get("phone") else prefs["phone_id"]
+    jobs: list[dict] = []
+    skipped: list[dict] = []
+    payload = json.dumps(prefs)
+    for pid in expand_phone_ids(phone_id):
+        if data.get("cron"):
+            reason = cron_skip_reason(pid, "linkedin")
+            if reason:
+                skipped.append({"phone_id": pid, "reason": reason})
+                continue
+        jobs.append(enqueue("linkedin_session", text=payload, phone_id=pid))
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": bool(jobs),
+            "jobs": jobs,
+            "skipped": skipped,
+            "prefs": prefs,
+            "job": jobs[0] if jobs else None,
+            "message": f"queued LinkedIn session on {len(jobs)} phone(s)",
+        }
+    )
+
+
+async def api_li_spam_scan(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    from src.linkedin_spam import classify_person
+
+    name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or data.get("phone") or "").strip()
+    force = bool(data.get("force"))
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required; bulk spam scans are disabled"}, status_code=400)
+    return JSONResponse(classify_person(name, phone_id or DEFAULT_PHONE_ID, force=force))
+
+
+async def api_li_archive(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    phone_id = str(data.get("phone_id") or data.get("phone") or DEFAULT_PHONE_ID).strip() or DEFAULT_PHONE_ID
+    on_linkedin = data.get("linkedin", True)
+    on_crm = data.get("crm", True)
+    from src.linkedin_spam import archive_in_crm, is_flagged
+    from src.linkedin_store import get_person, set_archived, set_spam
+    from src.phones import phone_scope
+
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            row = get_person(conn, name, phone_id)
+            if row is None:
+                return JSONResponse({"ok": False, "error": "person not found"}, status_code=404)
+            if not is_flagged(str(row["spam"] or "") if "spam" in row.keys() else ""):
+                set_spam(conn, name, "spam", str(data.get("reason") or "archived as spam"), phone_id=phone_id)
+            set_archived(conn, name, True, phone_id=phone_id)
+            conn.commit()
+            lead_id = None
+            if "lgs_lead_id" in row.keys() and row["lgs_lead_id"]:
+                lead_id = int(row["lgs_lead_id"])
+            reason = str(row["spam_reason"] or "") if "spam_reason" in row.keys() else ""
+    finally:
+        conn.close()
+    crm = {"ok": True, "skipped": True}
+    if on_crm:
+        crm = archive_in_crm(name, reason, lead_id=lead_id)
+    job = None
+    if on_linkedin:
+        job = enqueue("linkedin_archive", name, phone_id=phone_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "archived": True,
+            "crm": crm,
+            "job": job,
+            "message": f"archived {name} in the LinkedIn CRM"
+            + (" and queued LinkedIn archive" if job else ""),
         }
     )
 
@@ -212,7 +380,10 @@ async def api_thread(request: Request) -> JSONResponse:
 
 
 async def api_queue(_: Request) -> JSONResponse:
-    return JSONResponse({"jobs": queue_snapshot()})
+    from src.phone_queue import queue_board
+
+    board = queue_board()
+    return JSONResponse(board)
 
 
 async def _read_json(request: Request) -> dict | JSONResponse:
@@ -798,6 +969,88 @@ async def api_draft_retry(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "queued": True})
 
 
+async def api_li_draft_prompt(request: Request) -> JSONResponse:
+    from src.linkedin_draft import preview_prompt, save_prompt
+    from src.phones import phone_scope
+
+    if request.method == "POST":
+        data = await _read_json(request)
+        if isinstance(data, JSONResponse):
+            return data
+    else:
+        qs = parse_qs(request.url.query)
+        data = {
+            "name": (qs.get("name") or [""])[0],
+            "phone_id": (qs.get("phone") or [DEFAULT_PHONE_ID])[0],
+            "text": (qs.get("text") or [""])[0],
+        }
+    if data.get("save"):
+        save_prompt(
+            str(data.get("system") or ""),
+            str(data.get("user") or ""),
+            calendly=str(data.get("calendly") or ""),
+        )
+    name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip() or DEFAULT_PHONE_ID
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            return JSONResponse(
+                preview_prompt(
+                    conn,
+                    name,
+                    phone_id,
+                    composer_text=str(data.get("text") or ""),
+                    cfg=cfg,
+                )
+            )
+    finally:
+        conn.close()
+
+
+async def api_li_draft_generate(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or DEFAULT_PHONE_ID).strip() or DEFAULT_PHONE_ID
+    if not name:
+        return JSONResponse({"ok": False, "error": "open a LinkedIn chat first"}, status_code=400)
+    from src.linkedin_store import incoming_turn_fingerprint, list_thread as list_li_thread, queue_draft
+    from src.phones import phone_scope
+
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            pairs = [
+                (str(row["side"]), str(row["body"]))
+                for row in list_li_thread(conn, name, phone_id=phone_id)
+            ]
+            fingerprint = incoming_turn_fingerprint(pairs)
+            if not fingerprint:
+                return JSONResponse({"ok": False, "error": "no captured LinkedIn messages"}, status_code=400)
+            if not queue_draft(
+                conn,
+                name,
+                fingerprint,
+                phone_id=phone_id,
+                composer_text=str(data.get("text") or ""),
+            ):
+                return JSONResponse({"ok": False, "error": "LinkedIn chat not found"}, status_code=404)
+    finally:
+        conn.close()
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "draft_status": "queued",
+            "message": f"queued draft for {name}",
+        }
+    )
+
+
 async def api_cancel(request: Request) -> JSONResponse:
     data = await _read_json(request)
     if isinstance(data, JSONResponse):
@@ -886,6 +1139,37 @@ async def api_reply(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued reply to {name}"})
 
 
+async def api_li_reply(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    text = str(data.get("text") or "").strip()
+    if not name or not text:
+        return JSONResponse({"ok": False, "error": "name and text required"}, status_code=400)
+    phone_id = str(data.get("phone_id") or "").strip() or None
+    job = enqueue(
+        "linkedin_reply",
+        name,
+        text,
+        phone_id=phone_id,
+        force=bool(data.get("force")),
+    )
+    return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued LinkedIn reply to {name}"})
+
+
+async def api_li_refresh(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    phone_id = str(data.get("phone_id") or data.get("phone") or "").strip() or None
+    job = enqueue("linkedin_refresh", name, phone_id=phone_id)
+    return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued LinkedIn refresh of {name}"})
+
+
 def build_app() -> Starlette:
     ensure_worker()
     from src.draft_worker import ensure_draft_worker
@@ -895,10 +1179,13 @@ def build_app() -> Starlette:
     routes = [
         Route("/", homepage),
         Route("/index.html", homepage),
+        Route("/jobs", jobs_page),
+        Route("/jobs.html", jobs_page),
         Route("/bumble", bumble_page),
         Route("/bumble.html", bumble_page),
         Route("/linkedin", linkedin_page),
         Route("/linkedin.html", linkedin_page),
+        Route("/static/products/{name}", product_logo),
         Route("/swipe", swipe_page),
         Route("/swipe.html", swipe_page),
         Route("/api/health", api_health),
@@ -906,7 +1193,17 @@ def build_app() -> Starlette:
         Route("/api/li/people", api_li_people),
         Route("/api/li/thread", api_li_thread),
         Route("/api/li/seed", api_li_seed, methods=["POST"]),
+        Route("/api/li/backfill", api_li_backfill, methods=["POST"]),
         Route("/api/li/scan", api_li_scan, methods=["POST"]),
+        Route("/api/li/session", api_li_session, methods=["POST"]),
+        Route("/api/li/session/prefs", api_li_session_prefs, methods=["GET", "POST"]),
+        Route("/api/li/reply", api_li_reply, methods=["POST"]),
+        Route("/api/li/draft/prompt", api_li_draft_prompt, methods=["GET", "POST"]),
+        Route("/api/li/draft/generate", api_li_draft_generate, methods=["POST"]),
+        Route("/api/li/spam/scan", api_li_spam_scan, methods=["POST"]),
+        Route("/api/li/archive", api_li_archive, methods=["POST"]),
+        Route("/api/li/refresh", api_li_refresh, methods=["POST"]),
+        Route("/api/instagram/prune", api_instagram_prune, methods=["POST"]),
         Route("/api/photo", api_photo),
         Route("/api/thread", api_thread),
         Route("/api/queue", api_queue),

@@ -32,10 +32,17 @@ _INBOX_KINDS = {
     "liked_you_run",
     "linkedin_scan",
     "linkedin_seed",
+    "linkedin_backfill",
+    "linkedin_reply",
+    "linkedin_session",
+    "linkedin_archive",
+    "linkedin_refresh",
+    "linkedin_profile",
     "unmatch_expired",
     "rematch_expired",
     "whatsapp_group",
     "whatsapp_add",
+    "instagram_prune",
 }
 
 _job_seq = 0
@@ -117,14 +124,152 @@ BUMBLE_OCCUPY = frozenset(
         "rematch_expired",
         "grab_photos",
         "reply",
+        "instagram_prune",
     }
 )
-LINKEDIN_OCCUPY = frozenset({"linkedin_scan", "linkedin_seed"})
+LINKEDIN_OCCUPY = frozenset(
+    {
+        "linkedin_scan",
+        "linkedin_seed",
+        "linkedin_backfill",
+        "linkedin_reply",
+        "linkedin_session",
+        "linkedin_archive",
+        "linkedin_refresh",
+        "linkedin_profile",
+    }
+)
+
+
+def job_channel(kind: str | None) -> str:
+    k = str(kind or "")
+    if k in LINKEDIN_OCCUPY or k.startswith("linkedin_"):
+        return "linkedin"
+    if (
+        k in BUMBLE_OCCUPY
+        or k.startswith("whatsapp")
+        or k.startswith("instagram")
+        or k in {"add_contact", "liked_you_scan", "liked_you_run"}
+    ):
+        return "bumble"
+    return "other"
+
+
+def job_title(job: dict) -> str:
+    kind = str(job.get("kind") or "job")
+    name = str(job.get("name") or "").strip()
+    labels = {
+        "fast_scan": "Fast reply scan",
+        "recapture_all": "Refresh all chats",
+        "refresh": "Refresh chat",
+        "message_new_friends": "Send openers",
+        "grab_photos": "Grab photos",
+        "refresh_new_friends": "Refresh New friends",
+        "swipe": "Swipe session",
+        "unmatch": "Unmatch",
+        "unmatch_expired": "Unmatch expired",
+        "rematch": "Rematch",
+        "rematch_expired": "Rematch expired",
+        "add_contact": "Add Pixel contact",
+        "whatsapp_group": "WhatsApp group",
+        "whatsapp_add": "Add to WhatsApp",
+        "liked_you_scan": "Liked you scan",
+        "liked_you_run": "Liked you run",
+        "linkedin_scan": "LinkedIn scan",
+        "linkedin_seed": "LinkedIn older chats",
+        "linkedin_backfill": "LinkedIn older chats",
+        "linkedin_reply": "LinkedIn reply",
+        "linkedin_session": "LinkedIn session",
+        "linkedin_archive": "LinkedIn archive",
+        "linkedin_refresh": "LinkedIn refresh",
+        "linkedin_profile": "LinkedIn profile",
+        "reply": "Bumble reply",
+        "instagram_prune": "Instagram prune",
+    }
+    label = labels.get(kind, kind.replace("_", " "))
+    if name and kind in {
+        "refresh",
+        "reply",
+        "unmatch",
+        "rematch",
+        "add_contact",
+        "linkedin_reply",
+        "linkedin_archive",
+        "linkedin_refresh",
+        "linkedin_profile",
+        "whatsapp_group",
+        "whatsapp_add",
+    }:
+        return f"{label} · {name}"
+    return label
+
+
+def queue_board() -> dict:
+    """Phones, serial queues, and whether cron will wait for the other channel."""
+    from src.phones import public_phones
+
+    raw = queue_snapshot()
+    jobs = []
+    for job in raw:
+        item = dict(job)
+        item["channel"] = job_channel(item.get("kind"))
+        item["title"] = job_title(item)
+        jobs.append(item)
+    phones = []
+    for phone in public_phones():
+        pid = str(phone["id"])
+        mine = [j for j in jobs if str(j.get("phone_id") or "") == pid]
+        active = [j for j in mine if j.get("status") in {"queued", "running"}]
+        running = next((j for j in active if j.get("status") == "running"), None)
+        queued = [j for j in active if j.get("status") == "queued"]
+        recent = [j for j in mine if j.get("status") in {"done", "error", "cancelled"}][-8:]
+        holding = running["channel"] if running and running.get("channel") in {"bumble", "linkedin"} else None
+        phones.append(
+            {
+                **phone,
+                "holding": holding,
+                "holding_title": running["title"] if running else None,
+                "linkedin_cron_wait": cron_skip_reason(pid, "linkedin"),
+                "bumble_cron_wait": cron_skip_reason(pid, "bumble"),
+                "running": running,
+                "queued": queued,
+                "recent": recent,
+                "active": len(active),
+            }
+        )
+    return {"jobs": jobs, "phones": phones}
+
+
+def _hold_reason(phone_id: str) -> str | None:
+    pid = phone_id or DEFAULT_PHONE_ID
+    path = ROOT / "data" / f"phone_hold_{pid}"
+    if path.is_file():
+        return f"phone hold {pid}"
+    return None
+
+
+def phone_busy_reason(phone_id: str) -> str | None:
+    """Any queued or running job on this phone — used for the quiet evening import."""
+    pid = phone_id or DEFAULT_PHONE_ID
+    held = _hold_reason(pid)
+    if held:
+        return held
+    for job in queue_snapshot():
+        if str(job.get("phone_id") or "") != pid:
+            continue
+        if job.get("status") not in {"queued", "running"}:
+            continue
+        kind = str(job.get("kind") or "job")
+        return f"{kind} {job.get('status')}"
+    return None
 
 
 def cron_skip_reason(phone_id: str, incoming_channel: str) -> str | None:
     """If cron should not enqueue incoming_channel on this phone, return why."""
     pid = phone_id or DEFAULT_PHONE_ID
+    held = _hold_reason(pid)
+    if held:
+        return held
     occupy = set()
     for job in queue_snapshot():
         if str(job.get("phone_id") or "") != pid:
@@ -132,6 +277,8 @@ def cron_skip_reason(phone_id: str, incoming_channel: str) -> str | None:
         if job.get("status") not in {"queued", "running"}:
             continue
         occupy.add(str(job.get("kind") or ""))
+    if any(k.startswith("instagram") for k in occupy):
+        return "waiting for Instagram job"
     if incoming_channel == "linkedin" and occupy & BUMBLE_OCCUPY:
         return "waiting for Bumble job"
     if incoming_channel == "bumble" and occupy & LINKEDIN_OCCUPY:
@@ -352,11 +499,16 @@ def _update_job(job_id: int, **fields: object) -> None:
 
 
 def _next_queued(phone_id: str) -> dict | None:
+    held = _hold_reason(phone_id)
     bank = _bank(phone_id)
     with bank.lock:
         for job in bank.jobs:
-            if job["status"] == "queued":
-                return dict(job)
+            if job["status"] != "queued":
+                continue
+            kind = str(job.get("kind") or "")
+            if held and (kind.startswith("linkedin_") or kind in LINKEDIN_OCCUPY):
+                continue
+            return dict(job)
     return None
 
 
@@ -469,11 +621,44 @@ def _run_job(job: dict) -> tuple[bool, str]:
         if kind == "liked_you_scan":
             return run_scan(cfg, serial=serial)
         return run_go(cfg, serial=serial)
-    if kind in {"linkedin_scan", "linkedin_seed"}:
-        from src.linkedin_sync import run_scan, run_seed
+    if kind == "linkedin_archive":
+        from src.linkedin_sync import archive_named
 
-        if kind == "linkedin_seed":
-            return run_seed(load_config(), serial=serial, phone_id=pid)
+        return archive_named(name, serial=serial, phone_id=pid)
+    if kind == "linkedin_refresh":
+        from src.linkedin_sync import refresh_named
+
+        return refresh_named(name, serial=serial, phone_id=pid)
+    if kind == "linkedin_profile":
+        from src.linkedin_profile import harvest_named
+
+        return harvest_named(name, serial=serial, phone_id=pid)
+    if kind == "linkedin_session":
+        from src.linkedin_session import run_session
+
+        payload = {}
+        raw = str(job.get("text") or "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                payload = parsed
+        return run_session(load_config(), serial=serial, phone_id=pid, prefs=payload)
+    if kind in {"linkedin_scan", "linkedin_seed", "linkedin_backfill", "linkedin_reply"}:
+        from src.linkedin_sync import run_backfill, run_scan, send_named_message
+
+        if kind == "linkedin_reply":
+            return send_named_message(
+                name,
+                str(job.get("text") or ""),
+                serial=serial,
+                phone_id=pid,
+                force=bool(job.get("force")),
+            )
+        if kind in {"linkedin_seed", "linkedin_backfill"}:
+            return run_backfill(load_config(), serial=serial, phone_id=pid)
         return run_scan(load_config(), serial=serial, phone_id=pid)
     if kind == "add_contact":
         if pid != DEFAULT_PHONE_ID:
@@ -523,6 +708,12 @@ def _run_job(job: dict) -> tuple[bool, str]:
                 phone_id=pid,
             )
         return bool(result.get("ok")), json.dumps(result, ensure_ascii=False)
+    if kind == "instagram_prune":
+        if pid != DEFAULT_PHONE_ID:
+            return False, "instagram_prune is Pixel/Toby only"
+        from src.instagram_prune import run_prune
+
+        return run_prune(serial=serial, phone_id=pid)
     return False, f"unknown action {kind}"
 
 
@@ -636,6 +827,7 @@ def job_poll_payload(job: dict | None) -> dict:
                 "swipe",
                 "unmatch_expired",
                 "rematch_expired",
+                "instagram_prune",
             }
             else 6
         )

@@ -75,6 +75,25 @@ def mark_ran(now: float | None = None, rng: random.Random | None = None) -> floa
 
 
 def main() -> int:
+    try:
+        from src.jobs.linkedin_session_cron import main as session_main
+
+        session_main()
+    except Exception:
+        log.warning("linkedin session cron tick failed", exc_info=True)
+    try:
+        from src.jobs.linkedin_backfill_cron import main as backfill_main
+
+        backfill_main()
+    except Exception:
+        log.warning("linkedin backfill cron tick failed", exc_info=True)
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    london_hour = datetime.now(ZoneInfo("Europe/London")).hour
+    if london_hour >= 21:
+        log.info("fast scan skipped — evening quiet for LinkedIn import")
+        return 0
     if not should_run():
         remain = max(0, int(next_due_at() - time.time()))
         log.info("fast scan skipped — next due in %ss", remain)

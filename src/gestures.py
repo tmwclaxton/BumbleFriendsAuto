@@ -111,6 +111,17 @@ def swipe(
         device.swipe(x1, y1, x2, y2, duration=duration / 1000.0)
 
 
+def long_press(device: u2.Device, x: int, y: int, duration_ms: int = 650) -> None:
+    log.info("long-press (%d,%d) %dms", x, y, duration_ms)
+    try:
+        _adb_swipe(device, x, y, x, y, duration_ms)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        try:
+            device.long_click(x, y, duration_ms / 1000.0)
+        except Exception:
+            device.click(x, y)
+
+
 def tap(device: u2.Device, x: int, y: int) -> None:
     log.info("tap (%d,%d)", x, y)
     try:

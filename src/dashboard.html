@@ -6,30 +6,34 @@
 <title>Bumble inbox</title>
 <style>
   :root {
-    --bg: #111114;
-    --panel: #1b1b21;
-    --line: #2c2c34;
-    --text: #f2efe8;
-    --muted: #9a9588;
-    --you: #e8c547;
-    --them: #2a2a32;
+    --bg: #12110e;
+    --rail: #17150f;
+    --panel: #1f1c16;
+    --line: #322c22;
+    --text: #f6f1e4;
+    --muted: #a89c86;
+    --you: #f0c94a;
+    --you-deep: #c89a14;
+    --them: #26221c;
     --need: #ff8a5b;
     --wait: #7eb8a4;
     --exp: #6b6570;
+    --shadow: 0 16px 36px #05030255;
   }
   * { box-sizing: border-box; }
-  html, body {
-    height: 100%;
-    margin: 0;
-    overflow: hidden;
-  }
+  html, body { height: 100%; margin: 0; }
   body {
-    font: 14px/1.4 "Avenir Next", "Segoe UI", sans-serif;
-    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    font: 14px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+    background:
+      radial-gradient(900px 420px at 8% -18%, #f0c94a22, transparent 55%),
+      radial-gradient(700px 380px at 100% 0%, #3a2a1033, transparent 50%),
+      var(--bg);
     color: var(--text);
-    display: grid;
-    grid-template-rows: auto auto 1fr;
-    min-height: 0;
   }
   #phone-warn {
     padding: 8px 16px;
@@ -45,13 +49,32 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 10px 14px;
-    padding: 10px 16px 10px;
+    padding: 10px 18px;
     border-bottom: 1px solid var(--line);
-    background: #16161b;
+    background: #16130ed9;
+    backdrop-filter: blur(14px);
   }
-  .brand { min-width: 160px; }
-  .brand h1 { margin: 0; font-size: 16px; font-weight: 650; }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 198px;
+  }
+  .mark {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(180deg, #f6d56a, var(--you-deep));
+    color: #1a1508;
+    font: 800 15px/1 "Segoe UI", sans-serif;
+    box-shadow: 0 6px 14px #c89a1455;
+  }
+  .brand h1 { margin: 0; font-size: 15px; font-weight: 700; }
   .brand p { margin: 2px 0 0; color: var(--muted); font-size: 11px; max-width: 280px; }
+  .brand a { color: var(--you); text-decoration: none; }
+  .brand a:hover { text-decoration: underline; }
   .top-tools {
     display: flex;
     flex-wrap: wrap;
@@ -66,17 +89,17 @@
     letter-spacing: 0;
     font: 12px/1.2 inherit;
     font-weight: 650;
-    background: transparent;
+    background: var(--panel);
     color: var(--muted);
     border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 5px 10px;
+    border-radius: 9px;
+    padding: 7px 11px;
     cursor: pointer;
     white-space: nowrap;
   }
-  #filters-btn:hover { background: #1a1820; color: var(--text); }
+  #filters-btn:hover { border-color: #5a4c32; color: var(--text); }
   #filters-btn.active { color: #e0b4d4; border-color: #6a4a62; }
-  #filters-btn[aria-expanded="true"] { background: #24242c; color: var(--text); }
+  #filters-btn[aria-expanded="true"] { background: #2a2418; color: var(--text); }
   #filter-panel {
     display: none;
     position: absolute;
@@ -86,10 +109,10 @@
     min-width: 280px;
     max-width: min(520px, 80vw);
     padding: 10px;
-    background: #16161b;
+    background: #1c1913;
     border: 1px solid var(--line);
-    border-radius: 10px;
-    box-shadow: 0 10px 28px #0008;
+    border-radius: 12px;
+    box-shadow: var(--shadow);
   }
   .filter-menu.open #filter-panel { display: block; }
   #filter {
@@ -97,8 +120,8 @@
     margin: 0 0 8px;
     padding: 6px 10px;
     border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--bg);
+    border-radius: 10px;
+    background: #14110c;
     color: var(--text);
   }
   #eth-filter {
@@ -122,12 +145,12 @@
     border-color: #6a4a62;
   }
   .workspace {
+    flex: 1 1 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr);
     align-items: stretch;
     min-width: 0;
     min-height: 0;
-    height: 100%;
     overflow: hidden;
   }
   .workspace.toby-collapsed {
@@ -145,7 +168,7 @@
     min-width: 0;
     min-height: 0;
     border-right: 1px solid var(--line);
-    background: var(--bg);
+    background: color-mix(in srgb, var(--rail) 88%, #000);
   }
   .phone-col.toby { --col: #9ecbff; --col-bg: #152232; }
   .phone-col.archie { --col: #f0c674; --col-bg: #2a2212; }
@@ -155,9 +178,9 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 8px;
-    padding: 10px 12px 8px;
+    padding: 12px 12px 10px;
     border-bottom: 1px solid var(--line);
-    background: var(--col-bg);
+    background: color-mix(in srgb, var(--col-bg) 82%, #000);
   }
   .col-collapse {
     flex-shrink: 0;
@@ -165,7 +188,7 @@
     height: 28px;
     padding: 0;
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: 8px;
     background: transparent;
     color: var(--col);
     font: 16px/1 inherit;
@@ -262,8 +285,9 @@
     overflow: auto;
     background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 16px;
+    border-radius: 16px;
+    padding: 18px;
+    box-shadow: var(--shadow);
   }
   #crm-modal h3 { margin: 0 0 8px; font-size: 16px; }
   #crm-modal label {
@@ -415,20 +439,22 @@
     display: flex;
     align-items: flex-start;
     gap: 10px;
-    width: 100%;
+    width: calc(100% - 12px);
+    margin: 0 6px 3px;
     text-align: left;
-    padding: 8px 12px;
-    border: 0;
-    border-bottom: 1px solid var(--line);
+    padding: 9px 10px;
+    border: 1px solid transparent;
+    border-radius: 14px;
     background: transparent;
     color: inherit;
     text-decoration: none;
     cursor: pointer;
   }
-  .row:hover, .row.on { background: #24242c; }
+  .row:hover { background: #241f16; }
+  .row.on { background: #2a2418; border-color: #5a4a28; }
   .row .meta { min-width: 0; flex: 1; }
   .row .who { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
-  .row .name { font-weight: 600; }
+  .row .name { font-weight: 700; font-size: 13.5px; }
   .row .eth { color: var(--muted); font-size: 11px; font-weight: 500; }
   .row .snip {
     color: var(--muted);
@@ -443,12 +469,12 @@
   .face-wrap {
     position: relative;
     flex-shrink: 0;
-    width: 36px;
-    height: 36px;
+    width: 42px;
+    height: 42px;
   }
   .face {
-    width: 36px;
-    height: 36px;
+    width: 42px;
+    height: 42px;
     border-radius: 50%;
     object-fit: cover;
     background: #2a2a32;
@@ -499,10 +525,10 @@
     color: var(--muted);
   }
   .new-wrap {
-    margin: 8px 8px 4px;
-    background: #16141e;
+    margin: 10px 8px 6px;
+    background: #1a1624;
     border: 1px solid #3a3350;
-    border-radius: 10px;
+    border-radius: 14px;
     overflow: hidden;
   }
   .new-wrap[hidden] { display: none; }
@@ -538,8 +564,7 @@
     color: var(--muted);
     line-height: 1.4;
   }
-  .new-wrap .row { border-bottom-color: #2c2838; }
-  .new-wrap .row:last-child { border-bottom: 0; }
+  .new-wrap .row { margin: 4px 6px; width: calc(100% - 12px); }
   .new-hint {
     margin: 0;
     padding: 0 12px 8px;
@@ -562,19 +587,19 @@
     background: transparent;
     color: var(--muted);
     border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 5px 10px;
+    border-radius: 9px;
+    padding: 7px 11px;
     font-weight: 650;
     cursor: pointer;
     white-space: nowrap;
   }
-  #refresh-all:hover, #fast-scan:hover, #show-prompt:hover { background: #1a1820; color: var(--text); }
+  #refresh-all:hover, #fast-scan:hover, #show-prompt:hover { background: #2a2418; color: var(--text); }
   #refresh-all:disabled, #fast-scan:disabled { opacity: .45; cursor: default; }
   .group-wrap {
     margin: 10px 8px 4px;
     background: #121814;
     border: 1px solid #2a4038;
-    border-radius: 10px;
+    border-radius: 14px;
     overflow: hidden;
   }
   .group-wrap[hidden] { display: none; }
@@ -585,7 +610,7 @@
     margin: 10px 8px 12px;
     background: #141318;
     border: 1px solid #353240;
-    border-radius: 10px;
+    border-radius: 14px;
     overflow: hidden;
   }
   .archive-wrap[hidden] { display: none; }
@@ -596,7 +621,7 @@
     margin: 10px 8px 12px;
     background: #161412;
     border: 1px solid #3a3330;
-    border-radius: 10px;
+    border-radius: 14px;
     overflow: hidden;
   }
   .dismissed-wrap[hidden] { display: none; }
@@ -610,13 +635,13 @@
     background: var(--you);
     color: #1a1508;
     border: 0;
-    border-radius: 8px;
-    padding: 5px 10px;
+    border-radius: 9px;
+    padding: 7px 12px;
     font-weight: 650;
     cursor: pointer;
     white-space: nowrap;
   }
-  #msg-all:hover { filter: brightness(1.08); }
+  #msg-all:hover { filter: brightness(1.06); }
   #msg-all:disabled { opacity: .45; cursor: default; }
   main {
     display: flex;
@@ -624,10 +649,12 @@
     min-width: 0;
     min-height: 0;
     height: 100%;
+    align-self: stretch;
     overflow: hidden;
+    background: linear-gradient(180deg, #1a1712 0%, #12100c 100%);
   }
   #thread-head {
-    padding: 12px 16px;
+    padding: 14px 20px;
     border-bottom: 1px solid var(--line);
     min-height: 0;
     min-width: 0;
@@ -636,6 +663,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px 12px;
+    background: #17140fcc;
   }
   #thread-head h2 {
     margin: 0;
@@ -707,47 +735,60 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 18px 22px 28px;
+    padding: 22px 8% 28px;
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
   .bubble {
-    max-width: 68%;
-    padding: 8px 12px;
-    border-radius: 14px;
+    max-width: min(62%, 560px);
+    padding: 10px 13px 8px;
+    border-radius: 16px 16px 16px 5px;
     white-space: pre-wrap;
     word-break: break-word;
+    border: 1px solid #3a3428;
+    box-shadow: var(--shadow);
   }
-  .bubble.you { align-self: flex-end; background: var(--you); color: #1a1508; }
+  .bubble.you {
+    align-self: flex-end;
+    background: linear-gradient(180deg, #f6d56a, var(--you-deep));
+    color: #1a1508;
+    border-color: #c89a14;
+    border-radius: 16px 16px 5px 16px;
+  }
   .bubble.them { align-self: flex-start; background: var(--them); }
   .day {
     align-self: center;
     max-width: none;
-    padding: 4px 0;
-    background: transparent;
+    padding: 3px 10px;
+    background: #1a1712;
+    border: 1px solid var(--line);
+    border-radius: 999px;
     color: var(--muted);
-    font-size: 12px;
+    font-size: 11px;
+    letter-spacing: 0.03em;
   }
   #composer-wrap { position: relative; flex-shrink: 0; }
   #composer {
     display: flex;
     gap: 8px;
-    padding: 12px 16px 16px;
+    padding: 12px 18px 16px;
     border-top: 1px solid var(--line);
     align-items: stretch;
+    background: #17140fcc;
   }
   #composer textarea {
     flex: 1;
     min-height: 54px;
     resize: vertical;
     padding: 10px 12px;
-    border-radius: 10px;
+    border-radius: 12px;
     border: 1px solid var(--line);
-    background: var(--panel);
+    background: #1a1712;
     color: var(--text);
     font: inherit;
   }
+  #composer textarea:focus { outline: 2px solid #f0c94a44; border-color: var(--you); }
   #composer button {
     border: 0;
     border-radius: 10px;
@@ -763,7 +804,7 @@
     font-weight: 650;
   }
   #send {
-    background: var(--you);
+    background: linear-gradient(180deg, #f6d56a, var(--you-deep));
     color: #1a1508;
     padding: 0 16px;
     font-weight: 650;
@@ -786,7 +827,7 @@
     padding: 8px;
     border-radius: 12px;
     border: 1px solid var(--line);
-    background: #16161c;
+    background: #1c1913;
     display: none;
     grid-template-columns: repeat(8, 1fr);
     gap: 2px;
@@ -817,22 +858,28 @@
     cursor: pointer;
   }
   #queue {
-    padding: 0 16px 10px;
+    padding: 0 18px 10px;
     font-size: 12px;
     color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
   }
   #queue .q-row {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 4px 0;
+    padding: 4px 10px 4px 12px;
+    border-radius: 999px;
+    background: #2a2418;
+    border: 1px solid #5a4a28;
   }
   #queue .q-run { color: var(--you); }
   #queue .q-err { color: var(--need); }
   .tag.toby { background: #1d3a5c; color: #9ecbff; }
   .tag.archie { background: #3a2a12; color: #f0c674; }
   #phone-target-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-  #phone-target-row select { font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  #phone-target-row select { font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; }
   .top-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   @media (max-width: 1100px) {
     .workspace { grid-template-columns: 1fr 1fr; }
@@ -863,13 +910,13 @@
     color: var(--you);
     text-decoration: none;
     border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 2px 8px;
+    border-radius: 9px;
+    padding: 7px 11px;
     font: inherit;
-    background: transparent;
+    background: var(--panel);
     cursor: pointer;
   }
-  #swipe-btn:hover { background: #24242c; }
+  #swipe-btn:hover { border-color: #5a4c32; }
   #queue button {
     background: transparent;
     color: var(--muted);
@@ -879,14 +926,27 @@
     cursor: pointer;
     font: inherit;
   }
-  .empty { margin: auto; color: var(--muted); }
+  .empty {
+    margin: auto;
+    max-width: 360px;
+    text-align: center;
+    color: var(--muted);
+    padding: 28px 20px;
+    border: 1px dashed #3a3428;
+    border-radius: 18px;
+    background: #17140f88;
+    line-height: 1.55;
+  }
 </style>
 </head>
 <body>
 <header class="topbar">
   <div class="brand">
-    <h1>Bumble inbox</h1>
-    <p id="meta"><a href="/" style="color:inherit">LeadsAuto</a> · Loading…</p>
+    <div class="mark" aria-hidden="true">B</div>
+    <div>
+      <h1>Bumble inbox</h1>
+      <p id="meta"><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · Loading…</p>
+    </div>
   </div>
   <div class="top-tools">
     <div class="filter-menu" id="filter-menu">
@@ -1141,6 +1201,13 @@
 </div>
 </div>
 <script>
+function fillViewport() {
+  const h = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+  document.body.style.height = Math.round(h) + "px";
+}
+fillViewport();
+window.addEventListener("resize", fillViewport);
+if (window.visualViewport) window.visualViewport.addEventListener("resize", fillViewport);
 const msgAllBtn = document.getElementById("msg-all");
 const refreshNewBtn = document.getElementById("refresh-new");
 const refreshAllBtn = document.getElementById("refresh-all");
@@ -2273,7 +2340,7 @@ function jobLabel(job) {
   if (job.kind === "grab_photos") return who + "Grab photos";
   if (job.kind === "refresh_new_friends") return who + "Refresh New friends strip";
   if (job.kind === "linkedin_scan") return who + "LinkedIn scan";
-  if (job.kind === "linkedin_seed") return who + "LinkedIn seed";
+  if (job.kind === "linkedin_seed" || job.kind === "linkedin_backfill") return who + "LinkedIn older chats";
   if (job.kind === "swipe") return who + "Swipe";
   if (job.kind === "unmatch") return who + "Unmatch " + job.name;
   if (job.kind === "unmatch_expired") {

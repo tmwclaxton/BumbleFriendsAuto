@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Jobs · LeadsAuto</title>
+<style>
+  :root {
+    --bg: #0e0d0b;
+    --text: #f6f1e4;
+    --muted: #a89c86;
+    --line: #322c22;
+    --you: #f0c94a;
+    --you-deep: #c89a14;
+    --li: #70b5ff;
+    --li-deep: #0a66c2;
+    --ok: #5ed4a8;
+    --need: #ff8d6b;
+    --shadow: 0 22px 48px #05030266;
+  }
+  * { box-sizing: border-box; }
+  html, body { min-height: 100%; margin: 0; }
+  body {
+    font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(900px 420px at 12% -16%, #f0c94a26, transparent 55%),
+      radial-gradient(800px 400px at 92% 0%, #0a66c233, transparent 50%),
+      var(--bg);
+    padding: 28px 20px 48px;
+  }
+  .wrap { width: min(980px, 100%); margin: 0 auto; }
+  .top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 22px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .mark {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(180deg, #f6d56a, var(--you-deep));
+    color: #1a1508;
+    font: 800 14px/1 "Segoe UI", sans-serif;
+  }
+  h1 { margin: 0; font-size: 24px; letter-spacing: -0.02em; }
+  .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .nav { display: flex; gap: 10px; flex-wrap: wrap; }
+  .nav a {
+    color: var(--muted);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+  .nav a:hover { color: var(--text); border-color: #4a4030; }
+  .legend {
+    color: var(--muted);
+    font-size: 13px;
+    margin: 0 0 18px;
+    max-width: 640px;
+  }
+  .phones {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .phone {
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: #17140fcc;
+    box-shadow: var(--shadow);
+    min-height: 280px;
+    overflow: hidden;
+  }
+  .phone-head {
+    padding: 16px 18px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .phone-head h2 { margin: 0; font-size: 18px; }
+  .phone-head .dev { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+  .hold {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 3px 9px;
+    font-size: 11px;
+    font-weight: 650;
+    border: 1px solid var(--line);
+    color: var(--muted);
+  }
+  .pill.on { color: var(--ok); border-color: #2a5a48; background: #14362c; }
+  .pill.off { color: #c4b8a4; }
+  .pill.bumble { color: #1a1508; background: var(--you); border-color: transparent; }
+  .pill.linkedin { color: #fff; background: var(--li-deep); border-color: transparent; }
+  .pill.wait { color: #ffc4a8; background: #3a2218; border-color: #6a3a28; }
+  .lanes { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--line); }
+  .lane { padding: 12px 14px 14px; }
+  .lane + .lane { border-left: 1px solid var(--line); }
+  .lane h3 { margin: 0 0 6px; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .lane.bumble h3 { color: var(--you); }
+  .lane.linkedin h3 { color: var(--li); }
+  .lane p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+  .list { padding: 8px 10px 14px; }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 8px;
+    border-radius: 10px;
+  }
+  .row.run { background: #221c12; }
+  .row .who { flex: 1; min-width: 0; }
+  .row .title { font-size: 13px; }
+  .row .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: #5a5040;
+  }
+  .dot.bumble { background: var(--you); }
+  .dot.linkedin { background: var(--li); }
+  .dot.run { box-shadow: 0 0 0 4px #f0c94a33; }
+  button {
+    font: inherit;
+    font-size: 11px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: #221c12;
+    color: var(--text);
+    padding: 4px 8px;
+    cursor: pointer;
+  }
+  button:hover { border-color: #5a5040; }
+  .empty { color: var(--muted); font-size: 13px; padding: 12px 16px 16px; }
+  .recent {
+    border-top: 1px solid var(--line);
+    padding: 10px 16px 14px;
+  }
+  .recent h3 { margin: 0 0 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .recent .row { padding: 4px 0; opacity: .75; }
+  @media (max-width: 720px) {
+    .phones, .lanes { grid-template-columns: 1fr; }
+    .lane + .lane { border-left: 0; border-top: 1px solid var(--line); }
+    .top { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">LA</div>
+        <div>
+          <h1>Phone jobs</h1>
+          <p class="sub">One job at a time per phone. Cron will not start the other channel while this one is occupying it.</p>
+        </div>
+      </div>
+      <div class="nav">
+        <a href="/">Home</a>
+        <a href="/bumble">Bumble</a>
+        <a href="/linkedin">LinkedIn</a>
+      </div>
+    </div>
+    <p class="legend" id="legend">Loading queues…</p>
+    <div class="phones" id="phones"></div>
+  </div>
+<script>
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+function waitLine(phone) {
+  const bits = [];
+  if (phone.bumble_cron_wait) bits.push("Bumble cron waiting — " + phone.bumble_cron_wait);
+  if (phone.linkedin_cron_wait) bits.push("LinkedIn cron waiting — " + phone.linkedin_cron_wait);
+  if (!bits.length) {
+    return phone.running
+      ? "Queued work on this phone waits until the current job finishes."
+      : "Idle. Either channel can take the next job.";
+  }
+  return bits.join(" ");
+}
+function rowHtml(job, runningBehind) {
+  const ch = job.channel === "linkedin" ? "linkedin" : (job.channel === "bumble" ? "bumble" : "");
+  const run = job.status === "running";
+  const wait = job.status === "queued" && runningBehind
+    ? "Waiting for " + runningBehind
+    : (job.message || job.status || "");
+  const stop = job.status === "running" || job.status === "queued"
+    ? `<button type="button" data-cancel="${job.id}">${job.status === "running" ? "Stop" : "Cancel"}</button>`
+    : "";
+  return `<div class="row ${run ? "run" : ""}">
+    <span class="dot ${ch}${run ? " run" : ""}"></span>
+    <div class="who">
+      <div class="title">${esc(job.title || job.kind)}</div>
+      <div class="meta">${esc(wait)}</div>
+    </div>
+    ${stop}
+  </div>`;
+}
+function phoneHtml(p) {
+  const hold = p.holding === "linkedin" ? "linkedin" : (p.holding === "bumble" ? "bumble" : "");
+  const holdLabel = p.holding === "linkedin" ? "Holding LinkedIn" : (p.holding === "bumble" ? "Holding Bumble" : "Idle");
+  const online = p.online ? "on" : "off";
+  const runningTitle = p.running ? p.running.title : "";
+  const bumbleJobs = [...(p.running && p.running.channel === "bumble" ? [p.running] : []), ...(p.queued || []).filter(j => j.channel === "bumble")];
+  const liJobs = [...(p.running && p.running.channel === "linkedin" ? [p.running] : []), ...(p.queued || []).filter(j => j.channel === "linkedin")];
+  const allActive = [...(p.running ? [p.running] : []), ...(p.queued || [])];
+  return `<section class="phone">
+    <div class="phone-head">
+      <h2>${esc(p.label || p.id)}</h2>
+      <p class="dev">${esc(p.device || "")} · ${p.online ? "online" : "offline"}</p>
+      <div class="hold">
+        <span class="pill ${online}">${p.online ? "Online" : "Offline"}</span>
+        <span class="pill ${hold || "off"}">${esc(holdLabel)}</span>
+        <span class="pill ${p.bumble_cron_wait ? "wait" : "on"}">${p.bumble_cron_wait ? "Bumble cron waits" : "Bumble cron free"}</span>
+        <span class="pill ${p.linkedin_cron_wait ? "wait" : "on"}">${p.linkedin_cron_wait ? "LinkedIn cron waits" : "LinkedIn cron free"}</span>
+      </div>
+    </div>
+    <div class="lanes">
+      <div class="lane bumble">
+        <h3>Bumble</h3>
+        <p>${p.holding === "linkedin"
+          ? "Will not start a new Bumble cron while LinkedIn has the phone."
+          : (bumbleJobs.length ? "In the phone queue." : "Nothing from Bumble right now.")}</p>
+      </div>
+      <div class="lane linkedin">
+        <h3>LinkedIn</h3>
+        <p>${p.holding === "bumble"
+          ? "Will not start a new LinkedIn cron while Bumble has the phone."
+          : (liJobs.length ? "In the phone queue." : "Nothing from LinkedIn right now.")}</p>
+      </div>
+    </div>
+    <div class="list">
+      ${allActive.length ? allActive.map(j => rowHtml(j, runningTitle && j.status === "queued" ? runningTitle : "")).join("") : `<p class="empty">Queue empty on this phone.</p>`}
+    </div>
+    ${(p.recent || []).length ? `<div class="recent"><h3>Recently finished</h3>${p.recent.slice().reverse().map(j => rowHtml(j)).join("")}</div>` : ""}
+  </section>`;
+}
+function render(data) {
+  const phones = data.phones || [];
+  const active = phones.reduce((n, p) => n + (p.active || 0), 0);
+  const waiting = phones.filter(p => p.bumble_cron_wait || p.linkedin_cron_wait).length;
+  document.getElementById("legend").textContent = active
+    ? (active + " job" + (active === 1 ? "" : "s") + " live · " + (waiting ? waiting + " phone(s) making the other channel wait" : "neither channel is blocked"))
+    : "Both phones are idle. Scheduled Bumble and LinkedIn jobs can start when they are due.";
+  document.getElementById("phones").innerHTML = phones.map(phoneHtml).join("")
+    || `<p class="empty">No phones configured.</p>`;
+}
+document.getElementById("phones").addEventListener("click", async e => {
+  const id = e.target.dataset && e.target.dataset.cancel;
+  if (!id) return;
+  e.target.disabled = true;
+  await fetch("/api/queue/cancel", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({id: Number(id)}),
+  });
+  poll();
+});
+async function poll() {
+  const res = await fetch("/api/queue");
+  render(await res.json());
+}
+poll();
+setInterval(poll, 3000);
+</script>
+</body>
+</html>

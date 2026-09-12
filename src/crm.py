@@ -158,6 +158,8 @@ def _crm_payload(payload: dict) -> dict:
         "bumble_inbox_name": payload.get("bumble_inbox_name"),
         "bumble_phone_id": payload.get("bumble_phone_id"),
     }
+    if "archived" in payload:
+        body["archived"] = bool(payload.get("archived"))
     return {key: value for key, value in body.items() if value is not None}
 
 
