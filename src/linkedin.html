@@ -178,64 +178,87 @@
     color: var(--li);
   }
   #queue button { padding: 2px 7px; font-size: 11px; border-radius: 999px; }
+  .inbox-tools {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+    background: #0b1524d9;
+  }
   .workspace {
     flex: 1 1 0;
     display: grid;
-    grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr);
     align-items: stretch;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
   }
-  .rail {
+  .workspace.toby-collapsed { grid-template-columns: 44px minmax(260px, 1fr) minmax(0, 1.35fr); }
+  .workspace.archie-collapsed { grid-template-columns: minmax(260px, 1fr) 44px minmax(0, 1.35fr); }
+  .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 44px 44px minmax(0, 1fr); }
+  .phone-col {
     display: flex;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
     height: 100%;
-    background: color-mix(in srgb, var(--rail) 92%, #000);
     border-right: 1px solid var(--line);
+    background: color-mix(in srgb, var(--rail) 92%, #000);
   }
-  .rail-head {
-    padding: 14px 14px 10px;
-    display: grid;
-    gap: 10px;
+  .phone-col.toby { --col: #9ecbff; --col-bg: #152232; }
+  .phone-col.archie { --col: #f0c674; --col-bg: #2a2212; }
+  .phone-col.offline h2 { color: var(--need); }
+  .col-head {
+    flex-shrink: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 12px 12px 10px;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--col-bg) 82%, #000);
   }
-  .phone-tabs {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    padding: 3px;
-    border-radius: 12px;
-    background: #0a1320;
+  .col-head h2 { margin: 0; font-size: 14px; font-weight: 700; color: var(--col); }
+  .col-collapse {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 0;
     border: 1px solid var(--line);
-  }
-  .phone-tabs button {
-    border: 0;
+    border-radius: 8px;
     background: transparent;
-    padding: 8px 8px 7px;
-    font-weight: 650;
-    font-size: 12px;
-    border-radius: 9px;
-    color: var(--muted);
+    color: var(--col);
+    font: 16px/1 inherit;
+    cursor: pointer;
   }
-  .phone-tabs button.on {
-    background: #173456;
-    color: var(--text);
-    box-shadow: var(--shadow);
+  .col-collapse:hover { background: #173456; }
+  .phone-col.collapsed { align-self: stretch; height: 100%; min-height: 100%; background: var(--col-bg); }
+  .phone-col.collapsed .col-scroll,
+  .phone-col.collapsed .col-meta { display: none; }
+  .phone-col.collapsed .col-head {
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 8px 4px;
+    min-height: 100%;
+    height: 100%;
+    border-bottom: 0;
+    background: var(--col-bg);
   }
-  .phone-tabs button.offline { color: var(--need); }
-  .phone-tabs .count {
-    display: inline-block;
-    min-width: 16px;
-    margin-left: 4px;
-    padding: 0 5px;
-    border-radius: 999px;
-    background: #24466c;
-    color: var(--li);
-    font-size: 10px;
+  .phone-col.collapsed h2 {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    font-size: 13px;
+    white-space: nowrap;
   }
   #filter {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
+    max-width: 420px;
     padding: 9px 12px;
     border: 1px solid var(--line);
     border-radius: 10px;
@@ -455,6 +478,7 @@
     font-weight: 650;
     border: 1px solid #2b4d75;
   }
+  .chip[hidden] { display: none !important; }
   .chip.need { background: #3a2218; color: #ffc4a8; border-color: #6a3a28; }
   .chip.wait { background: #14362c; color: var(--wait); border-color: #2a5a48; }
   .chip.spam { background: #3a2218; color: #ffc4a8; border-color: #6a3a28; cursor: pointer; }
@@ -542,10 +566,21 @@
     background: #101c2e88;
   }
   .empty strong { display: block; color: var(--text); font-size: 16px; margin-bottom: 6px; }
+  @media (max-width: 1100px) {
+    .workspace { grid-template-columns: 1fr 1fr; }
+    .workspace.toby-collapsed { grid-template-columns: 44px 1fr; }
+    .workspace.archie-collapsed { grid-template-columns: 1fr 44px; }
+    .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 44px 44px; }
+    .thread { grid-column: 1 / -1; min-height: 42vh; border-top: 1px solid var(--line); }
+  }
   @media (max-width: 820px) {
-    .workspace { grid-template-columns: 1fr; }
+    .workspace,
+    .workspace.toby-collapsed,
+    .workspace.archie-collapsed,
+    .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 1fr; }
+    .phone-col.collapsed { display: none; }
     .thread { display: none; }
-    body.show-thread .rail { display: none; }
+    body.show-thread .phone-col { display: none; }
     body.show-thread .thread { display: flex; }
     body.show-thread .back { display: inline-flex; }
     body.show-thread .brand h1,
@@ -616,7 +651,7 @@
     <div>
       <button type="button" class="back" id="back">← Inbox</button>
       <h1>LinkedIn inbox</h1>
-      <p id="meta"><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/bumble">Bumble</a> · <a href="/hinge">Hinge</a> · Messaging capture</p>
+      <p id="meta"><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/bumble">Bumble</a> · <a href="/hinge">Hinge</a> · <a href="/instagram">Instagram</a> · Messaging capture</p>
     </div>
   </div>
   <div class="top-tools">
@@ -633,18 +668,30 @@
   </div>
 </header>
 <div id="phone-warn" hidden role="status"></div>
+<div class="inbox-tools">
+  <input id="filter" placeholder="Search conversations" autocomplete="off"/>
+</div>
 <div class="workspace">
-  <aside class="rail">
-    <div class="rail-head">
-      <div class="phone-tabs">
-        <button type="button" id="tab-toby" class="on" data-tab="toby">Toby <span class="count" id="count-toby">0</span></button>
-        <button type="button" id="tab-archie" data-tab="archie">Archie <span class="count" id="count-archie">0</span></button>
+  <section class="phone-col toby" data-phone="toby">
+    <div class="col-head">
+      <button type="button" class="col-collapse" data-collapse="toby" aria-expanded="true" title="Collapse Toby">‹</button>
+      <div>
+        <h2>Toby · Pixel</h2>
+        <p class="col-meta" data-col-meta="toby">Loading…</p>
       </div>
-      <input id="filter" placeholder="Search conversations" autocomplete="off"/>
     </div>
-    <p class="col-meta" id="list-meta">Loading…</p>
-    <div class="col-scroll" id="chat-list"></div>
-  </aside>
+    <div class="col-scroll" data-chat-list="toby"></div>
+  </section>
+  <section class="phone-col archie" data-phone="archie">
+    <div class="col-head">
+      <button type="button" class="col-collapse" data-collapse="archie" aria-expanded="true" title="Collapse Archie">‹</button>
+      <div>
+        <h2>Archie · Galaxy</h2>
+        <p class="col-meta" data-col-meta="archie">Loading…</p>
+      </div>
+    </div>
+    <div class="col-scroll" data-chat-list="archie"></div>
+  </section>
   <section class="thread">
     <div class="thread-head">
       <div class="avatar" id="thread-av" hidden></div>
@@ -738,8 +785,6 @@ const msgsEl = document.getElementById("msgs");
 const nameEl = document.getElementById("thread-name");
 const queueEl = document.getElementById("queue");
 const warnEl = document.getElementById("phone-warn");
-const listEl = document.getElementById("chat-list");
-const listMeta = document.getElementById("list-meta");
 const threadAv = document.getElementById("thread-av");
 const profileLink = document.getElementById("profile-link");
 let people = [];
@@ -747,7 +792,6 @@ let phones = [];
 let current = "";
 let currentPhone = "toby";
 let threadToken = 0;
-let listPhone = "toby";
 let lastMsgs = [];
 const demoThreads = {
   "David Parry": [
@@ -904,28 +948,20 @@ function jobLabel(job) {
   return who + " · " + (job.kind || "job");
 }
 
-function setTab(phone) {
-  listPhone = phone;
-  document.getElementById("tab-toby").classList.toggle("on", phone === "toby");
-  document.getElementById("tab-archie").classList.toggle("on", phone === "archie");
-  renderList();
-}
-
-function renderList() {
+function renderPhoneList(pid) {
   const q = filterEl.value.trim().toLowerCase();
-  const tobyN = people.filter(p => p.phone_id === "toby").length;
-  const archieN = people.filter(p => p.phone_id === "archie").length;
-  document.getElementById("count-toby").textContent = tobyN;
-  document.getElementById("count-archie").textContent = archieN;
-  const rows = people.filter(p => p.phone_id === listPhone && !p.archived && (!q || String(p.name).toLowerCase().includes(q)));
-  const archived = people.filter(p => p.phone_id === listPhone && p.archived && (!q || String(p.name).toLowerCase().includes(q)));
+  const rows = people.filter(p => p.phone_id === pid && !p.archived && (!q || String(p.name).toLowerCase().includes(q)));
+  const archived = people.filter(p => p.phone_id === pid && p.archived && (!q || String(p.name).toLowerCase().includes(q)));
   const unread = rows.filter(needsLook).length;
   const spamN = rows.filter(p => p.spam === "spam" || p.spam === "pitch").length;
-  listMeta.textContent = rows.length
-    ? rows.length + " conversation" + (rows.length === 1 ? "" : "s")
-      + (unread ? " · " + unread + " need a look" : "")
-      + (spamN ? " · " + spamN + " spam" : "")
-    : "No conversations stored";
+  const meta = document.querySelector('[data-col-meta="' + pid + '"]');
+  if (meta) {
+    meta.textContent = rows.length
+      ? rows.length + " conversation" + (rows.length === 1 ? "" : "s")
+        + (unread ? " · " + unread + " need a look" : "")
+        + (spamN ? " · " + spamN + " spam" : "")
+      : "No conversations stored";
+  }
   const rowHtml = p => {
     const on = current === p.name && currentPhone === p.phone_id ? " on" : "";
     const need = needsLook(p);
@@ -948,9 +984,15 @@ function renderList() {
       </div>
     </a>`;
   };
-  listEl.innerHTML = rows.map(rowHtml).join("")
+  const list = document.querySelector('[data-chat-list="' + pid + '"]');
+  if (!list) return;
+  list.innerHTML = rows.map(rowHtml).join("")
     + (archived.length ? `<p class="col-meta">Archived · ${archived.length}</p>` + archived.map(rowHtml).join("") : "")
     || `<p class="empty"><strong>Nothing stored yet</strong>Scan this phone, or wait for the evening import of older chats.</p>`;
+}
+function renderList() {
+  renderPhoneList("toby");
+  renderPhoneList("archie");
 }
 
 function chatFromUrl() {
@@ -1086,7 +1128,7 @@ async function openThread(name, phone, opts) {
   const token = ++threadToken;
   current = name;
   currentPhone = phone;
-  setTab(phone);
+  renderList();
   setChatUrl(name, phone, push);
   const known = people.find(p => p.name === name && p.phone_id === phone) || {};
   if (DEMO) {
@@ -1165,6 +1207,22 @@ aiDraftBtn.addEventListener("click", async () => {
   statusEl.textContent = data.message || "Draft queued";
   waitForLinkedInDraft(name, phone);
 });
+async function queueLinkedInReply(text, {force = false} = {}) {
+  if (!current || !text) return;
+  const sendBtn = document.getElementById("send");
+  sendBtn.disabled = true;
+  statusEl.textContent = "Queueing…";
+  const res = await fetch("/api/li/reply", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: current, phone_id: currentPhone, text, force}),
+  });
+  const data = await res.json();
+  sendBtn.disabled = false;
+  statusEl.textContent = data.ok ? (data.message || "queued LinkedIn reply") : ("Failed: " + (data.error || res.status));
+  if (data.ok) pollQueue();
+}
+
 document.getElementById("composer").addEventListener("submit", async e => {
   e.preventDefault();
   if (!current) return;
@@ -1183,27 +1241,7 @@ document.getElementById("composer").addEventListener("submit", async e => {
     statusEl.textContent = "Sent (demo)";
     return;
   }
-  const sendBtn = document.getElementById("send");
-  sendBtn.disabled = true;
-  const res = await fetch("/api/li/reply", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: current, phone_id: currentPhone, text}),
-  });
-  const data = await res.json();
-  sendBtn.disabled = false;
-  statusEl.textContent = data.ok ? data.message : ("Failed: " + (data.error || res.status));
-  if (!data.ok) return;
-  draftEl.value = "";
-  pollQueue();
-  const row = people.find(p => p.name === current && p.phone_id === currentPhone) || {};
-  row.last_from = "you";
-  row.last_text = text;
-  row.status = "waiting";
-  row.badge = "";
-  paintThread(current, currentPhone, lastMsgs.concat([
-    {side: "you", body: text, captured_at: new Date().toISOString()},
-  ]), "waiting", row.profile_url);
+  await queueLinkedInReply(text);
 });
 draftEl.addEventListener("keydown", e => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -1211,9 +1249,15 @@ draftEl.addEventListener("keydown", e => {
     document.getElementById("composer").requestSubmit();
   }
 });
-document.getElementById("tab-toby").addEventListener("click", () => setTab("toby"));
-document.getElementById("tab-archie").addEventListener("click", () => setTab("archie"));
-listEl.addEventListener("click", e => {
+document.querySelector(".workspace").addEventListener("click", e => {
+  const collapseBtn = e.target.closest("[data-collapse]");
+  if (collapseBtn) {
+    e.preventDefault();
+    const pid = collapseBtn.dataset.collapse;
+    try { localStorage.setItem(SIDEBAR_KEYS[pid], sidebarCollapsed(pid) ? "0" : "1"); } catch {}
+    applySidebarCollapse();
+    return;
+  }
   const btn = e.target.closest(".chat");
   if (!btn) return;
   if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
@@ -1394,6 +1438,11 @@ document.getElementById("draft-prompt-save").addEventListener("click", async () 
 });
 
 let sawRefresh = false;
+let sawReply = false;
+const LI_JOBS = ["linkedin_scan", "linkedin_feed", "linkedin_seed", "linkedin_backfill", "linkedin_reply", "linkedin_session", "linkedin_archive", "linkedin_refresh", "linkedin_profile"];
+function isFinished(job) {
+  return ["completed", "done", "error", "cancelled"].includes(job.status);
+}
 async function pollQueue() {
   if (DEMO) {
     queueEl.innerHTML = `<span class="job-pill">Toby · Scan · running <button type="button">stop</button></span>`;
@@ -1401,15 +1450,31 @@ async function pollQueue() {
   }
   const res = await fetch("/api/queue");
   const data = await res.json();
-  const jobs = (data.jobs || []).filter(j =>
-    ["linkedin_scan", "linkedin_feed", "linkedin_seed", "linkedin_backfill", "linkedin_reply", "linkedin_session", "linkedin_archive", "linkedin_refresh", "linkedin_profile"].includes(j.kind) &&
-    ["queued", "running"].includes(j.status)
-  );
+  const all = (data.jobs || []).filter(j => LI_JOBS.includes(j.kind));
+  const jobs = all.filter(j => ["queued", "running"].includes(j.status));
+  const sendBtn = document.getElementById("send");
+  const replyActive = jobs.some(j => j.kind === "linkedin_reply" && j.name === current && (j.phone_id || "toby") === currentPhone);
+  if (sendBtn && document.activeElement !== sendBtn) sendBtn.disabled = replyActive;
   const refreshing = jobs.some(j => j.kind === "linkedin_refresh");
   if (sawRefresh && !refreshing && current) {
     loadPeople().then(() => openThread(current, currentPhone, {push: false}));
   }
   sawRefresh = refreshing;
+  if (sawReply && !replyActive && current) {
+    const mine = all.filter(j => j.kind === "linkedin_reply" && j.name === current && (j.phone_id || "toby") === currentPhone && isFinished(j));
+    mine.sort((a, b) => (b.id || 0) - (a.id || 0));
+    const last = mine[0];
+    if (last) {
+      if (last.status === "completed" || last.status === "done") {
+        statusEl.textContent = last.message || last.title || "sent";
+        if (document.activeElement !== draftEl) draftEl.value = "";
+      } else {
+        statusEl.textContent = "Failed: " + (last.error || last.message || last.status);
+      }
+    }
+    loadPeople().then(() => openThread(current, currentPhone, {push: false}));
+  }
+  sawReply = replyActive;
   queueEl.innerHTML = jobs.map(j =>
     `<span class="job-pill">${esc(jobLabel(j))} · ${esc(j.status)}
      <button type="button" data-cancel="${j.id}">stop</button></span>`
@@ -1433,9 +1498,9 @@ async function health() {
   const offline = data.offline || [];
   warnEl.hidden = !offline.length;
   warnEl.textContent = offline.length ? ("Offline: " + offline.join(", ")) : "";
-  document.getElementById("tab-toby").classList.toggle("offline",
+  document.querySelector('.phone-col[data-phone="toby"]')?.classList.toggle("offline",
     !!((data.phones || []).find(p => p.id === "toby" && p.ready && !p.online)));
-  document.getElementById("tab-archie").classList.toggle("offline",
+  document.querySelector('.phone-col[data-phone="archie"]')?.classList.toggle("offline",
     !!((data.phones || []).find(p => p.id === "archie" && p.ready && !p.online)));
 }
 
@@ -1444,12 +1509,33 @@ loadPeople().then(() => {
   if (chat.name) return openThread(chat.name, chat.phone, {push: false});
   if (DEMO) openThread("David Parry", "toby", {push: false});
 });
+const SIDEBAR_KEYS = {toby: "li.sidebar.toby", archie: "li.sidebar.archie"};
+function sidebarCollapsed(pid){
+  try { return localStorage.getItem(SIDEBAR_KEYS[pid]) === "1"; } catch { return false; }
+}
+function applySidebarCollapse(){
+  const ws = document.querySelector(".workspace");
+  for (const pid of ["toby", "archie"]) {
+    const col = document.querySelector('.phone-col[data-phone="' + pid + '"]');
+    if (!col) continue;
+    const on = sidebarCollapsed(pid);
+    const label = pid === "archie" ? "Archie" : "Toby";
+    col.classList.toggle("collapsed", on);
+    ws.classList.toggle(pid + "-collapsed", on);
+    const btn = col.querySelector("[data-collapse]");
+    if (!btn) continue;
+    btn.setAttribute("aria-expanded", on ? "false" : "true");
+    btn.title = on ? "Expand " + label : "Collapse " + label;
+    btn.textContent = on ? "›" : "‹";
+  }
+}
+applySidebarCollapse();
 health();
 pollQueue();
 if (!DEMO) {
   setInterval(loadPeople, 8000);
   setInterval(health, 15000);
-  setInterval(pollQueue, 4000);
+  setInterval(pollQueue, 2000);
 }
 </script>
 </body>

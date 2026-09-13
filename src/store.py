@@ -1016,18 +1016,27 @@ def namesake_same_person(conn: sqlite3.Connection, keep: str, other: str) -> boo
                     return True
     stub_k, stub_o = not them_k, not them_o
     if stub_k or stub_o:
-        from src.photos import faces_match, load_photo, photos_conflict
-
-        if photos_conflict(keep, other):
+        expired_k = person_is_expired(_namesake_chat_row(conn, keep))
+        expired_o = person_is_expired(_namesake_chat_row(conn, other))
+        # A real expired match stays split from a live thread.
+        if (them_k and expired_o) or (them_o and expired_k):
             return False
-        # Empty/expired match vs a real thread: two people unless the faces match.
-        if (them_k and stub_o) or (them_o and stub_k):
-            photo_k, photo_o = load_photo(keep), load_photo(other)
-            if photo_k is not None and photo_o is not None:
-                return faces_match(photo_k, photo_o)
-            return False
+        # Ghost numbered rows (empty / opener-only) are the same person.
+        # List-crop vs profile-crop must not keep Hannah 3 around.
         return True
     return False
+
+
+def _namesake_chat_row(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT p.name, c.status, c.last_text, c.preview, c.last_from, c.message_until
+        FROM people p
+        LEFT JOIN chats c ON c.person_id = p.id
+        WHERE p.name = ? COLLATE NOCASE AND p.phone_id = ?
+        """,
+        (name, _scope_phone()),
+    ).fetchone()
 
 
 def _them_bodies(conn: sqlite3.Connection, name: str) -> set[str]:

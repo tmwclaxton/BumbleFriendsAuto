@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Instagram · LeadsAuto</title>
+<style>
+  :root {
+    --bg: #120810;
+    --rail: #1a1016;
+    --panel: #23141c;
+    --line: #3a2a32;
+    --text: #f7f0ee;
+    --muted: #b39aa4;
+    --ig: #e1306c;
+    --ig-deep: #833ab4;
+    --need: #ff8d6b;
+    --wip: #f0c94a;
+    --shadow: 0 16px 36px #05020455;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden;
+    font: 14px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+    background: radial-gradient(900px 420px at 8% -20%, #e1306c28, transparent 55%),
+      radial-gradient(700px 380px at 100% 0%, #833ab433, transparent 50%), var(--bg);
+    color: var(--text);
+  }
+  a { color: var(--ig); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  #phone-warn { padding: 8px 22px; background: #3a2218; color: #ffc4a8; border-bottom: 1px solid #6a3a28; font-size: 13px; }
+  #phone-warn[hidden] { display: none !important; }
+  .topbar { display: flex; align-items: center; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: #161012d9; backdrop-filter: blur(14px); }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 198px; }
+  .mark { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center;
+    background: linear-gradient(180deg, #f77737, var(--ig), var(--ig-deep)); color: #fff; font: 800 13px/1 "Segoe UI", sans-serif; }
+  .brand h1 { margin: 0; font-size: 15px; font-weight: 700; }
+  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+  .top-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex: 1; }
+  select, button, input { font: inherit; border-radius: 9px; border: 1px solid var(--line); background: #23141c; color: var(--text); padding: 7px 11px; }
+  button { cursor: pointer; }
+  button:hover, select:hover { border-color: #6a4450; }
+  #feed { font-weight: 650; background: linear-gradient(180deg, #f77737, var(--ig)); border-color: transparent; color: #fff; }
+  .wip { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+    color: #1a1508; background: var(--wip); border-radius: 999px; padding: 2px 7px; vertical-align: middle; }
+  dialog.sheet { width: min(560px, calc(100vw - 24px)); border: 1px solid var(--line); border-radius: 16px; background: #1c1418; color: var(--text); padding: 0; }
+  dialog.sheet.wide { width: min(820px, calc(100vw - 24px)); }
+  dialog.sheet::backdrop { background: #12080ccc; }
+  dialog.sheet h3 { margin: 0; font-size: 16px; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+  .sheet-body { padding: 14px 16px 18px; max-height: 70vh; overflow: auto; }
+  .hint { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+  .sheet-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 11px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .workspace { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr); min-height: 0; overflow: hidden; }
+  .workspace.toby-collapsed { grid-template-columns: 44px minmax(220px, 1fr) minmax(0, 1.35fr); }
+  .workspace.archie-collapsed { grid-template-columns: minmax(220px, 1fr) 44px minmax(0, 1.35fr); }
+  .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 44px 44px minmax(0, 1fr); }
+  .phone-col {
+    display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: color-mix(in srgb, var(--rail) 92%, #000); border-right: 1px solid var(--line);
+  }
+  .phone-col.toby { --col: #ff8fb3; --col-bg: #2a1018; }
+  .phone-col.archie { --col: #f0c674; --col-bg: #2a2212; }
+  .col-head {
+    flex-shrink: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+    padding: 12px 12px 10px; border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--col-bg) 82%, #000);
+  }
+  .col-head h2 { margin: 0; font-size: 14px; font-weight: 700; color: var(--col); }
+  .col-collapse {
+    flex-shrink: 0; width: 28px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 8px;
+    background: transparent; color: var(--col); font: 16px/1 inherit; cursor: pointer;
+  }
+  .col-collapse:hover { background: #2a1c21; }
+  .phone-col.collapsed { align-self: stretch; height: 100%; min-height: 100%; background: var(--col-bg); }
+  .phone-col.collapsed .col-scroll, .phone-col.collapsed .col-meta { display: none; }
+  .phone-col.collapsed .col-head {
+    flex: 1 1 auto; flex-direction: column; align-items: center; justify-content: flex-start;
+    gap: 10px; padding: 8px 4px; min-height: 100%; height: 100%; border-bottom: 0; background: var(--col-bg);
+  }
+  .phone-col.collapsed h2 { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 13px; white-space: nowrap; }
+  .col-meta { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  @media (max-width: 800px) {
+    .workspace, .workspace.toby-collapsed, .workspace.archie-collapsed, .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 1fr; }
+    .phone-col.collapsed { display: none; }
+  }
+  .col-scroll { flex: 1; overflow: auto; padding: 0 8px 16px; }
+  .thread { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 18px 22px 28px; overflow: auto; }
+  .thread h2 { margin: 0 0 8px; }
+  .thread > p { color: var(--muted); max-width: 560px; }
+  .session-panel { margin: 0 0 18px; padding: 14px 16px 12px; border: 1px solid var(--line); border-radius: 16px; background: #2a1c21; box-shadow: var(--shadow); }
+  .session-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+  .session-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .session-stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 10px; }
+  .stat { min-width: 92px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: #1a1016; }
+  .stat b { display: block; font-size: 20px; line-height: 1.1; }
+  .stat span { color: var(--muted); font-size: 11px; }
+  .stat.like b { color: #ffb3c8; }
+  #session-summary { margin: 0 0 12px; color: var(--muted); font-size: 13px; max-width: none; }
+  .session-table-wrap { max-height: min(46vh, 440px); overflow: auto; border: 1px solid var(--line); border-radius: 12px; }
+  .session-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .session-table th { position: sticky; top: 0; text-align: left; color: var(--muted); font-size: 11px; letter-spacing: 0.03em; padding: 8px 10px; border-bottom: 1px solid var(--line); background: #231820; }
+  .session-table td { padding: 8px 10px; border-bottom: 1px solid #332228; vertical-align: top; }
+  .session-table tr.like td.handle { color: #ffb3c8; font-weight: 650; }
+  .session-table .act-like { color: #ffb3c8; font-weight: 650; }
+  .session-table .act-skip { color: var(--muted); }
+  .liked-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+  .liked-chip { font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--ig); color: #ffb3c8; }
+  .empty { color: var(--muted); padding: 12px; }
+  #queue { display: flex; flex-wrap: nowrap; gap: 6px; max-width: min(280px, 28vw); overflow: hidden; color: var(--muted); font-size: 12px; }
+  .job-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: #3a2228; border: 1px solid #6a3a44; color: #ffb3c8; white-space: nowrap; }
+  .note { border: 1px dashed #6a4450; border-radius: 12px; padding: 12px; margin: 12px 0; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="mark" aria-hidden="true">IG</div>
+    <div>
+      <h1>Instagram</h1>
+      <p><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/hinge">Hinge</a> · <a href="/bumble">Bumble</a> · Pixel Following likes</p>
+    </div>
+  </div>
+  <div class="top-tools">
+    <select id="phone-target" title="Live Instagram is Toby on the Pixel.">
+      <option value="toby" selected>Toby · Pixel (live)</option>
+      <option value="archie">Archie · Galaxy (not logged in)</option>
+    </select>
+    <button type="button" id="feed">Queue Following likes</button>
+    <button type="button" id="feed-settings">Feed prefs</button>
+    <button type="button" id="inbox-scan" disabled>Grab chats <span class="wip">WIP</span></button>
+    <div id="queue"></div>
+  </div>
+</header>
+<div id="phone-warn" hidden role="status"></div>
+<div class="workspace">
+  <section class="phone-col toby" data-phone="toby">
+    <div class="col-head">
+      <button type="button" class="col-collapse" data-collapse="toby" aria-expanded="true" title="Collapse Toby">‹</button>
+      <div>
+        <h2>Toby · Pixel</h2>
+        <p class="col-meta" data-col-meta="toby">Inbox capture is not live yet.</p>
+      </div>
+    </div>
+    <div class="col-scroll" data-chat-list="toby"></div>
+  </section>
+  <section class="phone-col archie" data-phone="archie">
+    <div class="col-head">
+      <button type="button" class="col-collapse" data-collapse="archie" aria-expanded="true" title="Collapse Archie">‹</button>
+      <div>
+        <h2>Archie · Galaxy</h2>
+        <p class="col-meta" data-col-meta="archie">Not logged in.</p>
+      </div>
+    </div>
+    <div class="col-scroll" data-chat-list="archie"></div>
+  </section>
+  <section class="thread">
+    <section id="last-session" class="session-panel" hidden>
+      <div class="session-head">
+        <div>
+          <strong>Last Following session</strong>
+          <p id="session-when"></p>
+        </div>
+        <button type="button" id="session-open">Open full list</button>
+      </div>
+      <div class="session-stats" id="session-stats"></div>
+      <p id="session-summary"></p>
+      <div class="liked-row" id="liked-handles"></div>
+      <div class="session-table-wrap">
+        <table class="session-table">
+          <thead>
+            <tr><th>Account</th><th>When</th><th>Kind</th><th>Decision</th><th>Why</th></tr>
+          </thead>
+          <tbody id="session-rows"></tbody>
+        </table>
+      </div>
+    </section>
+    <h2 id="thread-name">Instagram CRM</h2>
+    <p id="thread-copy">Following-feed likes run on Toby’s Pixel twice a day. Chat grabbing and Galaxy Instagram stay off until those accounts are ready.</p>
+    <div class="note" id="account-note"></div>
+  </section>
+</div>
+<dialog class="sheet" id="feed-sheet">
+  <div class="sheet-head"><h3>Following like prefs</h3><button type="button" id="feed-close">Close</button></div>
+  <div class="sheet-body">
+    <p class="hint">Each run now walks further down Following (default 40–80 posts) so friend posts are not stuck behind meme pages at the top. Like when vision says it is a person and the stamp is under a week old.</p>
+    <div class="grid2">
+      <div><label>Min posts / run</label><input id="min-posts" type="number" min="10" max="80"/></div>
+      <div><label>Max posts / run</label><input id="max-posts" type="number" min="20" max="120"/></div>
+    </div>
+    <div class="sheet-actions"><button type="button" id="feed-save">Save prefs</button></div>
+  </div>
+</dialog>
+<dialog class="sheet wide" id="summary-sheet">
+  <div class="sheet-head"><h3>Following session</h3><button type="button" id="summary-close">Close</button></div>
+  <div class="sheet-body">
+    <p class="hint" id="summary-meta"></p>
+    <div class="session-stats" id="summary-stats"></div>
+    <p id="summary-body"></p>
+    <div class="liked-row" id="summary-liked"></div>
+    <div class="session-table-wrap">
+      <table class="session-table">
+        <thead>
+          <tr><th>Account</th><th>When</th><th>Kind</th><th>Decision</th><th>Why</th></tr>
+        </thead>
+        <tbody id="summary-rows"></tbody>
+      </table>
+    </div>
+  </div>
+</dialog>
+<script>
+const $ = (id) => document.getElementById(id);
+let lastFinished = sessionStorage.getItem("ig-session-finished") || "";
+
+function esc(s){ return String(s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+
+function renderLists(){
+  const tobyMeta = document.querySelector('[data-col-meta="toby"]');
+  const archieMeta = document.querySelector('[data-col-meta="archie"]');
+  const tobyList = document.querySelector('[data-chat-list="toby"]');
+  const archieList = document.querySelector('[data-chat-list="archie"]');
+  if (tobyMeta) tobyMeta.innerHTML = `Toby chat grab is disabled. <span class="wip">WIP</span>`;
+  if (archieMeta) archieMeta.innerHTML = `Galaxy is not logged into Instagram. <span class="wip">WIP</span>`;
+  if (tobyList) tobyList.innerHTML = `<p class="empty">No captured Instagram threads. Grabbing chats on Toby is switched off. <span class="wip">WIP</span></p>`;
+  if (archieList) archieList.innerHTML = `<p class="empty">No Archie Instagram session yet. <span class="wip">WIP</span></p>`;
+  $("thread-name").textContent = "Instagram CRM";
+  $("thread-copy").textContent = "Following likes are live on Toby’s Pixel. Inbox sync, DM drafts, and unfollow review stay off this page.";
+  $("account-note").innerHTML = `Unfollow / prune stays stopped. Galaxy Instagram is parked until that account exists. <span class="wip">WIP</span>`;
+}
+
+function sessionWhen(session){
+  const when = session.finished_at || session.started_at || "";
+  const stamp = when ? new Date(when).toLocaleString(undefined, {day:"numeric", month:"short", hour:"2-digit", minute:"2-digit"}) : "";
+  return [session.filter || "person · under 1 week", stamp].filter(Boolean).join(" · ");
+}
+function sessionStats(session){
+  const cards = session.cards || [];
+  const accounts = session.accounts || new Set(cards.map(c => c.handle).filter(Boolean)).size;
+  return [
+    ["reviewed", session.reviewed || cards.length, "Posts walked"],
+    ["liked", session.likes || 0, "Liked"],
+    ["skipped", session.skips || 0, "Skipped"],
+    ["accounts", accounts, "Accounts"],
+  ].map(([id, n, label]) => `<div class="stat ${id==="liked"?"like":""}"><b>${esc(n)}</b><span>${esc(label)}</span></div>`).join("");
+}
+function likedChips(session){
+  const liked = session.liked_handles || (session.cards||[]).filter(c => c.action==="like" && c.handle).map(c => c.handle);
+  return liked.map(h => `<span class="liked-chip">@${esc(h)}</span>`).join("");
+}
+function sessionRows(session){
+  return (session.cards || []).map(c => {
+    const like = c.action === "like";
+    return `<tr class="${like?"like":""}">
+      <td class="handle">@${esc(c.handle || "unknown")}</td>
+      <td>${esc(c.age || "")}</td>
+      <td>${esc(c.kind || "")}</td>
+      <td class="${like?"act-like":"act-skip"}">${esc(c.action || "")}</td>
+      <td>${esc(c.reason || "")}</td>
+    </tr>`;
+  }).join("");
+}
+function fillSession(session){
+  $("session-when").textContent = sessionWhen(session);
+  $("session-stats").innerHTML = sessionStats(session);
+  $("session-summary").textContent = session.summary;
+  $("liked-handles").innerHTML = likedChips(session);
+  $("session-rows").innerHTML = sessionRows(session);
+  $("summary-meta").textContent = sessionWhen(session);
+  $("summary-stats").innerHTML = sessionStats(session);
+  $("summary-body").textContent = session.summary;
+  $("summary-liked").innerHTML = likedChips(session);
+  $("summary-rows").innerHTML = sessionRows(session);
+}
+function renderSession(session, {popup} = {}){
+  const box = $("last-session");
+  if(!session || !session.summary){ box.hidden = true; return; }
+  box.hidden = false;
+  fillSession(session);
+  if(popup && session.finished_at && session.finished_at !== lastFinished){
+    lastFinished = session.finished_at;
+    sessionStorage.setItem("ig-session-finished", lastFinished);
+    $("summary-sheet").showModal();
+  }
+}
+
+async function refreshPeople(){
+  const res = await fetch("/api/instagram/people");
+  const data = await res.json();
+  renderSession(data.last_session, {popup: true});
+  renderLists();
+}
+
+async function refreshQueue(){
+  try {
+    const res = await fetch("/api/queue");
+    const data = await res.json();
+    const jobs = (data.jobs || []).filter(j =>
+      String(j.kind || "").startsWith("instagram") && ["queued", "running"].includes(j.status)
+    ).slice(0, 2);
+    const phones = data.phones || [];
+    const toby = phones.find(p => p.id === "toby");
+    if(toby && toby.holding && toby.holding !== "instagram"){
+      $("phone-warn").hidden = false;
+      $("phone-warn").textContent = "Pixel is busy ("+(toby.holding_title||toby.holding)+"). Instagram will wait.";
+    } else $("phone-warn").hidden = true;
+    $("queue").innerHTML = jobs.map(j => `<span class="job-pill">${esc(j.title||j.kind)} · ${esc(j.status)}</span>`).join("");
+  } catch (e) { /* ignore */ }
+}
+
+$("feed").onclick = async () => {
+  await fetch("/api/instagram/feed", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({phone_id:"toby"})});
+  refreshQueue();
+};
+$("inbox-scan").onclick = () => {};
+$("feed-settings").onclick = async () => {
+  const res = await fetch("/api/instagram/feed/prefs");
+  const p = await res.json();
+  $("min-posts").value = p.min_posts;
+  $("max-posts").value = p.max_posts;
+  $("feed-sheet").showModal();
+};
+$("feed-close").onclick = () => $("feed-sheet").close();
+$("feed-save").onclick = async () => {
+  await fetch("/api/instagram/feed/prefs", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({min_posts: $("min-posts").value, max_posts: $("max-posts").value}),
+  });
+  $("feed-sheet").close();
+};
+$("session-open").onclick = () => $("summary-sheet").showModal();
+$("summary-close").onclick = () => $("summary-sheet").close();
+const SIDEBAR_KEYS = {toby: "ig.sidebar.toby", archie: "ig.sidebar.archie"};
+function sidebarCollapsed(pid){ try { return localStorage.getItem(SIDEBAR_KEYS[pid]) === "1"; } catch { return false; } }
+function applySidebarCollapse(){
+  const ws = document.querySelector(".workspace");
+  for (const pid of ["toby", "archie"]) {
+    const col = document.querySelector('.phone-col[data-phone="' + pid + '"]');
+    if (!col) continue;
+    const on = sidebarCollapsed(pid);
+    const label = pid === "archie" ? "Archie" : "Toby";
+    col.classList.toggle("collapsed", on);
+    ws.classList.toggle(pid + "-collapsed", on);
+    const btn = col.querySelector("[data-collapse]");
+    if (!btn) continue;
+    btn.setAttribute("aria-expanded", on ? "false" : "true");
+    btn.title = on ? "Expand " + label : "Collapse " + label;
+    btn.textContent = on ? "›" : "‹";
+  }
+}
+document.querySelector(".workspace")?.addEventListener("click", (e) => {
+  const collapseBtn = e.target.closest("[data-collapse]");
+  if (!collapseBtn) return;
+  e.preventDefault();
+  const pid = collapseBtn.dataset.collapse;
+  try { localStorage.setItem(SIDEBAR_KEYS[pid], sidebarCollapsed(pid) ? "0" : "1"); } catch {}
+  applySidebarCollapse();
+});
+applySidebarCollapse();
+refreshPeople();
+refreshQueue();
+setInterval(refreshPeople, 12000);
+setInterval(refreshQueue, 5000);
+</script>
+</body>
+</html>

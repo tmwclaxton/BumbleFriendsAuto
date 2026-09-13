@@ -1,10 +1,13 @@
 import random
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from src.linkedin_screen import (
+    composer_text,
     find_archive_action,
     find_conversation_hit,
     find_dismiss_point,
@@ -190,7 +193,12 @@ class LinkedInParseTests(unittest.TestCase):
         toby = next(h for h in hits if h.name == "Toby Claxton")
         self.assertTrue(toby.unread)
         self.assertEqual(toby.preview, "oh dear")
-        patricia = next(h for h in hits if h.name == "Patricia Mae Fregil")
+        frozen = datetime(2026, 9, 13, 14, 0, tzinfo=ZoneInfo("Europe/London"))
+        dated = parse_messaging_list(xml, now=frozen)
+        self.assertEqual(next(h for h in dated if h.name == "Toby Claxton").when, "2026-09-13T11:00:00Z")
+        self.assertEqual(next(h for h in dated if h.name == "Mike Malefakis").when, "2026-09-09T11:00:00Z")
+        self.assertEqual(next(h for h in dated if h.name == "Patricia Mae Fregil").when, "2026-07-13T11:00:00Z")
+        patricia = next(h for h in dated if h.name == "Patricia Mae Fregil")
         self.assertEqual(patricia.preview, "InMail • Grow Your Hiring Pipeline, Expand Your BD Reach")
         self.assertTrue(looks_like_inmail_promo(patricia.preview))
         self.assertEqual(inmail_kind(patricia.preview), "inmail")
@@ -460,6 +468,37 @@ class LinkedInReplyParseTests(unittest.TestCase):
         self.assertTrue(message_visible(xml, "coffee next tuesday?"))
         self.assertFalse(message_visible(xml, "not this text"))
 
+    def test_composer_only_is_not_sent(self):
+        xml = """<?xml version='1.0' encoding='UTF-8'?>
+        <hierarchy>
+          <node resource-id="com.linkedin.android:id/body" text="Next Friday is good 10 or 11 am ? KR"/>
+          <node resource-id="com.linkedin.android:id/messaging_keyboard_text_input_container" text="Hi Neil, my calendy is https://calendly.com/tmwclaxton/30min Cheers, Toby" class="android.widget.EditText"/>
+          <node resource-id="com.linkedin.android:id/messaging_keyboard_send_button" content-desc="Send" clickable="true" bounds="[900,2200][1080,2330]"/>
+        </hierarchy>"""
+        draft = "Hi Neil, my calendy is https://calendly.com/tmwclaxton/30min\n\nCheers, Toby"
+        self.assertIn("calendly", composer_text(xml).lower())
+        self.assertFalse(message_visible(xml, draft))
+        self.assertEqual(find_send_point(xml), (990, 2265))
+
+    def test_sent_bubble_with_url(self):
+        xml = """<?xml version='1.0' encoding='UTF-8'?>
+        <hierarchy>
+          <node resource-id="com.linkedin.android:id/body" text="Hi Neil, my calendy is https://calendly.com/tmwclaxton/30min Cheers, Toby"/>
+          <node resource-id="com.linkedin.android:id/messaging_keyboard_text_input_container" text="" class="android.widget.EditText"/>
+        </hierarchy>"""
+        draft = "Hi Neil, my calendy is https://calendly.com/tmwclaxton/30min\n\nCheers, Toby"
+        self.assertTrue(message_visible(xml, draft))
+
+    def test_typeable_keeps_paragraph_breaks(self):
+        from src.linkedin_sync import _typeable
+
+        raw = "Hi Neil, my calendy is https://calendly.com/tmwclaxton/30min\n\nCheers, Toby"
+        typed = _typeable(raw)
+        self.assertIn("\n\n", typed)
+        self.assertTrue(typed.startswith("Hi Neil,"))
+        self.assertTrue(typed.endswith("Cheers, Toby"))
+        self.assertNotIn("min Cheers", typed)
+
     def test_add_message_marks_waiting(self):
         from src.linkedin_store import add_message, ensure_schema, get_person, list_thread, set_archived, set_spam
         from src.linkedin_store import upsert_chat as li_upsert
@@ -524,6 +563,7 @@ class LinkedInCronSkipTests(unittest.TestCase):
         reply = [{"phone_id": "toby", "kind": "linkedin_reply", "status": "running"}]
         with patch("src.phone_queue.queue_snapshot", return_value=reply):
             self.assertEqual(cron_skip_reason("toby", "bumble"), "waiting for LinkedIn job")
+            self.assertEqual(cron_skip_reason("toby", "linkedin"), "waiting for LinkedIn job")
 
 
 class LinkedInBackfillTests(unittest.TestCase):
@@ -715,13 +755,61 @@ class LinkedInTobyInboundStoreTests(unittest.TestCase):
             try:
                 ensure_schema(conn)
                 for hit in hits:
-                    _store_hit(conn, "toby", hit.name, hit.preview, "unread" if hit.unread else "", [])
+                    _store_hit(
+                        conn,
+                        "toby",
+                        hit.name,
+                        hit.preview,
+                        "unread" if hit.unread else "",
+                        [],
+                        when=hit.when,
+                    )
                 stored = inbox_state_for_scan(conn, "toby")
                 self.assertIn("priya shah", stored)
                 self.assertIn("miles okonkwo", stored)
                 priya = get_person(conn, "Priya Shah", "toby")
                 self.assertIsNotNone(priya)
                 self.assertIn("grant round", str(priya["preview"] or priya["last_text"]))
+            finally:
+                conn.close()
+
+    def test_upsert_keeps_inbox_time_when_preview_unchanged(self):
+        from src.dashboard import people_api_payload
+        from src.linkedin_store import ensure_schema, upsert_chat
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(Path(tmp) / "friends.db")
+            try:
+                ensure_schema(conn)
+                pid = upsert_chat(
+                    conn,
+                    "Elin de Zoete",
+                    preview="hi",
+                    last_from="them",
+                    last_text="hi",
+                    phone_id="toby",
+                    updated_at="2026-09-10T12:00:00Z",
+                )
+                conn.execute(
+                    "INSERT INTO li_messages (person_id, side, body, captured_at) VALUES (?, ?, ?, ?)",
+                    (pid, "them", "later clock", "2026-09-13T01:26:00Z"),
+                )
+                conn.commit()
+                upsert_chat(
+                    conn,
+                    "Elin de Zoete",
+                    preview="hi",
+                    last_from="them",
+                    last_text="hi",
+                    phone_id="toby",
+                )
+                row = conn.execute(
+                    "SELECT updated_at FROM li_chats WHERE person_id = ?", (pid,)
+                ).fetchone()
+                self.assertEqual(row["updated_at"], "2026-09-10T12:00:00Z")
+                payload = people_api_payload(conn, channel="linkedin")
+                person = next(p for p in payload["people"] if p["name"] == "Elin de Zoete")
+                self.assertEqual(person["updated_at"], "2026-09-13T01:26:00Z")
             finally:
                 conn.close()
 

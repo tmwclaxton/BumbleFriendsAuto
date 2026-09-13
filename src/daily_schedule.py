@@ -17,7 +17,7 @@ from src.phones import DEFAULT_PHONE_ID, expand_phone_ids, phone_ids
 
 LONDON = ZoneInfo("Europe/London")
 PLAN_NAME = "daily_phone_plan.json"
-ACCEPTED_CHANNELS = ("bumble", "linkedin", "hinge")
+ACCEPTED_CHANNELS = ("bumble", "linkedin", "hinge", "instagram")
 FAST_SCAN_START_HOUR = 8
 FAST_SCAN_END_HOUR = 21
 FAST_SCAN_MIN_GAP = 30 * 60
@@ -30,6 +30,15 @@ LINKEDIN_FEED_START_HOUR = 9
 LINKEDIN_FEED_END_HOUR = 21
 LINKEDIN_FEED_MIN_GAP = 90 * 60
 LINKEDIN_FEED_MAX_GAP = 180 * 60
+HINGE_SCAN_START_HOUR = 9
+HINGE_SCAN_END_HOUR = 23
+HINGE_SCAN_MIN_GAP = 50 * 60
+HINGE_SCAN_MAX_GAP = 100 * 60
+HINGE_SWIPE_START_HOUR = 4
+HINGE_SWIPE_END_HOUR = 7
+HINGE_LIVE_PHONE = "toby"
+INSTAGRAM_FEED_WINDOWS = ((9, 13), (15, 21))
+INSTAGRAM_LIVE_PHONE = "toby"
 
 
 def _iso(value: datetime) -> str:
@@ -95,13 +104,27 @@ def _entry(
     }
 
 
+def space_lane(row: dict) -> str:
+    """Jobs collide on a device, not on the CRM account id.
+
+    Toby's Hinge is Galaxy; Toby's Bumble / LinkedIn / Instagram stay on Pixel.
+    Archie's LinkedIn is the same Galaxy, so it shares a lane with Hinge.
+    """
+    pid = str(row.get("phone_id") or "")
+    kind = str(row.get("kind") or "")
+    channel = str(row.get("channel") or "")
+    if channel == "hinge" or kind.startswith("hinge") or pid == "archie":
+        return "galaxy"
+    return f"{pid}:pixel"
+
+
 def _space_items(items: list[dict], *, gap_seconds: int = 60) -> list[dict]:
-    """Push colliding per-phone jobs after the earlier block so order is visible."""
+    """Push colliding jobs on the same device after the earlier block."""
     from src.phone_queue import _DEFAULT_DURATION_SECONDS, _MIN_DURATION_SECONDS
 
     grouped: dict[str, list[dict]] = {}
     for row in items:
-        grouped.setdefault(str(row.get("phone_id") or ""), []).append(row)
+        grouped.setdefault(space_lane(row), []).append(row)
     out: list[dict] = []
     for rows in grouped.values():
         rows.sort(key=lambda row: (str(row.get("scheduled_at") or ""), str(row.get("kind") or "")))
@@ -151,6 +174,21 @@ def _save_plan(plan: dict) -> None:
 def _has_slots(row: dict, key: str) -> bool:
     slots = row.get(key)
     return isinstance(slots, list) and bool(slots)
+
+
+def _slots_in_hours(row: dict, key: str, start_hour: int, end_hour: int) -> bool:
+    if not _has_slots(row, key):
+        return False
+    for slot in row.get(key) or []:
+        if not isinstance(slot, dict):
+            return False
+        try:
+            at = datetime.fromtimestamp(float(slot.get("at") or 0), LONDON)
+        except (TypeError, ValueError, OSError):
+            return False
+        if not start_hour <= at.hour < end_hour:
+            return False
+    return True
 
 
 def _jitter_times(
@@ -341,6 +379,60 @@ def ensure_day_plan(
         )
         changed = True
 
+    if not _has_slots(row, "hinge_scan"):
+        from src.jobs.hinge_cron import next_scan_due_at as next_hinge_due_at
+
+        due = next_hinge_due_at()
+        times = _jitter_times(
+            day_start,
+            now=stamp,
+            next_due=due,
+            rng=dice,
+            start_hour=HINGE_SCAN_START_HOUR,
+            end_hour=HINGE_SCAN_END_HOUR,
+            min_gap=HINGE_SCAN_MIN_GAP,
+            max_gap=HINGE_SCAN_MAX_GAP,
+        )
+        window_start = day_start.replace(hour=HINGE_SCAN_START_HOUR).timestamp()
+        window_end = day_start.replace(hour=HINGE_SCAN_END_HOUR).timestamp()
+        row["hinge_scan"] = _slot_rows(
+            times,
+            pending=_pending_for(
+                times, due=due, current=current, window_start=window_start, window_end=window_end
+            ),
+        )
+        changed = True
+
+    if not _slots_in_hours(row, "hinge_swipe", HINGE_SWIPE_START_HOUR, HINGE_SWIPE_END_HOUR):
+        from src.jobs.hinge_cron import next_swipe_due_at
+
+        due = next_swipe_due_at()
+        start = day_start.replace(hour=HINGE_SWIPE_START_HOUR, minute=0, second=0, microsecond=0)
+        end = day_start.replace(hour=HINGE_SWIPE_END_HOUR, minute=0, second=0, microsecond=0)
+        if due > 0:
+            due_at = datetime.fromtimestamp(due, LONDON)
+            ts = due_at.timestamp() if start <= due_at < end else (start + timedelta(minutes=dice.randint(20, 140))).timestamp()
+        else:
+            ts = (start + timedelta(minutes=dice.randint(20, 140))).timestamp()
+        row["hinge_swipe"] = _slot_rows(
+            [ts],
+            pending=0,
+            duration_seconds=_kind_duration("hinge_swipe"),
+        )
+        changed = True
+
+    if not _has_slots(row, "instagram_feed"):
+        from src.jobs.instagram_cron import next_feed_due_at
+
+        due = next_feed_due_at()
+        times = _two_window_times(day_start, due=due, rng=dice, windows=INSTAGRAM_FEED_WINDOWS)
+        row["instagram_feed"] = _slot_rows(
+            times,
+            pending=0,
+            duration_seconds=_kind_duration("instagram_feed"),
+        )
+        changed = True
+
     row.setdefault("timezone", "Europe/London")
     if _ensure_slot_durations(row):
         changed = True
@@ -363,6 +455,9 @@ def _ensure_slot_durations(row: dict) -> bool:
         ("fast_scan", "fast_scan"),
         ("linkedin_scan", "linkedin_scan"),
         ("linkedin_feed", "linkedin_feed"),
+        ("hinge_scan", "hinge_scan"),
+        ("hinge_swipe", "hinge_swipe"),
+        ("instagram_feed", "instagram_feed"),
     ):
         expected = _kind_duration(kind)
         for slot in row.get(key) or []:
@@ -488,6 +583,127 @@ def consume_linkedin_feed_slot(
         max_gap=LINKEDIN_FEED_MAX_GAP,
     )
     from src.jobs.linkedin_cron import write_feed_next_due
+
+    write_feed_next_due(nxt)
+    return nxt
+
+
+def consume_hinge_scan_slot(
+    *,
+    now: datetime | None = None,
+    rng: random.Random | None = None,
+) -> float:
+    nxt = consume_plan_slot(
+        "hinge_scan",
+        now=now,
+        rng=rng,
+        min_gap=HINGE_SCAN_MIN_GAP,
+        max_gap=HINGE_SCAN_MAX_GAP,
+    )
+    from src.jobs.hinge_cron import write_scan_next_due
+
+    write_scan_next_due(nxt)
+    return nxt
+
+
+def _two_window_times(
+    day_start: datetime,
+    *,
+    due: float,
+    rng: random.Random,
+    windows: tuple[tuple[int, int], ...],
+) -> list[float]:
+    times: list[float] = []
+    due_at = datetime.fromtimestamp(due, LONDON) if due > 0 else None
+    placed_due = False
+    for start_hour, end_hour in windows:
+        start = day_start.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+        end = day_start.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+        if due_at is not None and start <= due_at < end:
+            times.append(due_at.timestamp())
+            placed_due = True
+            continue
+        span = max(1, int((end - start).total_seconds() // 60) - 1)
+        times.append((start + timedelta(minutes=rng.randint(0, span))).timestamp())
+    if due_at is not None and not placed_due and times:
+        times[0] = due_at.timestamp() if day_start <= due_at < day_start + timedelta(days=1) else times[0]
+    return times
+
+
+def _next_in_hours(
+    stamp: datetime,
+    *,
+    start_hour: int,
+    end_hour: int,
+    rng: random.Random,
+    min_minute: int = 20,
+    max_minute: int = 140,
+) -> float:
+    start = stamp.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    if stamp.hour >= start_hour:
+        start = start + timedelta(days=1)
+    span = max(min_minute, (end_hour - start_hour) * 60 - 1)
+    hi = min(max_minute, span)
+    lo = min(min_minute, hi)
+    return (start + timedelta(minutes=rng.randint(lo, hi))).timestamp()
+
+
+def clamp_hinge_swipe_due(due: float, *, now: datetime | None = None, rng: random.Random | None = None) -> float:
+    """Keep the next swipe inside the early-morning London window."""
+    stamp = (now or datetime.now(LONDON)).astimezone(LONDON)
+    dice = rng or random.Random()
+    if due <= 0:
+        return _next_in_hours(
+            stamp,
+            start_hour=HINGE_SWIPE_START_HOUR,
+            end_hour=HINGE_SWIPE_END_HOUR,
+            rng=dice,
+        )
+    due_at = datetime.fromtimestamp(due, LONDON)
+    if HINGE_SWIPE_START_HOUR <= due_at.hour < HINGE_SWIPE_END_HOUR:
+        return due
+    return _next_in_hours(
+        stamp if due_at <= stamp else due_at,
+        start_hour=HINGE_SWIPE_START_HOUR,
+        end_hour=HINGE_SWIPE_END_HOUR,
+        rng=dice,
+    )
+
+
+def consume_hinge_swipe_slot(
+    *,
+    now: datetime | None = None,
+    rng: random.Random | None = None,
+) -> float:
+    stamp = (now or datetime.now(LONDON)).astimezone(LONDON)
+    dice = rng or random.Random()
+    nxt = consume_plan_slot(
+        "hinge_swipe",
+        now=stamp,
+        rng=dice,
+        min_gap=20 * 60 * 60,
+        max_gap=22 * 60 * 60,
+    )
+    nxt = clamp_hinge_swipe_due(nxt, now=stamp, rng=dice)
+    from src.jobs.hinge_cron import write_swipe_next_due
+
+    write_swipe_next_due(nxt)
+    return nxt
+
+
+def consume_instagram_feed_slot(
+    *,
+    now: datetime | None = None,
+    rng: random.Random | None = None,
+) -> float:
+    nxt = consume_plan_slot(
+        "instagram_feed",
+        now=now,
+        rng=rng,
+        min_gap=6 * 60 * 60,
+        max_gap=10 * 60 * 60,
+    )
+    from src.jobs.instagram_cron import write_feed_next_due
 
     write_feed_next_due(nxt)
     return nxt
@@ -631,6 +847,72 @@ def today_schedule(*, now: datetime | None = None, initialize_due: bool = True) 
                     channel="linkedin",
                 )
             )
+
+    for slot in plan.get("hinge_scan") or []:
+        if not isinstance(slot, dict):
+            continue
+        try:
+            starts = datetime.fromtimestamp(float(slot.get("at") or 0), LONDON)
+        except (TypeError, ValueError, OSError):
+            continue
+        if not _today(starts, day_start):
+            continue
+        items.append(
+            _entry(
+                "hinge_scan",
+                HINGE_LIVE_PHONE,
+                starts,
+                title="Hinge reply check",
+                source=PLAN_NAME,
+                detail="Toby’s Hinge on Galaxy — refresh Matches and pull new replies",
+                channel="hinge",
+                duration_seconds=slot.get("expected_duration_seconds"),
+            )
+        )
+
+    for slot in plan.get("hinge_swipe") or []:
+        if not isinstance(slot, dict):
+            continue
+        try:
+            starts = datetime.fromtimestamp(float(slot.get("at") or 0), LONDON)
+        except (TypeError, ValueError, OSError):
+            continue
+        if not _today(starts, day_start):
+            continue
+        items.append(
+            _entry(
+                "hinge_swipe",
+                HINGE_LIVE_PHONE,
+                starts,
+                title="Hinge swipe session",
+                source=PLAN_NAME,
+                detail="Toby on Galaxy — early morning 8/10 blonde white, blue eyes",
+                channel="hinge",
+                duration_seconds=slot.get("expected_duration_seconds"),
+            )
+        )
+
+    for slot in plan.get("instagram_feed") or []:
+        if not isinstance(slot, dict):
+            continue
+        try:
+            starts = datetime.fromtimestamp(float(slot.get("at") or 0), LONDON)
+        except (TypeError, ValueError, OSError):
+            continue
+        if not _today(starts, day_start):
+            continue
+        items.append(
+            _entry(
+                "instagram_feed",
+                INSTAGRAM_LIVE_PHONE,
+                starts,
+                title="Instagram following likes",
+                source=PLAN_NAME,
+                detail="Toby on Pixel — like recent person posts on Following",
+                channel="instagram",
+                duration_seconds=slot.get("expected_duration_seconds"),
+            )
+        )
 
     items = _space_items(items)
     return {

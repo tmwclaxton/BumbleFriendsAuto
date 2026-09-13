@@ -250,12 +250,14 @@ def _capture_open_hit(device, conn, hit, pid: str) -> str:
         replace_prompts(conn, person_id, profile.prompts)
     if cropped:
         replace_photos(conn, person_id, cropped)
-    name2, msgs = parse_open_thread(xml)
     chat_tab = find_tab(xml, "Chat")
     if chat_tab:
         tap(device, *chat_tab)
         time.sleep(0.6)
-        name2, msgs = parse_open_thread(_xml(device))
+        xml = _xml(device, "opened-chat")
+    name2, msgs = parse_open_thread(xml)
+    if classify_screen(xml, expect_name=name) != "match_chat":
+        msgs = []
     if msgs:
         replace_thread(conn, person_id, msgs)
     return name2 or name

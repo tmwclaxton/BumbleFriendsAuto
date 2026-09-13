@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 
 from src.config import load_config
@@ -32,6 +33,7 @@ from src.linkedin_screen import (
     looks_like_security_wall,
     looks_like_messaging,
     looks_like_profile,
+    composer_text,
     message_visible,
     names_match,
     parse_messaging_list,
@@ -230,6 +232,7 @@ def _store_hit(
     badge: str,
     messages: list[tuple],
     profile: dict | None = None,
+    when: str = "",
 ) -> None:
     from src.phones import phone_scope
 
@@ -252,6 +255,7 @@ def _store_hit(
             last_text=last_text,
             profile_url=profile_url,
             phone_id=phone_id,
+            updated_at=when or None,
         )
         extra = profile or {}
         if extra.get("headline") or extra.get("verified"):
@@ -481,7 +485,9 @@ def run_backfill(cfg: dict | None = None, serial: str | None = None, *, phone_id
                 if not plausible_person_name(hit.name) or key in tracked:
                     continue
                 if looks_like_inmail_promo(hit.preview):
-                    _store_hit(conn, pid, hit.name, hit.preview, "unread" if hit.unread else "", [])
+                    _store_hit(
+                        conn, pid, hit.name, hit.preview, "unread" if hit.unread else "", [], when=hit.when
+                    )
                     continue
                 seen_untracked += 1
                 if key in first_names and not allow_first:
@@ -492,7 +498,9 @@ def run_backfill(cfg: dict | None = None, serial: str | None = None, *, phone_id
                 name, msgs, profile = _open_conversation(device, hit)
                 if not msgs:
                     continue
-                _store_hit(conn, pid, name, hit.preview, "unread" if hit.unread else "", msgs, profile)
+                _store_hit(
+                    conn, pid, name, hit.preview, "unread" if hit.unread else "", msgs, profile, when=hit.when
+                )
                 tracked.add(name.casefold())
                 opened += 1
                 opened_this_screen = True
@@ -575,7 +583,9 @@ def run_scan(cfg: dict | None = None, serial: str | None = None, *, phone_id: st
                     listed += 1
                     info = stored.get(key) or {}
                     empty = int(info.get("messages") or 0) == 0
-                    _store_hit(conn, pid, hit.name, hit.preview, "unread" if hit.unread else "", [])
+                    _store_hit(
+                        conn, pid, hit.name, hit.preview, "unread" if hit.unread else "", [], when=hit.when
+                    )
                     if looks_like_inmail_promo(hit.preview):
                         continue
                     if opened >= SCAN_OPEN_CAP:
@@ -583,7 +593,7 @@ def run_scan(cfg: dict | None = None, serial: str | None = None, *, phone_id: st
                     if not empty and not should_open_row(hit, info.get("preview"), info.get("last_text")):
                         continue
                     name, msgs, profile = _open_conversation(device, hit)
-                    _store_hit(conn, pid, name, hit.preview, "", msgs, profile)
+                    _store_hit(conn, pid, name, hit.preview, "", msgs, profile, when=hit.when)
                     opened += 1
                     xml = _xml(device)
                     if not looks_like_messaging(xml):
@@ -728,6 +738,63 @@ def _open_named_thread(device, name: str, *, force: bool) -> tuple[bool, str]:
     return _search_named_thread(device, name, force=force)
 
 
+def _typeable(text: str) -> str:
+    """Keep paragraph breaks. Only squash spaces inside a line."""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    out: list[str] = []
+    pending_blank = False
+    for line in lines:
+        if not line:
+            pending_blank = bool(out)
+            continue
+        if pending_blank:
+            out.append("")
+            pending_blank = False
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def _composer_has(xml: str, text: str) -> bool:
+    typed = " ".join(composer_text(xml).split()).casefold()
+    if not typed:
+        return False
+    needle = _typeable(text).casefold()
+    if needle and needle[:24] in typed:
+        return True
+    return "calendly" in typed and "calendly" in needle
+
+
+def _tap_send(device, xml: str) -> bool:
+    btn = device(resourceId="com.linkedin.android:id/messaging_keyboard_send_button")
+    if btn.exists(timeout=1.0):
+        btn.click()
+        return True
+    btn = device(resourceId="com.linkedin.android:id/messaging_keyboard_send")
+    if btn.exists(timeout=0.6):
+        btn.click()
+        return True
+    point = find_send_point(xml)
+    if point:
+        tap(device, point[0], point[1])
+        return True
+    btn = device(description="Send")
+    if btn.exists(timeout=1.0):
+        btn.click()
+        return True
+    return False
+
+
+def _dismiss_send_prompts(device, xml: str) -> str:
+    for label in ("Send anyway", "Continue", "Not now"):
+        point = find_nav_point(xml, label)
+        if point:
+            tap(device, point[0], point[1])
+            wait_idle(device, 0.7)
+            xml = _xml(device)
+    return xml
+
+
 def _send_in_thread(device, text: str) -> bool:
     field = device(resourceId=COMPOSE_RID)
     if not field.exists(timeout=3.0):
@@ -737,32 +804,48 @@ def _send_in_thread(device, text: str) -> bool:
             return False
     field.click()
     wait_idle(device, 0.4)
-    type_into(device, field, text)
-    wait_idle(device, 0.8)
+    typed = _typeable(text)
+    type_into(device, field, typed)
+    wait_idle(device, 0.9)
     xml = _xml(device)
-    point = find_send_point(xml)
-    if point:
-        tap(device, point[0], point[1])
-    else:
-        btn = device(description="Send")
-        if btn.exists(timeout=2.0):
-            btn.click()
-        else:
-            btn = device(resourceId="com.linkedin.android:id/messaging_keyboard_send")
-            if btn.exists(timeout=1.0):
-                btn.click()
-            else:
-                log.warning("LinkedIn send button not found")
-                try:
-                    field.clear_text()
-                except Exception:
-                    pass
-                return False
-    for _ in range(6):
-        wait_idle(device, 0.6)
-        if message_visible(_xml(device), text):
+    if not _composer_has(xml, typed):
+        try:
+            field.clear_text()
+        except Exception:
+            pass
+        field.click()
+        type_into(device, field, typed)
+        wait_idle(device, 1.0)
+        xml = _xml(device)
+    if not _composer_has(xml, typed):
+        log.warning("LinkedIn composer did not accept the message")
+        return False
+    for attempt in range(3):
+        xml = _dismiss_send_prompts(device, xml)
+        if not _tap_send(device, xml):
+            log.warning("LinkedIn send button not found")
+            return False
+        wait_idle(device, 1.0)
+        xml = _dismiss_send_prompts(device, _xml(device))
+        if message_visible(xml, text) or message_visible(xml, typed):
             return True
+        if _composer_has(xml, typed):
+            log.info("LinkedIn composer still has the draft after send tap %s", attempt + 1)
+            continue
+        for _ in range(8):
+            wait_idle(device, 0.7)
+            xml = _xml(device)
+            if message_visible(xml, text) or message_visible(xml, typed):
+                return True
+        break
     log.warning("LinkedIn send tapped but message was not confirmed")
+    try:
+        from src.config import ROOT
+        from src.device import dump_artifacts
+
+        dump_artifacts(device, ROOT / "data", prefix="linkedin-send-fail")
+    except Exception:
+        log.debug("send-fail dump skipped", exc_info=True)
     return False
 
 

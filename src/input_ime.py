@@ -67,13 +67,33 @@ def automation_keyboard(device) -> Iterator[str]:
 
 
 def type_into(device, field, text: str) -> None:
-    """Fill a focused EditText via AdbKeyboard."""
+    """Fill a focused EditText via AdbKeyboard. Newlines stay as line breaks."""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     with automation_keyboard(device):
         field.click()
         try:
-            field.set_text(text or "")
+            field.clear_text()
+        except Exception:
+            try:
+                field.set_text("")
+            except Exception:
+                pass
+        try:
+            field.set_text(text)
+            return
         except Exception:
             log.warning("set_text failed", exc_info=True)
-            encoded = (text or "").replace(" ", "%s").replace("'", "")
+        _type_multiline(device, text)
+
+
+def _type_multiline(device, text: str) -> None:
+    serial = _serial_of(device)
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line:
+            encoded = line.replace(" ", "%s").replace("'", "")
             if encoded:
-                device.shell(f"input text {encoded}")
+                _adb(serial, "shell", "input", "text", encoded)
+        if i < len(lines) - 1:
+            # Multiline composers insert a break; do not use this as Send.
+            _adb(serial, "shell", "input", "keyevent", "66")

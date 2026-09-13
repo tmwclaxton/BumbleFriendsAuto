@@ -45,6 +45,7 @@ _INBOX_KINDS = {
     "whatsapp_group",
     "whatsapp_add",
     "instagram_prune",
+    "instagram_feed",
     "hinge_swipe",
     "hinge_refresh",
     "hinge_reply",
@@ -218,6 +219,7 @@ BUMBLE_OCCUPY = frozenset(
         "grab_photos",
         "reply",
         "instagram_prune",
+        "instagram_feed",
     }
 )
 HINGE_OCCUPY = frozenset(
@@ -292,10 +294,11 @@ def job_title(job: dict) -> str:
         "linkedin_profile": "LinkedIn profile",
         "reply": "Bumble reply",
         "instagram_prune": "Instagram prune",
-        "hinge_swipe": "Hinge swipe",
+        "instagram_feed": "Instagram following likes",
+        "hinge_swipe": "Hinge swipe session",
         "hinge_refresh": "Hinge refresh",
         "hinge_reply": "Hinge reply",
-        "hinge_scan": "Hinge refresh matches",
+        "hinge_scan": "Hinge reply check",
     }
     label = labels.get(kind, kind.replace("_", " "))
     if name and kind in {
@@ -315,6 +318,23 @@ def job_title(job: dict) -> str:
     }:
         return f"{label} · {name}"
     return label
+
+
+def header_queue_jobs(
+    jobs: list[dict] | None,
+    *,
+    prefix: str,
+    limit: int = 2,
+) -> list[dict]:
+    """Active jobs shown in a page header strip (queued/running only)."""
+    kind_prefix = str(prefix or "")
+    active = [
+        job
+        for job in (jobs or [])
+        if str(job.get("kind") or "").startswith(kind_prefix)
+        and str(job.get("status") or "") in {"queued", "running"}
+    ]
+    return active[: max(0, int(limit))]
 
 
 def queue_board() -> dict:
@@ -448,12 +468,16 @@ def cron_skip_reason(phone_id: str, incoming_channel: str) -> str | None:
         return "waiting for Instagram job"
     if incoming_channel == "linkedin" and occupy & (BUMBLE_OCCUPY | HINGE_OCCUPY):
         return "waiting for Bumble job" if occupy & BUMBLE_OCCUPY else "waiting for Hinge job"
+    if incoming_channel == "linkedin" and occupy & LINKEDIN_OCCUPY:
+        return "waiting for LinkedIn job"
     if incoming_channel == "bumble" and occupy & (LINKEDIN_OCCUPY | HINGE_OCCUPY):
         return "waiting for LinkedIn job" if occupy & LINKEDIN_OCCUPY else "waiting for Hinge job"
     if incoming_channel == "hinge" and occupy & (BUMBLE_OCCUPY | LINKEDIN_OCCUPY):
         return "waiting for Bumble job" if occupy & BUMBLE_OCCUPY else "waiting for LinkedIn job"
     if incoming_channel == "hinge" and occupy & HINGE_OCCUPY:
         return "waiting for Hinge job"
+    if incoming_channel == "instagram" and occupy:
+        return "waiting for other phone job"
     return None
 
 
@@ -540,7 +564,7 @@ def _resolve_phone_id(kind: str, name: str, phone_id: str | None) -> str:
     pid = normalize_phone_id(phone_id) if phone_id else ""
     if pid and pid != "all":
         return pid
-    if kind.startswith("hinge_"):
+    if kind.startswith("hinge_") or kind.startswith("instagram_"):
         return "toby"
     if kind in _PERSON_KINDS and name:
         conn = db_connect(db_path_from_config(load_config()))
@@ -949,6 +973,12 @@ def _run_job(job: dict) -> tuple[bool, str]:
         from src.instagram_prune import run_prune
 
         return run_prune(serial=serial, phone_id=pid)
+    if kind == "instagram_feed":
+        if pid != DEFAULT_PHONE_ID:
+            return False, "instagram feed likes are Pixel/Toby only"
+        from src.instagram_feed import run_feed
+
+        return run_feed(serial=serial, phone_id=pid, job_text=str(job.get("text") or ""))
     if kind in {"hinge_swipe", "hinge_refresh", "hinge_reply", "hinge_scan"}:
         from src.hinge_swipe import hinge_live_serial, live_account_id, run_swipe
         from src.hinge_sync import refresh_named, run_scan, send_named_message
@@ -1082,6 +1112,7 @@ def job_poll_payload(job: dict | None) -> dict:
                 "unmatch_expired",
                 "rematch_expired",
                 "instagram_prune",
+                "instagram_feed",
             }
             else 6
         )

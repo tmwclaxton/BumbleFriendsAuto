@@ -63,17 +63,43 @@
     padding: 3px 9px; font: 11px/1.3 inherit; cursor: pointer;
   }
   .races button.on { background: #3a2228; color: var(--hinge); border-color: #6a3a44; }
-  .workspace { flex: 1; display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); min-height: 0; overflow: hidden; }
-  body.has-chat .workspace { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) minmax(260px, 340px); }
+  .inbox-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); background: #161012d9; }
+  #filter { min-width: 180px; flex: 1; max-width: 280px; }
+  .workspace { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.35fr); min-height: 0; overflow: hidden; }
+  .workspace.toby-collapsed { grid-template-columns: 44px minmax(220px, 1fr) minmax(0, 1.35fr); }
+  .workspace.archie-collapsed { grid-template-columns: minmax(220px, 1fr) 44px minmax(0, 1.35fr); }
+  .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 44px 44px minmax(0, 1fr); }
+  body.has-chat:not(.hide-profile) .workspace { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.1fr) minmax(240px, 300px); }
+  body.has-chat:not(.hide-profile) .workspace.toby-collapsed { grid-template-columns: 44px minmax(0, 1fr) minmax(0, 1.1fr) minmax(240px, 300px); }
+  body.has-chat:not(.hide-profile) .workspace.archie-collapsed { grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1.1fr) minmax(240px, 300px); }
+  body.has-chat:not(.hide-profile) .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 44px 44px minmax(0, 1fr) minmax(240px, 300px); }
   .profile-col { display: none; min-width: 0; min-height: 0; overflow: auto; border-left: 1px solid var(--line); background: #1a1416; }
   body.has-chat:not(.hide-profile) .profile-col { display: block; }
-  .rail { display: flex; flex-direction: column; min-height: 0; background: color-mix(in srgb, var(--rail) 92%, #000); border-right: 1px solid var(--line); }
-  .rail-head { padding: 14px 14px 10px; }
-  .phone-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
-  .phone-tabs button { flex: 1; }
-  .phone-tabs button.on { border-color: var(--hinge); color: var(--hinge); }
-  .count { color: var(--muted); font-size: 11px; }
-  .col-meta { margin: 0 14px 8px; color: var(--muted); font-size: 12px; }
+  .phone-col {
+    display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: color-mix(in srgb, var(--rail) 92%, #000); border-right: 1px solid var(--line);
+  }
+  .phone-col.toby { --col: #ff9aa6; --col-bg: #2a161c; }
+  .phone-col.archie { --col: #f0c674; --col-bg: #2a2212; }
+  .col-head {
+    flex-shrink: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+    padding: 12px 12px 10px; border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--col-bg) 82%, #000);
+  }
+  .col-head h2 { margin: 0; font-size: 14px; font-weight: 700; color: var(--col); }
+  .col-collapse {
+    flex-shrink: 0; width: 28px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 8px;
+    background: transparent; color: var(--col); font: 16px/1 inherit; cursor: pointer;
+  }
+  .col-collapse:hover { background: #2a1c21; }
+  .phone-col.collapsed { align-self: stretch; height: 100%; min-height: 100%; background: var(--col-bg); }
+  .phone-col.collapsed .col-scroll, .phone-col.collapsed .col-meta { display: none; }
+  .phone-col.collapsed .col-head {
+    flex: 1 1 auto; flex-direction: column; align-items: center; justify-content: flex-start;
+    gap: 10px; padding: 8px 4px; min-height: 100%; height: 100%; border-bottom: 0; background: var(--col-bg);
+  }
+  .phone-col.collapsed h2 { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 13px; white-space: nowrap; }
+  .col-meta { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
   .status-filters { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 0; }
   .status-filters button { font-size: 11px; padding: 3px 8px; }
   .status-filters button.on { border-color: var(--hinge); color: var(--hinge); }
@@ -86,8 +112,8 @@
   .row1, .row2 { display: flex; justify-content: space-between; gap: 8px; }
   .preview { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .badge { font-size: 10px; color: var(--need); }
-  .thread { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .thread-head { display: flex; gap: 12px; align-items: flex-start; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .thread { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; padding: 12px 14px 0; }
+  .thread-head { display: flex; gap: 12px; align-items: flex-start; padding: 8px 4px 14px; border-bottom: 1px solid var(--line); }
   #back-list { display: none; }
   @media (max-width: 800px) { #back-list { display: inline-flex; } }
   .who h2 { margin: 0; font-size: 18px; }
@@ -102,6 +128,25 @@
   .tag { font-size: 10px; margin-left: 6px; color: var(--muted); }
   .tag.draft { color: var(--you); }
   #swipe-usage { color: var(--muted); font-size: 12px; }
+  .session-panel { margin: 0 0 14px; padding: 14px 16px 12px; border: 1px solid var(--line); border-radius: 16px; background: #2a1c21; box-shadow: var(--shadow); flex: 0 1 auto; min-height: 0; }
+  .session-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+  .session-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .session-stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 10px; }
+  .stat { min-width: 88px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: #1a1016; }
+  .stat b { display: block; font-size: 20px; line-height: 1.1; }
+  .stat span { color: var(--muted); font-size: 11px; }
+  .stat.like b { color: var(--hinge); }
+  #session-summary { margin: 0 0 12px; color: var(--muted); font-size: 13px; max-width: none; }
+  .session-table-wrap { max-height: min(42vh, 380px); overflow: auto; border: 1px solid var(--line); border-radius: 12px; }
+  .session-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .session-table th { position: sticky; top: 0; text-align: left; color: var(--muted); font-size: 11px; letter-spacing: 0.03em; padding: 8px 10px; border-bottom: 1px solid var(--line); background: #231820; }
+  .session-table td { padding: 8px 10px; border-bottom: 1px solid #332228; vertical-align: top; }
+  .session-table tr.like td.name { color: var(--hinge); font-weight: 650; }
+  .session-table .act-like { color: var(--hinge); font-weight: 650; }
+  .session-table .act-pass { color: var(--muted); }
+  .liked-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+  .liked-chip { font-size: 12px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--hinge); color: var(--hinge); }
+  body.has-chat #last-session { display: none !important; }
   .basics { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
   .basics span { border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; background: #2a1c21; color: var(--muted); font-size: 11px; }
   .pics { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; }
@@ -120,15 +165,29 @@
   #queue { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; }
   .job-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: #3a2228; border: 1px solid #6a3a44; color: var(--hinge); }
   @media (max-width: 1100px) {
-    body.has-chat .workspace { grid-template-columns: minmax(0, 1fr) minmax(240px, 320px); }
-    body.has-chat .rail { display: none; }
+    .workspace,
+    body.has-chat .workspace,
+    body.has-chat:not(.hide-profile) .workspace { grid-template-columns: 1fr 1fr; }
+    .workspace.toby-collapsed,
+    body.has-chat .workspace.toby-collapsed { grid-template-columns: 44px 1fr; }
+    .workspace.archie-collapsed,
+    body.has-chat .workspace.archie-collapsed { grid-template-columns: 1fr 44px; }
+    .workspace.toby-collapsed.archie-collapsed { grid-template-columns: 44px 44px; }
+    .thread, .profile-col { grid-column: 1 / -1; }
+    body.has-chat .phone-col { display: none; }
     #back-list { display: inline-flex; }
     body.has-chat.hide-profile .workspace { grid-template-columns: minmax(0, 1fr); }
   }
   @media (max-width: 800px) {
-    .workspace, body.has-chat .workspace, body.has-chat.hide-profile .workspace { grid-template-columns: 1fr; }
-    .rail, .profile-col { display: none; }
-    body.show-list .rail { display: flex; }
+    .workspace,
+    .workspace.toby-collapsed,
+    .workspace.archie-collapsed,
+    body.has-chat .workspace,
+    body.has-chat.hide-profile .workspace { grid-template-columns: 1fr; }
+    .phone-col.collapsed { display: none; }
+    .phone-col, .profile-col { display: none; }
+    body.show-list .phone-col { display: flex; }
+    body.show-list .phone-col.collapsed { display: none; }
     body.show-list .thread { display: none; }
     body.has-chat.show-profile .thread { display: none; }
     body.has-chat.show-profile .profile-col { display: block; }
@@ -141,7 +200,7 @@
     <div class="mark" aria-hidden="true">H</div>
     <div>
       <h1>Hinge inbox</h1>
-      <p><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/bumble">Bumble</a> · Toby’s Hinge on Galaxy</p>
+      <p><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/instagram">Instagram</a> · <a href="/bumble">Bumble</a> · Toby’s Hinge on Galaxy</p>
     </div>
   </div>
   <div class="top-tools">
@@ -158,26 +217,58 @@
   </div>
 </header>
 <div id="phone-warn" hidden role="status"></div>
+<div class="inbox-tools">
+  <input id="filter" placeholder="Search matches" autocomplete="off"/>
+  <div class="status-filters">
+    <button type="button" class="on" data-status="all">All</button>
+    <button type="button" data-status="needs_reply">Needs reply</button>
+    <button type="button" data-status="waiting">Waiting</button>
+    <button type="button" data-status="archived">Archived</button>
+  </div>
+  <div class="eth-filter" id="eth-filter"></div>
+</div>
 <div class="workspace">
-  <aside class="rail">
-    <div class="rail-head">
-      <div class="phone-tabs">
-        <button type="button" id="tab-toby" class="on" data-tab="toby">Toby <span class="count" id="count-toby">0</span></button>
-        <button type="button" id="tab-archie" data-tab="archie">Archie <span class="count" id="count-archie">0</span></button>
+  <section class="phone-col toby" data-phone="toby">
+    <div class="col-head">
+      <button type="button" class="col-collapse" data-collapse="toby" aria-expanded="true" title="Collapse Toby">‹</button>
+      <div>
+        <h2>Toby · Galaxy</h2>
+        <p class="col-meta" data-col-meta="toby">Loading…</p>
       </div>
-      <input id="filter" placeholder="Search matches" autocomplete="off"/>
-      <div class="status-filters">
-        <button type="button" class="on" data-status="all">All</button>
-        <button type="button" data-status="needs_reply">Needs reply</button>
-        <button type="button" data-status="waiting">Waiting</button>
-        <button type="button" data-status="archived">Archived</button>
-      </div>
-      <div class="eth-filter" id="eth-filter"></div>
     </div>
-    <p class="col-meta" id="list-meta">Loading…</p>
-    <div class="col-scroll" id="chat-list"></div>
-  </aside>
+    <div class="col-scroll" data-chat-list="toby"></div>
+  </section>
+  <section class="phone-col archie" data-phone="archie">
+    <div class="col-head">
+      <button type="button" class="col-collapse" data-collapse="archie" aria-expanded="true" title="Collapse Archie">‹</button>
+      <div>
+        <h2>Archie · future slot</h2>
+        <p class="col-meta" data-col-meta="archie">Loading…</p>
+      </div>
+    </div>
+    <div class="col-scroll" data-chat-list="archie"></div>
+  </section>
   <section class="thread">
+    <section id="last-session" class="session-panel" hidden>
+      <div class="session-head">
+        <div>
+          <strong>Last swipe session</strong>
+          <p id="session-when"></p>
+        </div>
+        <button type="button" id="session-open">Open full list</button>
+      </div>
+      <div class="session-stats" id="session-stats"></div>
+      <p id="session-summary"></p>
+      <div class="liked-row" id="liked-names"></div>
+      <div class="session-table-wrap">
+        <table class="session-table">
+          <thead>
+            <tr><th>Name</th><th>Decision</th><th>Look</th><th>Ethnicity</th><th>Why</th></tr>
+          </thead>
+          <tbody id="session-rows"></tbody>
+        </table>
+      </div>
+    </section>
     <div class="thread-head">
       <button type="button" class="chip" id="back-list">Matches</button>
       <div class="avatar" id="thread-av" hidden></div>
@@ -215,6 +306,23 @@
     </div>
   </aside>
 </div>
+<dialog class="sheet" id="summary-sheet">
+  <div class="sheet-head"><h3>Swipe session</h3><button type="button" id="summary-close">Close</button></div>
+  <div class="sheet-body">
+    <p class="hint" id="summary-meta"></p>
+    <div class="session-stats" id="summary-stats"></div>
+    <p id="summary-body"></p>
+    <div class="liked-row" id="summary-liked"></div>
+    <div class="session-table-wrap">
+      <table class="session-table">
+        <thead>
+          <tr><th>Name</th><th>Decision</th><th>Look</th><th>Ethnicity</th><th>Why</th></tr>
+        </thead>
+        <tbody id="summary-rows"></tbody>
+      </table>
+    </div>
+  </div>
+</dialog>
 <dialog class="sheet" id="draft-sheet">
   <div class="sheet-head"><h3>Hinge draft prompt</h3><button type="button" id="draft-prompt-close">Close</button></div>
   <div class="sheet-body">
@@ -229,7 +337,7 @@
 <dialog class="sheet" id="swipe-sheet">
   <div class="sheet-head"><h3>Swipe prefs</h3><button type="button" id="swipe-close">Close</button></div>
   <div class="sheet-body">
-    <p class="hint">Toby’s Hinge on Galaxy Discover. Race filters use the same buckets as Bumble. Attractiveness is a 1–10 threshold — the runner skips below it (live scoring is a conservative stub, so default 8 will not like everyone).</p>
+    <p class="hint">Toby’s Hinge on Galaxy Discover. Early-morning session likes 8/10 blonde white women with blue eyes. Vision scores each card; missing hair/eyes/ethnicity is skipped.</p>
     <div class="grid2">
       <div><label>Age min</label><input id="age-min" type="number" min="18" max="80"/></div>
       <div><label>Age max</label><input id="age-max" type="number" min="18" max="80"/></div>
@@ -241,7 +349,9 @@
       <div><label>Attractiveness min (1–10)</label><input id="attractiveness-min" type="number" min="1" max="10"/></div>
       <div><label>Pause min (ms)</label><input id="pause-min" type="number"/></div>
       <div><label>Pause max (ms)</label><input id="pause-max" type="number"/></div>
-      <div><label>Gender pref (on-device)</label><input id="gender-pref" placeholder="optional"/></div>
+      <div><label>Gender pref</label><input id="gender-pref" placeholder="female"/></div>
+      <div><label>Hair include</label><input id="hair-include" placeholder="blonde"/></div>
+      <div><label>Eyes include</label><input id="eye-include" placeholder="blue"/></div>
       <div>
         <label>If ethnicity missing</label>
         <select id="ethnicity-missing">
@@ -295,9 +405,8 @@ function overlayLocal(rows){
   }
   return rows;
 }
-let people=[], current="", currentPhone="toby", listPhone="toby", statusFilter="all", draftTimer=0, peopleBooted=false;
+let people=[], current="", currentPhone="toby", statusFilter="all", draftTimer=0, peopleBooted=false;
 let ethnicityChoices=[], ethInclude=new Set(), ethExclude=new Set(), ethnicityFilter=new Set();
-function setTab(phone){listPhone=phone;document.getElementById("tab-toby").classList.toggle("on",phone==="toby");document.getElementById("tab-archie").classList.toggle("on",phone==="archie");renderList();}
 function matchEth(p){
   if(!ethnicityFilter.size) return true;
   const key=(p.ethnicity||"").trim()||"unknown";
@@ -312,21 +421,22 @@ function fillEthnicitySelect(currentEth){
   const sel=document.getElementById("ethnicity-set");
   sel.innerHTML=`<option value="">Ethnicity</option>`+(ethnicityChoices||[]).map(c=>`<option value="${esc(c.id)}"${c.id===currentEth?" selected":""}>${esc(c.label)}</option>`).join("");
 }
-function renderList(){
+function renderPhoneList(pid){
   const q=document.getElementById("filter").value.trim().toLowerCase();
-  document.getElementById("count-toby").textContent=people.filter(p=>p.phone_id==="toby").length;
-  document.getElementById("count-archie").textContent=people.filter(p=>p.phone_id==="archie").length;
   const rows=people.filter(p=>{
-    if(p.phone_id!==listPhone) return false;
+    if(p.phone_id!==pid) return false;
     if(!q||String(p.name).toLowerCase().includes(q)){} else return false;
     if(!matchEth(p)) return false;
     if(statusFilter==="archived") return !!p.archived;
     if(p.archived) return false;
     return statusFilter==="all"||p.status===statusFilter;
   });
-  const need=people.filter(p=>p.phone_id===listPhone&&!p.archived&&p.status==="needs_reply").length;
-  document.getElementById("list-meta").textContent=rows.length?rows.length+" match"+(rows.length===1?"":"es")+" · "+need+" need reply"+(listPhone==="archie"?" · future slot":" · Toby"):"No matches stored";
-  document.getElementById("chat-list").innerHTML=rows.map(p=>{
+  const need=people.filter(p=>p.phone_id===pid&&!p.archived&&p.status==="needs_reply").length;
+  const meta=document.querySelector('[data-col-meta="'+pid+'"]');
+  if(meta) meta.textContent=rows.length?rows.length+" match"+(rows.length===1?"":"es")+" · "+need+" need reply":"No matches stored";
+  const list=document.querySelector('[data-chat-list="'+pid+'"]');
+  if(!list) return;
+  list.innerHTML=rows.map(p=>{
     const on=current===p.name&&currentPhone===p.phone_id?" on":"";
     const needRow=p.status==="needs_reply"?" need":"";
     const face=p.profile_pic?`<img src="${esc(photoUrl(p))}" alt=""/>`:esc(initials(p.name));
@@ -341,8 +451,9 @@ function renderList(){
       <div class="avatar" style="background:${hue(p.name)}">${face}</div>
       <div><div class="row1"><span class="name-text">${esc(p.name)}${eth?`<span class="tag">${esc(eth)}</span>`:""}</span><span>${esc(p.age||"")}</span></div>
       <div class="row2"><span class="preview">${esc(preview)}</span><span class="badge">${esc(tags.join(" · "))}</span></div></div></a>`;
-  }).join("");
+  }).join("")||`<p class="empty">No matches stored</p>`;
 }
+function renderList(){ renderPhoneList("toby"); renderPhoneList("archie"); }
 function hideProfilePane(){
   document.getElementById("profile-col").hidden=true;
   document.getElementById("profile-card").hidden=true;
@@ -389,6 +500,7 @@ async function loadPeople(opts){
     const u=data.swipe_usage;
     document.getElementById("swipe-usage").textContent=`Today ${u.likes||0} likes · ${u.swipes||0} swipes`;
   }
+  renderSession(data.last_session);
   renderEthFilter();
   renderList();
   if(opts&&opts.boot===false) return;
@@ -464,7 +576,7 @@ async function openThread(name, phone, opts){
   document.getElementById("ethnicity-set").hidden=false;
   fillEthnicitySelect(p.ethnicity||"");
   document.getElementById("msgs").innerHTML=(data.messages||[]).length
-    ? data.messages.map(m=>`<div class="bubble ${m.side}">${esc(m.body)}${m.captured_at?`<time>${esc(m.captured_at)}</time>`:""}</div>`).join("")
+    ? data.messages.map(m=>`<div class="bubble ${m.side}">${esc(m.body)}</div>`).join("")
     : `<p class="empty">No messages captured yet.</p>`;
   const st=p.draft_status||"";
   if(st==="queued"||st==="running") document.getElementById("status").textContent="Draft "+st+"…";
@@ -488,6 +600,52 @@ function renderRaces(){
     box.innerHTML=ethnicityChoices.map(c=>`<button type="button" data-id="${esc(c.id)}" class="${set.has(c.id)?"on":""}">${esc(c.label)}</button>`).join("");
   }
 }
+function sessionWhen(session){
+  const when=session.finished_at||session.started_at||"";
+  const stamp=when?new Date(when).toLocaleString(undefined,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}):"";
+  return [session.filter||"8/10 blonde white · blue eyes", stamp].filter(Boolean).join(" · ");
+}
+function sessionStats(session){
+  const cards=session.cards||[];
+  const people=session.people||new Set(cards.map(c=>String(c.name||"").toLowerCase()).filter(Boolean)).size;
+  return [
+    ["swipes", session.swipes||cards.length, "Cards"],
+    ["likes", session.likes||0, "Likes"],
+    ["people", people, "People"],
+    ["passes", Math.max(0, (session.swipes||cards.length)-(session.likes||0)), "Passes"],
+  ].map(([cls,n,label])=>`<div class="stat ${cls==="likes"?"like":""}"><b>${n}</b><span>${esc(label)}</span></div>`).join("");
+}
+function likedChips(session){
+  const liked=(session.cards||[]).filter(c=>c.action==="like"&&c.name).map(c=>c.name);
+  return liked.map(n=>`<span class="liked-chip">${esc(n)}</span>`).join("");
+}
+function lookBits(c){
+  return [c.attractiveness&&`${c.attractiveness}/10`, c.hair, c.eyes].filter(Boolean).join(" · ")||"—";
+}
+function sessionRows(session){
+  return (session.cards||[]).map(c=>{
+    const act=c.action==="like"?"like":"pass";
+    return `<tr class="${act}"><td class="name">${esc(c.name||"card")}</td><td class="act-${act}">${esc(act)}</td><td>${esc(lookBits(c))}</td><td>${esc(c.ethnicity||"—")}</td><td>${esc(c.reason||"")}</td></tr>`;
+  }).join("");
+}
+function fillSession(session){
+  document.getElementById("session-when").textContent=sessionWhen(session);
+  document.getElementById("session-stats").innerHTML=sessionStats(session);
+  document.getElementById("session-summary").textContent=session.summary;
+  document.getElementById("liked-names").innerHTML=likedChips(session);
+  document.getElementById("session-rows").innerHTML=sessionRows(session);
+  document.getElementById("summary-meta").textContent=sessionWhen(session);
+  document.getElementById("summary-stats").innerHTML=sessionStats(session);
+  document.getElementById("summary-body").textContent=session.summary;
+  document.getElementById("summary-liked").innerHTML=likedChips(session);
+  document.getElementById("summary-rows").innerHTML=sessionRows(session);
+}
+function renderSession(session){
+  const box=document.getElementById("last-session");
+  if(!session||!session.summary){box.hidden=true;return;}
+  box.hidden=false;
+  fillSession(session);
+}
 function fillPrefs(p){
   document.getElementById("age-min").value=p.age_min;
   document.getElementById("age-max").value=p.age_max;
@@ -500,6 +658,8 @@ function fillPrefs(p){
   document.getElementById("pause-min").value=p.pause_min_ms;
   document.getElementById("pause-max").value=p.pause_max_ms;
   document.getElementById("gender-pref").value=p.gender_pref||"";
+  document.getElementById("hair-include").value=(p.hair_include||[]).join(", ");
+  document.getElementById("eye-include").value=(p.eye_include||[]).join(", ");
   document.getElementById("ethnicity-missing").value=p.ethnicity_if_missing||"allow";
   document.getElementById("dealbreakers").value=(p.dealbreakers||[]).join(", ");
   document.getElementById("human-pacing").checked=!!p.human_pacing;
@@ -513,8 +673,6 @@ function fillPrefs(p){
   ethExclude=new Set(p.ethnicity_exclude||[]);
   renderRaces();
 }
-document.getElementById("tab-toby").onclick=()=>setTab("toby");
-document.getElementById("tab-archie").onclick=()=>setTab("archie");
 document.getElementById("filter").oninput=renderList;
 document.querySelector(".status-filters").addEventListener("click",e=>{
   const b=e.target.closest("button[data-status]"); if(!b)return;
@@ -522,7 +680,15 @@ document.querySelector(".status-filters").addEventListener("click",e=>{
   for(const btn of document.querySelectorAll(".status-filters button")) btn.classList.toggle("on",btn===b);
   renderList();
 });
-document.getElementById("chat-list").addEventListener("click",e=>{
+document.querySelector(".workspace").addEventListener("click",e=>{
+  const collapseBtn=e.target.closest("[data-collapse]");
+  if(collapseBtn){
+    e.preventDefault();
+    const pid=collapseBtn.dataset.collapse;
+    try{localStorage.setItem(SIDEBAR_KEYS[pid], sidebarCollapsed(pid)?"0":"1");}catch{}
+    applySidebarCollapse();
+    return;
+  }
   const a=e.target.closest("a.chat"); if(!a)return; e.preventDefault();
   history.replaceState({}, "", a.getAttribute("href"));
   openThread(a.dataset.name, a.dataset.phone);
@@ -597,6 +763,8 @@ document.getElementById("draft-prompt-save").onclick=async()=>{
   await fetch("/api/hinge/draft/prompt",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({save:true,system:document.getElementById("draft-system").value,user:document.getElementById("draft-user").value})});
   document.getElementById("draft-sheet").close();
 };
+document.getElementById("session-open").onclick=()=>document.getElementById("summary-sheet").showModal();
+document.getElementById("summary-close").onclick=()=>document.getElementById("summary-sheet").close();
 document.getElementById("swipe-settings").onclick=async()=>{
   const res=await fetch("/api/hinge/swipe/prefs");
   fillPrefs(await res.json());
@@ -654,6 +822,8 @@ document.getElementById("swipe-save").onclick=async()=>{
     pause_min_ms:document.getElementById("pause-min").value,
     pause_max_ms:document.getElementById("pause-max").value,
     gender_pref:document.getElementById("gender-pref").value,
+    hair_include:document.getElementById("hair-include").value,
+    eye_include:document.getElementById("eye-include").value,
     ethnicity_if_missing:document.getElementById("ethnicity-missing").value,
     ethnicity_include:[...ethInclude],
     ethnicity_exclude:[...ethExclude],
@@ -670,6 +840,25 @@ document.getElementById("swipe-save").onclick=async()=>{
   document.getElementById("swipe-sheet").close();
 };
 if(!new URLSearchParams(location.search).get("chat")) document.body.classList.add("show-list");
+const SIDEBAR_KEYS={toby:"hinge.sidebar.toby",archie:"hinge.sidebar.archie"};
+function sidebarCollapsed(pid){try{return localStorage.getItem(SIDEBAR_KEYS[pid])==="1";}catch{return false;}}
+function applySidebarCollapse(){
+  const ws=document.querySelector(".workspace");
+  for(const pid of ["toby","archie"]){
+    const col=document.querySelector('.phone-col[data-phone="'+pid+'"]');
+    if(!col) continue;
+    const on=sidebarCollapsed(pid);
+    const label=pid==="archie"?"Archie":"Toby";
+    col.classList.toggle("collapsed", on);
+    ws.classList.toggle(pid+"-collapsed", on);
+    const btn=col.querySelector("[data-collapse]");
+    if(!btn) continue;
+    btn.setAttribute("aria-expanded", on?"false":"true");
+    btn.title=on?"Expand "+label:"Collapse "+label;
+    btn.textContent=on?"›":"‹";
+  }
+}
+applySidebarCollapse();
 fetch("/api/hinge/swipe/prefs").then(r=>r.json()).then(p=>{ethnicityChoices=p.ethnicity_choices||ethnicityChoices; fillPrefs(p); renderEthFilter();}).catch(()=>{});
 loadPeople(); loadQueue(); setInterval(loadQueue, 8000); setInterval(()=>loadPeople({boot:false}), 20000);
 </script>

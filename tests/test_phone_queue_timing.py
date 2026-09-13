@@ -147,6 +147,24 @@ class QueueTimingTests(unittest.TestCase):
         self.assertIsNotNone(restored[0]["queued_at"])
         self.assertIsNone(restored[0]["duration_seconds"])
 
+    def test_header_strip_hides_completed_and_caps_at_two(self):
+        jobs = [
+            {"kind": "instagram_feed", "status": "completed", "title": "old likes"},
+            {"kind": "instagram_feed", "status": "error", "title": "failed"},
+            {"kind": "instagram_prune", "status": "queued", "title": "prune"},
+            {"kind": "instagram_feed", "status": "running", "title": "likes"},
+            {"kind": "instagram_feed", "status": "queued", "title": "likes 2"},
+            {"kind": "hinge_swipe", "status": "running", "title": "swipe"},
+            {"kind": "hinge_swipe", "status": "completed", "title": "old swipe"},
+            {"kind": "linkedin_scan", "status": "queued", "title": "li"},
+        ]
+        ig = queue.header_queue_jobs(jobs, prefix="instagram")
+        self.assertEqual([j["title"] for j in ig], ["prune", "likes"])
+        self.assertTrue(all(j["status"] in {"queued", "running"} for j in ig))
+        hinge = queue.header_queue_jobs(jobs, prefix="hinge_")
+        self.assertEqual([j["kind"] for j in hinge], ["hinge_swipe"])
+        self.assertEqual(queue.header_queue_jobs(jobs, prefix="instagram", limit=1)[0]["title"], "prune")
+
 
 if __name__ == "__main__":
     unittest.main()

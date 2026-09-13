@@ -49,9 +49,49 @@ def photo_file(name: str, phone_id: str | None = None) -> Path:
     return nested
 
 
+def is_blank_face_image(img) -> bool:
+    """True for Bumble's empty white/grey circle, not a real face crop."""
+    from PIL import ImageStat
+
+    try:
+        rgb = img.convert("RGB")
+        sample = rgb if min(rgb.size) <= 64 else rgb.resize((48, 48))
+        stats = ImageStat.Stat(sample)
+        mean = sum(stats.mean) / 3
+        std = sum(stats.stddev) / 3
+    except Exception:
+        return False
+    if mean >= 220 and std <= 15:
+        return True
+    if mean >= 200 and std <= 8:
+        return True
+    return False
+
+
+def is_blank_avatar(path: Path) -> bool:
+    if not path.is_file() or path.stat().st_size <= 80:
+        return True
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            return is_blank_face_image(img)
+    except Exception:
+        return False
+
+
 def photo_exists(name: str, phone_id: str | None = None) -> bool:
     path = photo_file(name, phone_id)
-    return path.is_file() and path.stat().st_size > 80
+    if not path.is_file() or path.stat().st_size <= 80:
+        return False
+    if not is_blank_avatar(path):
+        return True
+    try:
+        path.unlink()
+        log.info("removed blank avatar %s", path)
+    except OSError:
+        pass
+    return False
 
 
 def _base_name(name: str) -> str:
@@ -351,7 +391,10 @@ def _crop_square(img, box: tuple[int, int, int, int], *, inset: float = 0.08):
     left = (crop.width - side) // 2
     top = (crop.height - side) // 2
     crop = crop.crop((left, top, left + side, top + side))
-    return crop.convert("RGB").resize((160, 160), Image.Resampling.LANCZOS)
+    crop = crop.convert("RGB").resize((160, 160), Image.Resampling.LANCZOS)
+    if is_blank_face_image(crop):
+        return None
+    return crop
 
 
 def _save_square(img, box: tuple[int, int, int, int], dest: Path, *, inset: float = 0.08) -> bool:
@@ -365,6 +408,8 @@ def _save_square(img, box: tuple[int, int, int, int], dest: Path, *, inset: floa
 
 def save_face_image(face, name: str) -> bool:
     if face is None or not name:
+        return False
+    if is_blank_face_image(face):
         return False
     dest = photo_file(name)
     dest.parent.mkdir(parents=True, exist_ok=True)

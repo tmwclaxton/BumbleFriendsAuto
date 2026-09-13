@@ -118,9 +118,15 @@ function itemDuration(item){
   if(Number.isFinite(raw)&&raw>=60)return raw;
   return DEFAULT_DUR;
 }
+function spaceLane(item){
+  const pid=item.phone_id||"toby";
+  const svc=serviceOf(item);
+  if(svc==="hinge"||pid==="archie")return "galaxy";
+  return pid+"-pixel";
+}
 function spaceItems(items){
   const by={};
-  for(const item of items)(by[item.phone_id||"toby"]||=[]).push({...item});
+  for(const item of items)(by[spaceLane(item)]||=[]).push({...item});
   const out=[];
   for(const rows of Object.values(by)){
     rows.sort((a,b)=>(toMs(a.scheduled_at||a.projected_start_at)-toMs(b.scheduled_at||b.projected_start_at))||String(a.kind||"").localeCompare(String(b.kind||"")));

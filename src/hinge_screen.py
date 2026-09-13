@@ -573,9 +573,17 @@ _THREAD_SKIP_RE = re.compile(
     r"^get notifications\b|"
     r"^enable for\b|"
     r"^timing is everything\b|"
-    r"turn on notifications",
+    r"^start the chat with\b|"
+    r"^your turn\b|"
+    r"^their turn\b|"
+    r"turn on notifications|"
+    r"\bpronouns\b|"
+    r"^(woman|man|non-binary|straight|gay|lesbian|bisexual|queer|"
+    r"monogamy|non-monogamy|long-term relationship|"
+    r"white/?caucasian|east asian|southeast asian|\d{2})$",
     re.I,
 )
+_LIKED_PHOTO_RE = re.compile(r"^you liked .+['’]s photo\.?$", re.I)
 
 
 def _clean_thread_body(body: str) -> str:
@@ -583,7 +591,9 @@ def _clean_thread_body(body: str) -> str:
     return re.sub(r"\s+", " ", body).strip()
 
 
-def _thread_side(node: UiNode, *, name: str, width: int, sender: str = "") -> str:
+def _thread_side(node: UiNode, *, name: str, width: int, sender: str = "", body: str = "") -> str:
+    if _LIKED_PHOTO_RE.match((body or "").strip()):
+        return "you"
     who = (sender or "").strip()
     if who.lower() == "you":
         return "you"
@@ -597,6 +607,7 @@ def _thread_side(node: UiNode, *, name: str, width: int, sender: str = "") -> st
 
 def parse_open_thread(xml: str) -> tuple[str, list[tuple[str, str]]]:
     """Oldest message first. Sides come from You:/Name: labels or left/right bubbles."""
+    kind = classify_screen(xml)
     nodes = parse_ui_nodes(xml)
     name = ""
     for node in nodes:
@@ -608,6 +619,8 @@ def parse_open_thread(xml: str) -> tuple[str, list[tuple[str, str]]]:
             break
         if node.text and _plausible_match_name(node.text) and node.text.lower() not in {"chat", "profile"}:
             name = node.text.strip()
+    if kind in {SCREEN_PROFILE, SCREEN_MATCHES, SCREEN_DISCOVER}:
+        return name, []
     width = max((n.bounds.x2 for n in nodes), default=1080)
     composer_y = min((n.bounds.y1 for n in nodes if is_composer_node(n)), default=10_000)
     found: list[tuple[int, int, str, str]] = []
@@ -615,7 +628,7 @@ def parse_open_thread(xml: str) -> tuple[str, list[tuple[str, str]]]:
 
     def _add(node: UiNode, side: str, body: str) -> None:
         body = _clean_thread_body(body)
-        if not body:
+        if not body or _THREAD_SKIP_RE.search(body):
             return
         key = body.casefold()
         if key in seen_body:
@@ -639,7 +652,8 @@ def parse_open_thread(xml: str) -> tuple[str, list[tuple[str, str]]]:
         if not match:
             continue
         sender = match.group(1).strip()
-        _add(node, _thread_side(node, name=name, width=width, sender=sender), match.group(2))
+        body = match.group(2)
+        _add(node, _thread_side(node, name=name, width=width, sender=sender, body=body), body)
 
     pending_prompt = ""
     pending_node: UiNode | None = None
@@ -673,7 +687,9 @@ def parse_open_thread(xml: str) -> tuple[str, list[tuple[str, str]]]:
             continue
         if MESSAGE_RE.match(node.content_desc or ""):
             continue
-        _add(node, _thread_side(node, name=name, width=width), text)
+        if not _LIKED_PHOTO_RE.match(text) and not _looks_like_prompt(text) and len(text.split()) <= 3 and not text.endswith(("!", "?", ".", "x")):
+            continue
+        _add(node, _thread_side(node, name=name, width=width, body=text), text)
     if pending_prompt and pending_node is not None:
         _add(pending_node, "them", pending_prompt)
     found.sort(key=lambda row: (row[0], row[1]))
@@ -780,6 +796,17 @@ def find_skip_on_device(device) -> tuple[int, int] | None:
     return None
 
 
+def find_close_on_device(device) -> tuple[int, int] | None:
+    """Paywall / Hinge+ sheet uses a Close control; compressed dumps often miss it."""
+    try:
+        obj = device(description="Close")
+        if obj.exists(timeout=0.45):
+            return _center_from_u2_bounds(obj.info)
+    except Exception:
+        return None
+    return None
+
+
 def discover_card_name_on_device(device) -> str:
     try:
         obj = device(descriptionStartsWith="Skip")
@@ -793,10 +820,36 @@ def discover_card_name_on_device(device) -> str:
 
 
 def find_send_like(xml: str) -> tuple[int, int] | None:
+    """Compose marks Send like as a Button with clickable=false."""
+    hits: list = []
     for node in parse_ui_nodes(xml):
         blob = f"{node.content_desc} {node.text}".lower()
-        if "send like" in blob and node.clickable:
-            return node.bounds.center
+        if "send like" not in blob or "rose" in blob:
+            continue
+        hits.append(node)
+    if not hits:
+        return None
+    hits.sort(
+        key=lambda n: (
+            0 if (n.clickable or n.class_name.endswith("Button")) else 1,
+            -(n.bounds.x2 - n.bounds.x1),
+        )
+    )
+    return hits[0].bounds.center
+
+
+def find_send_like_on_device(device) -> tuple[int, int] | None:
+    try:
+        obj = device(description="Send like")
+        if obj.exists(timeout=0.8):
+            return _center_from_u2_bounds(obj.info)
+        obj = device(descriptionContains="Send like")
+        if obj.exists(timeout=0.4):
+            desc = str((obj.info or {}).get("contentDescription") or "").lower()
+            if "send like" in desc and "rose" not in desc:
+                return _center_from_u2_bounds(obj.info)
+    except Exception:
+        return None
     return None
 
 

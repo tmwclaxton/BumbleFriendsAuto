@@ -283,6 +283,14 @@ def _thread_payload(conn, name: str, phone_id: str | None = None, *, channel: st
     }
 
 
+def _li_sidebar_stamp(row) -> str:
+    from src.linkedin_store import chat_sidebar_stamp
+
+    updated = row["updated_at"] if "updated_at" in row.keys() else ""
+    real = row["last_real_at"] if "last_real_at" in row.keys() else ""
+    return chat_sidebar_stamp(updated, real)
+
+
 def people_api_payload(conn, *, channel: str = "bumble") -> dict:
     from src.phones import public_phones
 
@@ -307,7 +315,7 @@ def people_api_payload(conn, *, channel: str = "bumble") -> dict:
                     "last_from": row["last_from"],
                     "last_text": row["last_text"],
                     "preview": row["preview"],
-                    "updated_at": row["updated_at"] if "updated_at" in row.keys() else "",
+                    "updated_at": _li_sidebar_stamp(row),
                     "message_count": row["message_count"] if "message_count" in row.keys() else 0,
                     "profile_url": public_profile_href(
                         row["name"],
@@ -527,6 +535,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path in {"/hinge", "/hinge.html"}:
             self._html(Path(__file__).with_name("hinge.html"))
+            return
+        if parsed.path in {"/instagram", "/instagram.html"}:
+            self._html(Path(__file__).with_name("instagram.html"))
             return
         if parsed.path in {"/jobs", "/jobs.html"}:
             self._html(Path(__file__).with_name("jobs.html"))

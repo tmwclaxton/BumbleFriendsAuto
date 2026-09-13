@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy rotation="0">
+  <node bounds="[0,0][1080,2400]" class="android.widget.FrameLayout" package="com.instagram.android">
+    <node text="For you" bounds="[80,160][280,230]"/>
+    <node text="Following" selected="true" content-desc="Following, selected" bounds="[300,160][540,230]"/>
+    <node resource-id="com.instagram.android:id/feed_tab" content-desc="Home" bounds="[40,2280][200,2380]"/>
+    <node resource-id="com.instagram.android:id/row_feed_photo_profile_name" text="maya.lane" bounds="[80,280][420,340]"/>
+    <node text="3h" content-desc="3 hours ago" bounds="[80,340][180,380]"/>
+    <node resource-id="com.instagram.android:id/row_feed_button_like" content-desc="Like" bounds="[60,1420][150,1510]"/>
+  </node>
+</hierarchy>

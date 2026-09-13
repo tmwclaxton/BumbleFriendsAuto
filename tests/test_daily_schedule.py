@@ -12,7 +12,14 @@ import src.jobs.linkedin_backfill_cron
 import src.jobs.linkedin_session_cron
 import src.linkedin_session
 import src.phone_queue
-from src.daily_schedule import ACCEPTED_CHANNELS, consume_plan_slot, today_schedule
+from src.daily_schedule import (
+    ACCEPTED_CHANNELS,
+    clamp_hinge_swipe_due,
+    consume_fast_scan_slot,
+    consume_plan_slot,
+    space_lane,
+    today_schedule,
+)
 
 
 LONDON = ZoneInfo("Europe/London")
@@ -65,7 +72,9 @@ class DailyScheduleTests(unittest.TestCase):
         self.assertEqual(result["timezone"], "Europe/London")
         self.assertEqual(result["channels"], list(ACCEPTED_CHANNELS))
         self.assertIn("hinge", result["channels"])
-        self.assertFalse(any(str(row["kind"]).startswith("hinge") for row in result["items"]))
+        hinge = [row for row in result["items"] if row["kind"] == "hinge_scan"]
+        self.assertGreaterEqual(len(hinge), 4)
+        self.assertTrue(all(row["phone_id"] == "toby" for row in hinge))
         fast = [row for row in result["items"] if row["kind"] == "fast_scan"]
         self.assertGreaterEqual(len(fast), 4)
         self.assertTrue(
@@ -90,17 +99,34 @@ class DailyScheduleTests(unittest.TestCase):
             self.assertGreaterEqual(kinds.count("linkedin_feed"), 3, kinds)
             self.assertIn("linkedin_session", kinds)
             self.assertIn("linkedin_backfill", kinds)
+            if pid == "toby":
+                self.assertGreaterEqual(kinds.count("hinge_scan"), 4, kinds)
+                self.assertEqual(kinds.count("hinge_swipe"), 1, kinds)
+                self.assertEqual(kinds.count("instagram_feed"), 2, kinds)
+            else:
+                self.assertEqual(kinds.count("hinge_scan"), 0, kinds)
+                self.assertEqual(kinds.count("hinge_swipe"), 0, kinds)
+                self.assertEqual(kinds.count("instagram_feed"), 0, kinds)
             rows = [row for row in result["items"] if row["phone_id"] == pid]
-            rows.sort(key=lambda row: row["scheduled_at"])
-            prev_end = None
+            by_lane = {}
             for row in rows:
-                start = datetime.fromisoformat(row["scheduled_at"])
-                end = datetime.fromisoformat(row["projected_end_at"])
-                self.assertGreater(end, start, row)
-                self.assertGreaterEqual(row["expected_duration_seconds"], 600.0, row)
-                if prev_end is not None:
-                    self.assertGreaterEqual(start, prev_end, row)
-                prev_end = end
+                by_lane.setdefault(space_lane(row), []).append(row)
+            for lane_rows in by_lane.values():
+                lane_rows.sort(key=lambda row: row["scheduled_at"])
+                prev_end = None
+                for row in lane_rows:
+                    start = datetime.fromisoformat(row["scheduled_at"])
+                    end = datetime.fromisoformat(row["projected_end_at"])
+                    self.assertGreater(end, start, row)
+                    self.assertGreaterEqual(row["expected_duration_seconds"], 600.0, row)
+                    if prev_end is not None:
+                        self.assertGreaterEqual(start, prev_end, row)
+                    prev_end = end
+            swipe = [row for row in rows if row["kind"] == "hinge_swipe"]
+            for row in swipe:
+                hour = datetime.fromisoformat(row["scheduled_at"]).hour
+                self.assertGreaterEqual(hour, 4, row)
+                self.assertLess(hour, 7, row)
 
     def test_plan_persists_and_is_consumed(self):
         now = datetime(2026, 7, 2, 10, 17, tzinfo=LONDON)
@@ -131,6 +157,8 @@ class DailyScheduleTests(unittest.TestCase):
         self.assertEqual(job_channel("hinge_scan"), "hinge")
         self.assertEqual(job_channel("hinge_swipe"), "hinge")
         self.assertEqual(job_channel("instagram_prune"), "instagram")
+        self.assertEqual(job_channel("instagram_feed"), "instagram")
+        self.assertEqual(job_title({"kind": "instagram_feed"}), "Instagram following likes")
         self.assertEqual(job_channel("whatsapp_group"), "whatsapp")
         self.assertEqual(job_channel("fast_scan"), "bumble")
         now = datetime(2026, 7, 2, 9, 12, tzinfo=LONDON)
@@ -138,16 +166,8 @@ class DailyScheduleTests(unittest.TestCase):
         with self._typical(fast_due):
             result = today_schedule(now=now, initialize_due=False)
         self.assertIn("hinge", result["channels"])
-        extra = {
-            "kind": "hinge_scan",
-            "phone_id": "archie",
-            "channel": "hinge",
-            "title": "Hinge refresh matches",
-            "status": "planned",
-            "scheduled_at": "2026-07-02T16:00:00+01:00",
-        }
-        merged = result["items"] + [extra]
-        self.assertEqual(merged[-1]["channel"], "hinge")
+        self.assertTrue(any(row["kind"] == "hinge_scan" and row["phone_id"] == "toby" for row in result["items"]))
+        self.assertFalse(any(row["kind"] == "hinge_scan" and row["phone_id"] == "archie" for row in result["items"]))
 
     def test_consume_marks_only_the_due_slot_not_every_overdue_one(self):
         now = datetime(2026, 7, 2, 12, 0, tzinfo=LONDON)
@@ -172,6 +192,21 @@ class DailyScheduleTests(unittest.TestCase):
         self.assertFalse(slots[1]["consumed"])
         self.assertFalse(slots[2]["consumed"])
         self.assertEqual(nxt, slots[1]["at"])
+
+    def test_hinge_swipe_stays_early_morning(self):
+        now = datetime(2026, 9, 13, 16, 10, tzinfo=LONDON)
+        morning = datetime(2026, 9, 14, 4, 45, tzinfo=LONDON).timestamp()
+        self.assertEqual(clamp_hinge_swipe_due(morning, now=now, rng=__import__("random").Random(1)), morning)
+        afternoon = datetime(2026, 9, 14, 14, 2, tzinfo=LONDON).timestamp()
+        nxt = clamp_hinge_swipe_due(afternoon, now=now, rng=__import__("random").Random(1))
+        due = datetime.fromtimestamp(nxt, LONDON)
+        self.assertGreaterEqual(due.hour, 4)
+        self.assertLess(due.hour, 7)
+        from src.jobs.hinge_cron import should_swipe, swipe_hour_ok
+
+        self.assertTrue(swipe_hour_ok(morning))
+        self.assertFalse(swipe_hour_ok(afternoon))
+        self.assertFalse(should_swipe(afternoon))
 
 
 if __name__ == "__main__":

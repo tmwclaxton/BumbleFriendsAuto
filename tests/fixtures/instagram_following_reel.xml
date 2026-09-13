@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="com.instagram.android" bounds="[0,0][1080,2400]">
+    <node resource-id="com.instagram.android:id/clips_video_container" content-desc="Reel by saveloughneagh. Double tap to play or pause." bounds="[0,136][1080,2179]"/>
+    <node class="android.widget.TextView" text="Following" bounds="[222,176][491,265]"/>
+    <node resource-id="com.instagram.android:id/like_button" content-desc="Like" clickable="true" bounds="[943,1005][1059,1121]"/>
+    <node resource-id="com.instagram.android:id/clips_author_username" text="saveloughneagh and 4 others" content-desc="saveloughneagh and 4 others" clickable="true" bounds="[137,1939][681,1986]"/>
+    <node resource-id="com.instagram.android:id/inline_follow_button" text="Follow" content-desc="Follow Save Lough Neagh" clickable="true" bounds="[697,1950][874,2026]"/>
+  </node>
+</hierarchy>

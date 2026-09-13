@@ -12,3 +12,8 @@
 */5 10-20 * * * python -m src.jobs.linkedin_session_cron
 # LinkedIn: quiet evening import of 5–10 older chats we do not have yet.
 */5 21-22 * * * python -m src.jobs.linkedin_backfill_cron
+# Hinge: early-morning Discover swipe (Galaxy), then Matches / reply checks through the day.
+*/5 4-6 * * * python -m src.jobs.hinge_cron
+*/5 9-23 * * * python -m src.jobs.hinge_cron
+# Instagram: Toby on Pixel — Following likes twice a day (plan-jittered).
+*/5 9-21 * * * python -m src.jobs.instagram_cron

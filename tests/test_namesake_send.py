@@ -104,6 +104,16 @@ class ExpiredNamesakeSplitTests(unittest.TestCase):
         upsert_chat(self.conn, "Hannah 2", last_from="", last_text="expired", preview="Match expired")
         self.assertFalse(namesake_same_person(self.conn, "Hannah", "Hannah 2"))
 
+    def test_empty_ghost_clone_merges_into_the_real_chat(self):
+        chat = upsert_chat(self.conn, "Hannah", last_from="them", last_text="I have Exploding Kittens")
+        replace_thread(
+            self.conn,
+            chat,
+            [("them", "I have Exploding Kittens"), ("you", "bring it")],
+        )
+        upsert_chat(self.conn, "Hannah 3", last_from="", last_text="", preview="")
+        self.assertTrue(namesake_same_person(self.conn, "Hannah", "Hannah 3"))
+
     def test_list_row_key_keeps_both_hannahs(self):
         live = _list_row_key({"name": "Hannah", "preview": "Yea it’s my fav!"})
         dead = _list_row_key({"name": "Hannah", "preview": "Match expired"})

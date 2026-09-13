@@ -16,6 +16,8 @@
     --li-deep: #0a66c2;
     --hinge: #ff7a8a;
     --hinge-deep: #c43d55;
+    --ig: #e1306c;
+    --ig-deep: #833ab4;
     --shadow: 0 22px 48px #05030266;
   }
   * { box-sizing: border-box; }
@@ -62,7 +64,7 @@
   }
   .cards {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
     gap: 16px;
     width: min(980px, 100%);
   }
@@ -84,6 +86,7 @@
   a.card.jobs:hover { border-color: #4a4030; background: #1b1813; }
   a.card.li:hover { border-color: #2d5688; background: #121c2c; }
   a.card.hinge:hover { border-color: #6a3a44; background: #221418; }
+  a.card.ig:hover { border-color: #6a2a44; background: #221018; }
   .icon {
     width: 36px;
     height: 36px;
@@ -110,11 +113,16 @@
     background: linear-gradient(180deg, #ff9aa6, var(--hinge-deep));
     color: #fff;
   }
+  a.card.ig .icon {
+    background: linear-gradient(180deg, #f77737, var(--ig), var(--ig-deep));
+    color: #fff;
+  }
   a.card h2 { margin: 0 0 8px; font-size: 20px; letter-spacing: -0.02em; }
   a.card.bumble h2 { color: var(--you); }
   a.card.jobs h2 { color: var(--text); }
   a.card.li h2 { color: var(--li); }
   a.card.hinge h2 { color: var(--hinge); }
+  a.card.ig h2 { color: #ff7aa8; }
   a.card p { margin: 0; color: var(--muted); font-size: 13.5px; flex: 1; }
   a.card .go {
     margin-top: 18px;
@@ -125,6 +133,7 @@
   a.card.jobs .go { color: var(--muted); }
   a.card.li .go { color: var(--li); }
   a.card.hinge .go { color: var(--hinge); }
+  a.card.ig .go { color: #ff7aa8; }
   @media (max-width: 1100px) {
     .cards { grid-template-columns: 1fr 1fr; }
   }
@@ -152,6 +161,12 @@
       <h2>Hinge</h2>
       <p>Matches, profile prompts, drafts, and Galaxy Discover swipes — Pixel stays on Instagram.</p>
       <span class="go">Open inbox →</span>
+    </a>
+    <a class="card ig" href="/instagram">
+      <div class="icon" aria-hidden="true">IG</div>
+      <h2>Instagram</h2>
+      <p>Toby’s Pixel Following likes. Inbox grab and Galaxy login are still WIP.</p>
+      <span class="go">Open Instagram →</span>
     </a>
     <a class="card jobs" href="/jobs">
       <div class="icon" aria-hidden="true">Q</div>

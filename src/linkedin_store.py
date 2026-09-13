@@ -440,10 +440,11 @@ def upsert_chat(
     last_text: str | None = None,
     phone_id: str | None = None,
     profile_url: str | None = None,
+    updated_at: str | None = None,
 ) -> int:
     person_id = upsert_person(conn, name, phone_id=phone_id, profile_url=profile_url)
     existing = conn.execute(
-        "SELECT preview, badge, last_from, last_text FROM li_chats WHERE person_id = ?",
+        "SELECT preview, badge, last_from, last_text, updated_at FROM li_chats WHERE person_id = ?",
         (person_id,),
     ).fetchone()
     preview_v = preview if preview is not None else (existing["preview"] if existing else None)
@@ -458,6 +459,16 @@ def upsert_chat(
     else:
         status = "unknown"
     now = _now()
+    text_changed = existing is None or (
+        (last_text is not None and last_text_v != existing["last_text"])
+        or (preview is not None and preview_v != existing["preview"])
+    )
+    if updated_at:
+        stamp = updated_at
+    elif existing and not text_changed and existing["updated_at"]:
+        stamp = existing["updated_at"]
+    else:
+        stamp = now
     conn.execute(
         """
         INSERT INTO li_chats (person_id, preview, badge, status, last_from, last_text, updated_at)
@@ -470,7 +481,7 @@ def upsert_chat(
             last_text = excluded.last_text,
             updated_at = excluded.updated_at
         """,
-        (person_id, preview_v, badge_v, status, last_from_v, last_text_v, now),
+        (person_id, preview_v, badge_v, status, last_from_v, last_text_v, stamp),
     )
     return person_id
 
@@ -575,13 +586,23 @@ def replace_thread(conn: sqlite3.Connection, person_id: int, messages: list[tupl
     if cleaned:
         last_side, last_body = cleaned[-1]
         status = "waiting" if last_side == "you" else "needs_reply"
-        conn.execute(
-            """
-            UPDATE li_chats SET last_from = ?, last_text = ?, status = ?
-            WHERE person_id = ?
-            """,
-            (last_side, last_body, status, person_id),
-        )
+        last_iso = stamp.split("#", 1)[0] if "#" not in stamp else ""
+        if last_iso:
+            conn.execute(
+                """
+                UPDATE li_chats SET last_from = ?, last_text = ?, status = ?, updated_at = ?
+                WHERE person_id = ?
+                """,
+                (last_side, last_body, status, last_iso, person_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE li_chats SET last_from = ?, last_text = ?, status = ?
+                WHERE person_id = ?
+                """,
+                (last_side, last_body, status, person_id),
+            )
 
 
 def repair_message_attribution(conn: sqlite3.Connection) -> None:
@@ -628,6 +649,14 @@ def repair_message_attribution(conn: sqlite3.Connection) -> None:
             )
 
 
+def chat_sidebar_stamp(updated_at: str | None, last_real_at: str | None) -> str:
+    """Prefer a parsed thread clock over a scan-time chat stamp."""
+    real = (last_real_at or "").strip()
+    if real:
+        return real.split("#", 1)[0]
+    return (updated_at or "").strip().split("#", 1)[0]
+
+
 def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(
         conn.execute(
@@ -638,7 +667,10 @@ def list_people(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    c.updated_at, c.archived, c.spam, c.spam_reason, c.spam_fp,
                    c.product, c.product_reason, c.product_fp,
                    c.draft, c.draft_status, c.draft_error, c.draft_attempts, c.draft_pending_fp,
-                   (SELECT COUNT(*) FROM li_messages m WHERE m.person_id = p.id) AS message_count
+                   (SELECT COUNT(*) FROM li_messages m WHERE m.person_id = p.id) AS message_count,
+                   (SELECT m.captured_at FROM li_messages m
+                    WHERE m.person_id = p.id AND instr(m.captured_at, '#') = 0
+                    ORDER BY m.id DESC LIMIT 1) AS last_real_at
             FROM li_people p
             LEFT JOIN li_chats c ON c.person_id = p.id
             ORDER BY

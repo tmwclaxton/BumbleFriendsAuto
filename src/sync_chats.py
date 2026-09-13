@@ -1324,16 +1324,7 @@ def _save_name_for_thread(
             log.info("namesake %s is a new face → %s", partner, save_as)
             return save_as
     # No reply captured this time: attach to an opener-only stub, else the primary name.
-    # A different face on an expired/empty open is a second person, not the chat.
-    if not them_new and face is not None:
-        known_faces = [a for a in aliases if load_photo(a) is not None]
-        if known_faces and all(
-            (stored := load_photo(a)) is not None and faces_differ(face, stored) for a in known_faces
-        ):
-            save_as = next_duplicate_name(conn, partner)
-            save_face_image(face, save_as)
-            log.info("empty/expired %s is a new face → %s", partner, save_as)
-            return save_as
+    # Empty/expired opens must not mint from list-crop vs profile-crop "different face".
     if not them_new:
         attachable = [a for a in aliases if not _is_established_namesake(conn, a)]
         pool = [a for a in attachable if a in stubs] or attachable

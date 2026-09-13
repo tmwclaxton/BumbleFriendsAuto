@@ -719,21 +719,35 @@ def _check_cancel() -> None:
 
 
 def _unlock(serial: str | None):
-    device = connect(serial)
-    unlocked = False
-    for _ in range(4):
+    device = None
+    last_err = ""
+    for attempt in range(5):
         try:
-            unlocked = wake_and_unlock(device, serial=serial)
+            device = connect(serial)
             break
         except Exception as exc:
+            last_err = str(exc)
+            log.warning("adb connect dropped (%s); retry %s", exc, attempt + 1)
+            time.sleep(1.4 + attempt * 0.6)
+    if device is None:
+        return None, last_err or "could not connect to Pixel"
+    unlocked = False
+    for attempt in range(4):
+        try:
+            unlocked = wake_and_unlock(device, serial=serial)
+            if unlocked:
+                break
+        except Exception as exc:
+            last_err = str(exc)
             log.warning("unlock dropped: %s", exc)
             time.sleep(2)
             try:
                 device = connect(serial)
-            except Exception:
+            except Exception as exc:
+                last_err = str(exc)
                 time.sleep(2)
     if not unlocked:
-        return None, "phone still locked — unlock failed"
+        return None, last_err or "phone still locked — unlock failed"
     bring_app_foreground(device, PACKAGE)
     wait_idle(device, 1.6)
     return device, ""

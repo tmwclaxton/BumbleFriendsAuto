@@ -92,6 +92,11 @@ async def hinge_page(_: Request) -> Response:
     return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
+async def instagram_page(_: Request) -> Response:
+    path = Path(__file__).with_name("instagram.html")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
 _PRODUCT_STATIC = Path(__file__).with_name("static") / "products"
 _PRODUCT_FILES = {
     "snitch.svg": "image/svg+xml",
@@ -198,6 +203,55 @@ async def api_instagram_prune(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "instagram prune is Pixel/Toby only"}, status_code=400)
     job = enqueue("instagram_prune", phone_id="toby")
     return JSONResponse({"ok": True, "queued": True, "job": job, "jobs": [job]})
+
+
+async def api_instagram_people(_: Request) -> JSONResponse:
+    from src.instagram_feed import last_session
+
+    return JSONResponse({"ok": True, "people": [], "last_session": last_session()})
+
+
+async def api_instagram_feed(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    pid = str(data.get("phone_id") or data.get("phone") or "toby").strip() or "toby"
+    if pid not in {"toby", "pixel"}:
+        return JSONResponse({"ok": False, "error": "Instagram feed likes are Pixel / Toby only"}, status_code=400)
+    extra = {}
+    if data.get("limit"):
+        extra["limit"] = data.get("limit")
+    if data.get("min_posts") or data.get("max_posts"):
+        extra["min_posts"] = data.get("min_posts")
+        extra["max_posts"] = data.get("max_posts")
+    text = json.dumps(extra) if extra else ""
+    if data.get("cron"):
+        jobs, skipped = enqueue_cron("instagram_feed", channel="instagram", phone_id="toby")
+        return JSONResponse(
+            {
+                "ok": True,
+                "status": "queued" if jobs else "skipped",
+                "queued": bool(jobs),
+                "jobs": jobs,
+                "skipped": skipped,
+                "job": jobs[0] if jobs else None,
+            }
+        )
+    job = enqueue("instagram_feed", text=text, phone_id="toby")
+    return JSONResponse({"ok": True, "queued": True, "status": "queued", "job": job, "jobs": [job]})
+
+
+async def api_instagram_feed_prefs(request: Request) -> JSONResponse:
+    from src.instagram_feed import last_session, load_prefs, save_prefs
+
+    if request.method == "POST":
+        data = await _read_json(request)
+        if isinstance(data, JSONResponse):
+            return data
+        prefs = save_prefs(data)
+    else:
+        prefs = load_prefs()
+    return JSONResponse({**prefs, "last_session": last_session()})
 
 
 async def api_li_session_prefs(request: Request) -> JSONResponse:
@@ -1199,7 +1253,7 @@ async def api_hinge_people(_: Request) -> JSONResponse:
         from src.hinge_store import people_payload
 
         from src.profile_filters import ETHNICITY_CHOICES
-        from src.hinge_swipe import _usage
+        from src.hinge_swipe import _usage, last_session
 
         return JSONResponse(
             {
@@ -1207,6 +1261,7 @@ async def api_hinge_people(_: Request) -> JSONResponse:
                 "people": people_payload(conn),
                 "ethnicity_choices": [{"id": cid, "label": label} for cid, label in ETHNICITY_CHOICES],
                 "swipe_usage": _usage(),
+                "last_session": last_session(),
             }
         )
     finally:
@@ -1498,6 +1553,8 @@ def build_app() -> Starlette:
         Route("/linkedin.html", linkedin_page),
         Route("/hinge", hinge_page),
         Route("/hinge.html", hinge_page),
+        Route("/instagram", instagram_page),
+        Route("/instagram.html", instagram_page),
         Route("/static/products/{name}", product_logo),
         Route("/swipe", swipe_page),
         Route("/swipe.html", swipe_page),
@@ -1531,6 +1588,9 @@ def build_app() -> Starlette:
         Route("/api/hinge/archive", api_hinge_archive, methods=["POST"]),
         Route("/api/hinge/ethnicity", api_hinge_ethnicity, methods=["POST"]),
         Route("/api/instagram/prune", api_instagram_prune, methods=["POST"]),
+        Route("/api/instagram/people", api_instagram_people),
+        Route("/api/instagram/feed", api_instagram_feed, methods=["POST"]),
+        Route("/api/instagram/feed/prefs", api_instagram_feed_prefs, methods=["GET", "POST"]),
         Route("/api/photo", api_photo),
         Route("/api/thread", api_thread),
         Route("/api/queue", api_queue),

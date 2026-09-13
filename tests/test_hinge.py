@@ -11,6 +11,7 @@ from src.hinge_screen import (
     classify_screen,
     find_like_photo,
     find_nav_point,
+    find_send_like,
     find_skip,
     merge_profiles,
     parse_match_list,
@@ -35,12 +36,17 @@ from src.hinge_store import (
 )
 from src.hinge_swipe import (
     _should_like,
+    card_display_name,
+    card_identity,
     default_prefs,
     live_account_id,
+    looks_like_wrong_app,
     normalize_prefs,
     pixel_blocked,
     prefs_payload,
     score_attractiveness,
+    session_summary,
+    xml_fingerprint,
 )
 from src.phones import phone_scope
 from src.store import connect
@@ -107,6 +113,31 @@ class HingeParseTests(unittest.TestCase):
         self.assertEqual(msgs[reply][0], "them")
         self.assertFalse(any("notification" in body.lower() for body in bodies))
 
+    def test_elizabeth_like_then_replies(self):
+        xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="co.hinge.app" bounds="[0,0][1440,2560]">
+    <node text="elizabeth" bounds="[574,133][865,219]"/>
+    <node text="Chat" bounds="[56,310][664,370]"/>
+    <node text="Profile" bounds="[776,310][1384,370]"/>
+    <node text="You liked elizabeth's photo." bounds="[638,1543][1314,1611]"/>
+    <node content-desc=" elizabeth: i love goodreads. " bounds="[203,1825][708,1977]"/>
+    <node content-desc=" elizabeth: i just never update it lol . " bounds="[203,1991][895,2143]"/>
+    <node text="Send a message" resource-id="co.hinge.app:id/messageComposition" bounds="[42,2350][1202,2518]"/>
+  </node>
+</hierarchy>
+"""
+        name, msgs = parse_open_thread(xml)
+        self.assertEqual(name, "elizabeth")
+        self.assertEqual(
+            msgs,
+            [
+                ("you", "You liked elizabeth's photo."),
+                ("them", "i love goodreads."),
+                ("them", "i just never update it lol ."),
+            ],
+        )
+
     def test_compose_thread_prompt_and_reply(self):
         xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
 <hierarchy rotation="0">
@@ -149,6 +180,17 @@ class HingeParseTests(unittest.TestCase):
         self.assertIsNotNone(find_skip(xml))
         profile = parse_profile(xml)
         self.assertTrue(any("life goal" in q.lower() for q, _a in profile.prompts))
+
+    def test_send_like_compose_not_clickable(self):
+        xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="co.hinge.app" class="android.widget.FrameLayout" bounds="[0,0][1440,2560]">
+    <node class="android.widget.Button" content-desc="Send a Rose" clickable="false" bounds="[126,1289][476,1433]"/>
+    <node class="android.widget.Button" content-desc="Send like" clickable="false" bounds="[518,1289][1314,1433]"/>
+  </node>
+</hierarchy>
+"""
+        self.assertEqual(find_send_like(xml), (916, 1361))
 
     def test_skip_without_trailing_space(self):
         xml = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
@@ -280,6 +322,9 @@ class HingePrefsAndDraftTests(unittest.TestCase):
         self.assertEqual(raw["like_percent"], 100)
         self.assertEqual(raw["dealbreakers"], ["kids", "smoking"])
         self.assertEqual(raw["attractiveness_min"], 8)
+        self.assertEqual(default_prefs()["ethnicity_include"], ["white"])
+        self.assertEqual(default_prefs()["hair_include"], ["blonde"])
+        self.assertEqual(default_prefs()["eye_include"], ["blue"])
         self.assertEqual(default_prefs()["phone_id"], "toby")
         self.assertTrue(default_prefs()["human_pacing"])
         self.assertEqual(live_account_id("archie"), "toby")
@@ -313,21 +358,133 @@ class HingePrefsAndDraftTests(unittest.TestCase):
     def test_swipe_respects_race_and_attractiveness(self):
         prefs = normalize_prefs(
             {
+                "ethnicity_include": ["white"],
                 "ethnicity_exclude": ["black"],
+                "hair_include": ["blonde"],
+                "eye_include": ["blue"],
                 "attractiveness_min": 8,
                 "like_percent": 100,
                 "max_likes_session": 10,
+                "gender_pref": "female",
             }
         )
         score, why = score_attractiveness()
         self.assertLess(score, prefs["attractiveness_min"])
         self.assertIn("stub", why)
-        like, reason = _should_like(prefs, "hello", likes=0, swipes=0, extras={"ethnicity": "Black"})
+        like, reason = _should_like(prefs, "hello", likes=0, swipes=0, extras={"ethnicity": "Black", "gender": "female", "hair": "blonde", "eyes": "blue", "attractiveness": 9})
         self.assertFalse(like)
         self.assertIn("excluded", reason)
+        like, reason = _should_like(
+            prefs,
+            "hello",
+            likes=0,
+            swipes=0,
+            extras={"ethnicity": "white", "gender": "female", "hair": "brunette", "eyes": "blue", "attractiveness": 9},
+        )
+        self.assertFalse(like)
+        self.assertIn("hair", reason)
+        like, reason = _should_like(
+            prefs,
+            "hello",
+            likes=0,
+            swipes=0,
+            extras={"ethnicity": "white", "gender": "female", "hair": "blonde", "eyes": "blue", "attractiveness": 9},
+        )
+        self.assertTrue(like)
         like, reason = _should_like(prefs, "hello", likes=0, swipes=0, extras={"ethnicity": "white"})
         self.assertFalse(like)
-        self.assertIn("attractiveness", reason)
+
+    def test_session_review_dedupes_repeat_names(self):
+        cards = [
+            {"name": "Julia", "action": "pass", "reason": "ethnicity"},
+            {"name": "Julia", "action": "pass", "reason": "ethnicity"},
+            {"name": "Jeanie", "action": "like", "reason": "like"},
+        ]
+        notes = [
+            "pass Julia (ethnicity ['east_asian'] not in include)",
+            "pass Julia (ethnicity ['east_asian'] not in include)",
+            "like Jeanie (like)",
+            "daily cap",
+        ]
+        text = session_summary(3, 1, cards, notes)
+        self.assertEqual(text.count("Julia"), 1)
+        self.assertIn("2 people", text)
+        self.assertIn("likes: Jeanie", text)
+        self.assertIn("daily cap", text)
+        self.assertEqual(card_identity("Julia", {"hair": "black", "eyes": "brown"}), card_identity("julia", {"hair": "black", "eyes": "brown"}))
+        self.assertNotEqual(
+            card_identity("Julia", {"ethnicity": "east_asian"}),
+            card_identity("Julia", {"ethnicity": "white"}),
+        )
+        profile = type("P", (), {"name": "Skip leftover", "photos": ["Rebecca", "Rebecca", "Julia"]})()
+        self.assertEqual(card_display_name(profile), "Rebecca")
+        self.assertIn("rebecca", xml_fingerprint("Rebecca", profile))
+
+    def test_stale_dump_keeps_same_fingerprint(self):
+        leftover = type(
+            "P",
+            (),
+            {
+                "name": "Julia",
+                "about": "loves pasta",
+                "job": "nurse",
+                "location": "London",
+                "photos": ["Julia", "Julia"],
+            },
+        )()
+        next_card = type(
+            "P",
+            (),
+            {
+                "name": "Julia",
+                "about": "climbs on weekends",
+                "job": "teacher",
+                "location": "Brighton",
+                "photos": ["Freya", "Freya"],
+            },
+        )()
+        stale_name = leftover.name
+        self.assertEqual(xml_fingerprint(stale_name, leftover), xml_fingerprint("Julia", leftover))
+        self.assertNotEqual(xml_fingerprint(stale_name, leftover), xml_fingerprint("Freya", next_card))
+        xml = '<node text="Freya, 24"/><node content-desc="Freya"/>'
+        mismatch = type("P", (), {"name": "Julia", "photos": ["Freya", "Freya", "Aimee"]})()
+        self.assertEqual(card_display_name(mismatch, xml=xml), "Freya")
+
+    def test_session_summary_judgment_shape(self):
+        names = [
+            "Freya",
+            "Aimee",
+            "Chloe",
+            "Maya",
+            "Sophie",
+            "Ella",
+            "Isla",
+            "Poppy",
+            "Ruby",
+            "Grace",
+            "Lily",
+            "Eva",
+        ]
+        cards = [{"name": n, "action": "like" if n in {"Freya", "Aimee"} else "pass"} for n in names]
+        text = session_summary(12, 2, cards, ["completed"])
+        self.assertIn("swiped 12", text)
+        self.assertIn("liked 2", text)
+        self.assertIn("12 people", text)
+        self.assertIn("likes: Freya, Aimee", text)
+        self.assertEqual(text.count("Freya"), 1)
+
+    def test_bumble_inbox_is_wrong_app(self):
+        bumble = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+        <hierarchy>
+          <node package="com.bumblebff.app" text="Start" content-desc="Start"/>
+        </hierarchy>"""
+        self.assertTrue(looks_like_wrong_app(bumble))
+        hinge = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+        <hierarchy>
+          <node package="co.hinge.app" content-desc="Skip Freya"/>
+        </hierarchy>"""
+        self.assertFalse(looks_like_wrong_app(hinge))
+        self.assertFalse(looks_like_wrong_app(""))
 
     def test_draft_api_smoke(self):
         from src.server import api_hinge_draft_generate

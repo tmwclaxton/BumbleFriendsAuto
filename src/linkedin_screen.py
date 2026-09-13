@@ -66,6 +66,29 @@ _SKIP_NAMES = {
     "share",
 }
 
+_WEEKDAYS = {
+    "mon": 0,
+    "monday": 0,
+    "tue": 1,
+    "tues": 1,
+    "tuesday": 1,
+    "wed": 2,
+    "wednesday": 2,
+    "thu": 3,
+    "thur": 3,
+    "thurs": 3,
+    "thursday": 3,
+    "fri": 4,
+    "friday": 4,
+    "sat": 5,
+    "saturday": 5,
+    "sun": 6,
+    "sunday": 6,
+}
+
+_INBOX_AGO = re.compile(r"^(\d+)\s*(m|h|d|w)$", re.I)
+_INBOX_CLOCK = re.compile(r"^\d{1,2}:\d{2}(\s*[ap]m)?$", re.I)
+
 
 @dataclass(frozen=True)
 class LiFolderChip:
@@ -84,6 +107,7 @@ class LiListHit:
     x: int
     y: int
     bounds: str
+    when: str = ""
 
 
 def _rid(node) -> str:
@@ -266,16 +290,16 @@ def find_nav_point(xml: str, label: str) -> tuple[int, int] | None:
     return (x, y)
 
 
-def parse_messaging_list(xml: str) -> list[LiListHit]:
+def parse_messaging_list(xml: str, *, now: datetime | None = None) -> list[LiListHit]:
     try:
         root = ET.fromstring(xml)
     except ET.ParseError:
         return []
-    rows = _parse_conversation_rows(root)
+    rows = _parse_conversation_rows(root, now=now)
     if rows:
         return rows
     if looks_like_messaging(xml):
-        return _parse_generic_list(root)
+        return _parse_generic_list(root, now=now)
     return []
 
 
@@ -329,7 +353,54 @@ def find_inbox_folder(xml: str, label: str) -> LiFolderChip | None:
     return None
 
 
-def _parse_conversation_rows(root: ET.Element) -> list[LiListHit]:
+def inbox_stamp_iso(text: str, now: datetime | None = None) -> str:
+    """Turn an inbox row label (Wed, Sun, Jul 13, 2h, 14:32) into a UTC ISO stamp."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    clock = now or datetime.now(_LONDON)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=_LONDON)
+    local = clock.astimezone(_LONDON)
+    low = raw.casefold().rstrip(".")
+    if low in {"now", "just now"}:
+        return local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ago = _INBOX_AGO.fullmatch(low)
+    if ago:
+        count = int(ago.group(1))
+        unit = ago.group(2).lower()
+        delta = {
+            "m": timedelta(minutes=count),
+            "h": timedelta(hours=count),
+            "d": timedelta(days=count),
+            "w": timedelta(weeks=count),
+        }[unit]
+        return (local - delta).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if _INBOX_CLOCK.fullmatch(low.replace(" ", "")) or _INBOX_CLOCK.fullmatch(low):
+        parsed = _parse_clock(raw)
+        if parsed:
+            stamped = local.replace(hour=parsed[0], minute=parsed[1], second=0, microsecond=0)
+            return stamped.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if low in _WEEKDAYS:
+        days_back = (local.weekday() - _WEEKDAYS[low]) % 7
+        stamped = (local - timedelta(days=days_back)).replace(
+            hour=12, minute=0, second=0, microsecond=0
+        )
+        return stamped.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    header = _parse_header_date(raw, local)
+    if header is None:
+        return ""
+    if header.tzinfo is None:
+        header = header.replace(tzinfo=_LONDON)
+    if header > local + timedelta(days=1):
+        try:
+            header = header.replace(year=header.year - 1)
+        except ValueError:
+            pass
+    return header.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_conversation_rows(root: ET.Element, now: datetime | None = None) -> list[LiListHit]:
     hits: list[LiListHit] = []
     seen: set[str] = set()
     for node in root.iter():
@@ -338,6 +409,7 @@ def _parse_conversation_rows(root: ET.Element) -> list[LiListHit]:
         name = ""
         preview = ""
         unread = False
+        stamp = ""
         for child in node.iter():
             rid = _rid(child)
             text = (child.attrib.get("text") or "").strip()
@@ -347,11 +419,14 @@ def _parse_conversation_rows(root: ET.Element) -> list[LiListHit]:
                 preview = text
             elif rid == "messaging_conversation_unread_count" and text:
                 unread = True
+            elif rid == "messaging_conversation_timestamp" and text:
+                stamp = text
         desc = (node.attrib.get("content-desc") or "").strip()
         if _UNREAD.search(desc):
             unread = True
         if not name:
-            name, preview = _split_row_desc(desc, preview)
+            name, preview, desc_stamp = _split_row_desc(desc, preview)
+            stamp = stamp or desc_stamp
         if not name or name.casefold() in _SKIP_NAMES:
             continue
         center = _bounds_center(node.attrib.get("bounds") or "")
@@ -369,26 +444,33 @@ def _parse_conversation_rows(root: ET.Element) -> list[LiListHit]:
                 x=center[0],
                 y=center[1],
                 bounds=node.attrib.get("bounds") or "",
+                when=inbox_stamp_iso(stamp, now),
             )
         )
     hits.sort(key=lambda h: h.y)
     return hits
 
 
-def _split_row_desc(desc: str, preview: str) -> tuple[str, str]:
-    """'Button, Ada Lovelace, Loved the hiking note, Sunday' → name + preview."""
+def _split_row_desc(desc: str, preview: str) -> tuple[str, str, str]:
+    """'Button, Ada Lovelace, Loved the hiking note, Sunday' → name, preview, stamp."""
     parts = [p.strip() for p in desc.split(",") if p.strip()]
     if parts and parts[0].casefold() == "button":
         parts = parts[1:]
+    if parts and _UNREAD.search(parts[-1]):
+        parts = parts[:-1]
+    stamp = ""
+    if parts and inbox_stamp_iso(parts[-1]):
+        stamp = parts[-1]
+        parts = parts[:-1]
     if not parts:
-        return "", preview
+        return "", preview, stamp
     name = parts[0]
     if not preview and len(parts) > 1:
-        preview = parts[1]
-    return name, preview
+        preview = ", ".join(parts[1:])
+    return name, preview, stamp
 
 
-def _parse_generic_list(root: ET.Element) -> list[LiListHit]:
+def _parse_generic_list(root: ET.Element, now: datetime | None = None) -> list[LiListHit]:
     hits: list[LiListHit] = []
     seen: set[str] = set()
     for node in root.iter():
@@ -420,7 +502,11 @@ def _parse_generic_list(root: ET.Element) -> list[LiListHit]:
         ):
             continue
         unread = bool(_UNREAD.search(blob))
-        name, preview = _split_name_preview(blob)
+        stamp = ""
+        if "," in desc:
+            name, preview, stamp = _split_row_desc(desc, "")
+        else:
+            name, preview = _split_name_preview(blob)
         if not name or name.casefold() in _SKIP_NAMES:
             continue
         center = _bounds_center(node.attrib.get("bounds") or "")
@@ -441,6 +527,7 @@ def _parse_generic_list(root: ET.Element) -> list[LiListHit]:
                 x=center[0],
                 y=center[1],
                 bounds=node.attrib.get("bounds") or "",
+                when=inbox_stamp_iso(stamp, now),
             )
         )
     hits.sort(key=lambda h: h.y)
@@ -1198,25 +1285,92 @@ def find_send_point(xml: str) -> tuple[int, int] | None:
         root = ET.fromstring(xml)
     except ET.ParseError:
         return None
+    preferred = None
+    fallback = None
     for node in root.iter():
         rid = _rid(node).lower()
         desc = (node.attrib.get("content-desc") or "").strip().lower()
         text = (node.attrib.get("text") or "").strip().lower()
-        if any(skip in rid for skip in ("receipt", "sent", "voice")):
+        if any(skip in rid for skip in ("receipt", "voice")):
+            continue
+        if "sent" in rid and "send" not in rid.replace("sent", ""):
             continue
         clickable = (node.attrib.get("clickable") or "").lower() == "true"
+        center = _bounds_center(node.attrib.get("bounds") or "")
+        if not center:
+            continue
+        if rid.endswith("messaging_keyboard_send_button") or rid.endswith("messaging_keyboard_send"):
+            preferred = center
+            continue
         if desc in {"send", "send message"} or text == "send":
-            return _bounds_center(node.attrib.get("bounds") or "")
-        if clickable and "send" in rid:
-            return _bounds_center(node.attrib.get("bounds") or "")
-    return None
+            fallback = fallback or center
+            continue
+        if clickable and rid.endswith("_send") or (clickable and rid.endswith("send_button")):
+            fallback = fallback or center
+    return preferred or fallback
+
+
+def composer_text(xml: str) -> str:
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return ""
+    fallback = ""
+    for node in root.iter():
+        rid = _rid(node).lower()
+        cls = (node.attrib.get("class") or "").lower()
+        text = (node.attrib.get("text") or "").strip()
+        if not text:
+            continue
+        if rid.endswith("messaging_keyboard_text_input_container") or rid.endswith("text_input_container"):
+            return text
+        if "edittext" in cls and "search" not in rid:
+            fallback = text
+    return fallback
+
+
+def _norm_msg(text: str) -> str:
+    return " ".join((text or "").split()).casefold()
+
+
+def message_tokens(message: str) -> list[str]:
+    norm = _norm_msg(message)
+    if not norm:
+        return []
+    out = [norm]
+    if len(norm) > 24:
+        out.append(norm[:24])
+        out.append(norm[-18:])
+    out.extend(re.findall(r"https?://[^\s]+", (message or "").casefold()))
+    return [t for t in out if len(t) >= 8]
 
 
 def message_visible(xml: str, message: str) -> bool:
-    needle = " ".join((message or "").split()).casefold()
+    """True when the sent body is in a thread bubble, not only the composer."""
+    needle = _norm_msg(message)
     if not needle:
         return False
-    return needle in " ".join((xml or "").split()).casefold()
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return needle in _norm_msg(xml)
+    bodies: list[str] = []
+    for node in root.iter():
+        rid = _rid(node).lower()
+        if rid in {"body", "message_text", "message_body"} or rid.endswith("_body"):
+            bodies.append(_norm_msg(node.attrib.get("text") or ""))
+    blob = " ".join(bodies)
+    if not blob:
+        blob = _norm_msg(xml)
+        typed = _norm_msg(composer_text(xml))
+        if typed and needle == typed:
+            return False
+    if needle in blob:
+        return True
+    typed = _norm_msg(composer_text(xml))
+    if typed and blob == _norm_msg(xml) and needle in typed:
+        return False
+    return any(tok in blob for tok in message_tokens(message) if "http" in tok or len(tok) >= 18)
 
 
 def find_thread_profile_point(xml: str, partner: str | None = None) -> tuple[int, int] | None:
