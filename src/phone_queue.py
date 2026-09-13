@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.config import ROOT, load_config
@@ -31,6 +32,7 @@ _INBOX_KINDS = {
     "liked_you_scan",
     "liked_you_run",
     "linkedin_scan",
+    "linkedin_feed",
     "linkedin_seed",
     "linkedin_backfill",
     "linkedin_reply",
@@ -43,6 +45,10 @@ _INBOX_KINDS = {
     "whatsapp_group",
     "whatsapp_add",
     "instagram_prune",
+    "hinge_swipe",
+    "hinge_refresh",
+    "hinge_reply",
+    "hinge_scan",
 }
 
 _job_seq = 0
@@ -51,10 +57,97 @@ _cancel_ids: set[int] = set()
 _worker_started = False
 _banks: dict[str, "_PhoneBank"] = {}
 _banks_lock = threading.Lock()
+_history_lock = threading.Lock()
+_HISTORY_LIMIT = 500
+_DEFAULT_DURATION_SECONDS = 600.0
+_MIN_DURATION_SECONDS = 60.0
 
 
 class QueueCancelled(Exception):
     """Raised by long phone jobs when the inbox asks them to stop."""
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(value: datetime | None = None) -> str:
+    return (value or _utc_now()).isoformat().replace("+00:00", "Z")
+
+
+def _parse_time(value: object) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value), timezone.utc)
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _timed_job(job: dict) -> dict:
+    """Add timing fields to old persisted queue records without rejecting them."""
+    out = dict(job)
+    out.setdefault("queued_at", None)
+    out.setdefault("started_at", None)
+    out.setdefault("finished_at", None)
+    out.setdefault("duration_seconds", None)
+    return out
+
+
+def _history_path() -> Path:
+    return ROOT / "data" / "queue_runtime_history.json"
+
+
+def _load_history() -> list[dict]:
+    path = _history_path()
+    if not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [_timed_job(row) for row in raw if isinstance(row, dict)] if isinstance(raw, list) else []
+
+
+def _record_history(job: dict) -> None:
+    record = _timed_job(job)
+    with _history_lock:
+        rows = _load_history()
+        job_id = record.get("id")
+        rows = [row for row in rows if row.get("id") != job_id]
+        rows.append(record)
+        rows = rows[-_HISTORY_LIMIT:]
+        path = _history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
+
+def average_duration_seconds(kind: str, phone_id: str | None = None) -> float:
+    """Rolling runtime average, preferring samples for this kind and phone.
+
+    Unknown, missing, or zero-length samples fall back to 10 minutes. Averages
+    under a minute are treated as unknown so calendar blocks never collapse.
+    """
+    samples = [
+        row
+        for row in _load_history()
+        if str(row.get("kind") or "") == str(kind)
+        and isinstance(row.get("duration_seconds"), (int, float))
+        and float(row["duration_seconds"]) > 0
+        and bool(row.get("started_at"))
+    ]
+    if phone_id:
+        local = [row for row in samples if str(row.get("phone_id") or "") == str(phone_id)]
+        if local:
+            samples = local
+    if not samples:
+        return _DEFAULT_DURATION_SECONDS
+    avg = round(sum(float(row["duration_seconds"]) for row in samples) / len(samples), 3)
+    if avg < _MIN_DURATION_SECONDS:
+        return _DEFAULT_DURATION_SECONDS
+    return avg
 
 
 class _PhoneBank:
@@ -127,9 +220,18 @@ BUMBLE_OCCUPY = frozenset(
         "instagram_prune",
     }
 )
+HINGE_OCCUPY = frozenset(
+    {
+        "hinge_swipe",
+        "hinge_refresh",
+        "hinge_reply",
+        "hinge_scan",
+    }
+)
 LINKEDIN_OCCUPY = frozenset(
     {
         "linkedin_scan",
+        "linkedin_feed",
         "linkedin_seed",
         "linkedin_backfill",
         "linkedin_reply",
@@ -143,12 +245,16 @@ LINKEDIN_OCCUPY = frozenset(
 
 def job_channel(kind: str | None) -> str:
     k = str(kind or "")
+    if k in HINGE_OCCUPY or k.startswith("hinge_"):
+        return "hinge"
     if k in LINKEDIN_OCCUPY or k.startswith("linkedin_"):
         return "linkedin"
+    if k.startswith("instagram"):
+        return "instagram"
+    if k.startswith("whatsapp"):
+        return "whatsapp"
     if (
         k in BUMBLE_OCCUPY
-        or k.startswith("whatsapp")
-        or k.startswith("instagram")
         or k in {"add_contact", "liked_you_scan", "liked_you_run"}
     ):
         return "bumble"
@@ -175,7 +281,8 @@ def job_title(job: dict) -> str:
         "whatsapp_add": "Add to WhatsApp",
         "liked_you_scan": "Liked you scan",
         "liked_you_run": "Liked you run",
-        "linkedin_scan": "LinkedIn scan",
+        "linkedin_scan": "LinkedIn reply check",
+        "linkedin_feed": "LinkedIn feed react",
         "linkedin_seed": "LinkedIn older chats",
         "linkedin_backfill": "LinkedIn older chats",
         "linkedin_reply": "LinkedIn reply",
@@ -185,6 +292,10 @@ def job_title(job: dict) -> str:
         "linkedin_profile": "LinkedIn profile",
         "reply": "Bumble reply",
         "instagram_prune": "Instagram prune",
+        "hinge_swipe": "Hinge swipe",
+        "hinge_refresh": "Hinge refresh",
+        "hinge_reply": "Hinge reply",
+        "hinge_scan": "Hinge refresh matches",
     }
     label = labels.get(kind, kind.replace("_", " "))
     if name and kind in {
@@ -199,6 +310,8 @@ def job_title(job: dict) -> str:
         "linkedin_profile",
         "whatsapp_group",
         "whatsapp_add",
+        "hinge_refresh",
+        "hinge_reply",
     }:
         return f"{label} · {name}"
     return label
@@ -209,6 +322,9 @@ def queue_board() -> dict:
     from src.phones import public_phones
 
     raw = queue_snapshot()
+    known_ids = {job.get("id") for job in raw}
+    raw.extend(row for row in _load_history() if row.get("id") not in known_ids)
+    raw = project_job_times(raw)
     jobs = []
     for job in raw:
         item = dict(job)
@@ -222,8 +338,14 @@ def queue_board() -> dict:
         active = [j for j in mine if j.get("status") in {"queued", "running"}]
         running = next((j for j in active if j.get("status") == "running"), None)
         queued = [j for j in active if j.get("status") == "queued"]
-        recent = [j for j in mine if j.get("status") in {"done", "error", "cancelled"}][-8:]
-        holding = running["channel"] if running and running.get("channel") in {"bumble", "linkedin"} else None
+        recent = [
+            j for j in mine if j.get("status") in {"done", "completed", "error", "cancelled"}
+        ][-8:]
+        holding = (
+            running["channel"]
+            if running and running.get("channel") in {"bumble", "linkedin", "hinge", "instagram", "whatsapp"}
+            else None
+        )
         phones.append(
             {
                 **phone,
@@ -231,13 +353,58 @@ def queue_board() -> dict:
                 "holding_title": running["title"] if running else None,
                 "linkedin_cron_wait": cron_skip_reason(pid, "linkedin"),
                 "bumble_cron_wait": cron_skip_reason(pid, "bumble"),
+                "hinge_cron_wait": cron_skip_reason(pid, "hinge"),
                 "running": running,
                 "queued": queued,
                 "recent": recent,
                 "active": len(active),
             }
         )
-    return {"jobs": jobs, "phones": phones}
+    from src.daily_schedule import today_schedule
+
+    return {
+        "jobs": jobs,
+        "phones": phones,
+        "schedule": today_schedule(),
+        "generated_at": _iso(),
+        "timezone": "Europe/London",
+    }
+
+
+def project_job_times(jobs: list[dict], *, now: datetime | None = None) -> list[dict]:
+    """Add expected durations and serial per-phone projections to queue jobs."""
+    stamp = (now or _utc_now()).astimezone(timezone.utc)
+    out = [_timed_job(job) for job in jobs]
+    cursors: dict[str, datetime] = {}
+    for job in out:
+        pid = str(job.get("phone_id") or DEFAULT_PHONE_ID)
+        expected = average_duration_seconds(str(job.get("kind") or ""), pid)
+        job["average_duration_seconds"] = expected
+        job["expected_duration_seconds"] = expected
+        status = str(job.get("status") or "")
+        started = _parse_time(job.get("started_at"))
+        finished = _parse_time(job.get("finished_at"))
+        if status in {"done", "completed", "error", "cancelled"}:
+            job["projected_start_at"] = job.get("started_at")
+            finished_at = job.get("finished_at")
+            if started and (finished is None or finished <= started):
+                finished_at = _iso(started + timedelta(seconds=expected))
+            job["projected_end_at"] = finished_at
+            continue
+        if status == "running":
+            start = started or stamp
+            end = start + timedelta(seconds=expected)
+            job["projected_start_at"] = _iso(start)
+            job["projected_end_at"] = _iso(end)
+            cursors[pid] = max(stamp, end)
+            continue
+        if status == "queued":
+            start = cursors.get(pid, stamp)
+            end = start + timedelta(seconds=expected)
+            job["projected_start_at"] = _iso(start)
+            job["projected_end_at"] = _iso(end)
+            cursors[pid] = end
+    return out
 
 
 def _hold_reason(phone_id: str) -> str | None:
@@ -279,10 +446,14 @@ def cron_skip_reason(phone_id: str, incoming_channel: str) -> str | None:
         occupy.add(str(job.get("kind") or ""))
     if any(k.startswith("instagram") for k in occupy):
         return "waiting for Instagram job"
-    if incoming_channel == "linkedin" and occupy & BUMBLE_OCCUPY:
-        return "waiting for Bumble job"
-    if incoming_channel == "bumble" and occupy & LINKEDIN_OCCUPY:
-        return "waiting for LinkedIn job"
+    if incoming_channel == "linkedin" and occupy & (BUMBLE_OCCUPY | HINGE_OCCUPY):
+        return "waiting for Bumble job" if occupy & BUMBLE_OCCUPY else "waiting for Hinge job"
+    if incoming_channel == "bumble" and occupy & (LINKEDIN_OCCUPY | HINGE_OCCUPY):
+        return "waiting for LinkedIn job" if occupy & LINKEDIN_OCCUPY else "waiting for Hinge job"
+    if incoming_channel == "hinge" and occupy & (BUMBLE_OCCUPY | LINKEDIN_OCCUPY):
+        return "waiting for Bumble job" if occupy & BUMBLE_OCCUPY else "waiting for LinkedIn job"
+    if incoming_channel == "hinge" and occupy & HINGE_OCCUPY:
+        return "waiting for Hinge job"
     return None
 
 
@@ -326,13 +497,15 @@ def _load_file(path: Path, default_phone: str) -> list[dict]:
         return []
     restored: list[dict] = []
     for item in raw if isinstance(raw, list) else []:
-        job = dict(item)
+        job = _timed_job(item)
         if job.get("status") == "running":
             job["status"] = "queued"
             job["error"] = None
         if job.get("status") != "queued":
             continue
         job["phone_id"] = str(job.get("phone_id") or default_phone)
+        if not job.get("queued_at"):
+            job["queued_at"] = _iso()
         restored.append(job)
     return restored
 
@@ -341,7 +514,7 @@ def load_queue() -> None:
     global _job_seq
     legacy = ROOT / "data" / "action_queue.json"
     restored_total = 0
-    max_id = 0
+    max_id = max([int(j.get("id") or 0) for j in _load_history()] + [0])
     for row in list_phones():
         pid = str(row["id"])
         bank = _bank(pid)
@@ -367,6 +540,8 @@ def _resolve_phone_id(kind: str, name: str, phone_id: str | None) -> str:
     pid = normalize_phone_id(phone_id) if phone_id else ""
     if pid and pid != "all":
         return pid
+    if kind.startswith("hinge_"):
+        return "toby"
     if kind in _PERSON_KINDS and name:
         conn = db_connect(db_path_from_config(load_config()))
         try:
@@ -409,6 +584,10 @@ def enqueue(
             "status": "queued",
             "error": None,
             "message": None,
+            "queued_at": _iso(),
+            "started_at": None,
+            "finished_at": None,
+            "duration_seconds": None,
         }
         bank.jobs.append(job)
         bank.persist()
@@ -437,6 +616,8 @@ def cancel_job(job_id: int) -> bool:
                 if job["status"] == "queued":
                     job["status"] = "cancelled"
                     job["message"] = "cancelled"
+                    job["finished_at"] = _iso()
+                    job["duration_seconds"] = 0.0
                     snap = dict(job)
                     restore_draft = snap.get("kind") == "reply"
                     bank.persist()
@@ -450,6 +631,8 @@ def cancel_job(job_id: int) -> bool:
             break
     if snap is None:
         return False
+    if snap.get("status") == "cancelled":
+        _record_history(snap)
     if restore_draft and snap:
         from src.store import set_draft
         from src.phones import phone_scope
@@ -479,13 +662,20 @@ def cancel_queued() -> int:
 
 
 def _update_job(job_id: int, **fields: object) -> None:
+    terminal: dict | None = None
+    found = False
     for bank in _all_banks():
         with bank.lock:
             for job in bank.jobs:
                 if int(job["id"]) != job_id:
                     continue
+                found = True
                 job.update(fields)
-                done = [j for j in bank.jobs if j["status"] in {"done", "error", "cancelled"}]
+                done = [
+                    j
+                    for j in bank.jobs
+                    if j["status"] in {"done", "completed", "error", "cancelled"}
+                ]
                 if len(done) > 40:
                     keep_done = done[-20:]
                     keep_ids = {id(j) for j in keep_done}
@@ -495,7 +685,48 @@ def _update_job(job_id: int, **fields: object) -> None:
                         if j["status"] in {"queued", "running"} or id(j) in keep_ids
                     ]
                 bank.persist()
-                return
+                if job.get("status") in {"done", "completed", "error", "cancelled"}:
+                    terminal = dict(job)
+                break
+        if found:
+            break
+    if terminal is not None:
+        _record_history(terminal)
+
+
+def mark_job_started(job_id: int, *, now: datetime | None = None) -> str:
+    started_at = _iso(now)
+    _update_job(
+        job_id,
+        status="running",
+        started_at=started_at,
+        finished_at=None,
+        duration_seconds=None,
+    )
+    return started_at
+
+
+def mark_job_finished(
+    job_id: int,
+    *,
+    ok: bool,
+    message: str,
+    cancelled: bool = False,
+    now: datetime | None = None,
+) -> None:
+    job = get_job(job_id)
+    finished_at = _iso(now)
+    started = _parse_time((job or {}).get("started_at"))
+    finished = _parse_time(finished_at)
+    duration = max(0.0, (finished - started).total_seconds()) if started and finished else 0.0
+    _update_job(
+        job_id,
+        status="cancelled" if cancelled else ("completed" if ok else "error"),
+        message=message,
+        error=None if cancelled or ok else message,
+        finished_at=finished_at,
+        duration_seconds=round(duration, 3),
+    )
 
 
 def _next_queued(phone_id: str) -> dict | None:
@@ -646,6 +877,10 @@ def _run_job(job: dict) -> tuple[bool, str]:
             if isinstance(parsed, dict):
                 payload = parsed
         return run_session(load_config(), serial=serial, phone_id=pid, prefs=payload)
+    if kind == "linkedin_feed":
+        from src.linkedin_sync import run_feed
+
+        return run_feed(load_config(), serial=serial, phone_id=pid)
     if kind in {"linkedin_scan", "linkedin_seed", "linkedin_backfill", "linkedin_reply"}:
         from src.linkedin_sync import run_backfill, run_scan, send_named_message
 
@@ -714,6 +949,25 @@ def _run_job(job: dict) -> tuple[bool, str]:
         from src.instagram_prune import run_prune
 
         return run_prune(serial=serial, phone_id=pid)
+    if kind in {"hinge_swipe", "hinge_refresh", "hinge_reply", "hinge_scan"}:
+        from src.hinge_swipe import hinge_live_serial, live_account_id, run_swipe
+        from src.hinge_sync import refresh_named, run_scan, send_named_message
+
+        pid = live_account_id(pid)
+        serial = hinge_live_serial()
+        if kind == "hinge_swipe":
+            return run_swipe(serial=serial, phone_id=pid)
+        if kind == "hinge_refresh":
+            return refresh_named(name, serial=serial, phone_id=pid)
+        if kind == "hinge_reply":
+            return send_named_message(
+                name,
+                str(job.get("text") or ""),
+                serial=serial,
+                phone_id=pid,
+                force=bool(job.get("force")),
+            )
+        return run_scan(serial=serial, phone_id=pid)
     return False, f"unknown action {kind}"
 
 
@@ -729,7 +983,7 @@ def _queue_worker(phone_id: str) -> None:
         latest = get_job(int(job["id"]))
         if latest is None or latest.get("status") != "queued":
             continue
-        _update_job(job["id"], status="running")
+        mark_job_started(job["id"])
         log.info(
             "queue %s run #%s %s %s",
             phone_id,
@@ -747,11 +1001,11 @@ def _queue_worker(phone_id: str) -> None:
             ok, message = False, str(exc)
         cancelled = int(job["id"]) in _cancel_ids or message == "cancelled"
         _cancel_ids.discard(int(job["id"]))
-        _update_job(
+        mark_job_finished(
             job["id"],
-            status="cancelled" if cancelled else ("done" if ok else "error"),
+            ok=ok,
             message=message,
-            error=None if cancelled or ok else message,
+            cancelled=cancelled,
         )
         if job.get("kind") == "reply":
             from src.store import set_draft

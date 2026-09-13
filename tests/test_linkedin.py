@@ -8,8 +8,10 @@ from src.linkedin_screen import (
     find_archive_action,
     find_conversation_hit,
     find_dismiss_point,
+    find_inbox_folder,
     find_inbox_search,
     find_more_options,
+    parse_inbox_folders,
     find_messaging_entry,
     find_nav_point,
     find_reaction_tray,
@@ -51,6 +53,7 @@ class LinkedInParseTests(unittest.TestCase):
         ada = next(h for h in hits if h.name == "Ada Lovelace")
         self.assertFalse(should_open_row(ada, ada.preview))
         self.assertTrue(should_open_row(ada, "different preview"))
+        self.assertTrue(should_open_row(ada, ada.preview, "older last text"))
         self.assertEqual(find_nav_point(xml, "Messaging")[0], 780)
         self.assertTrue(names_match("Ada Lovelace", "ada  lovelace"))
         self.assertTrue(names_match("Patricia Mae Fregil", "Patricia Fregil"))
@@ -196,6 +199,28 @@ class LinkedInParseTests(unittest.TestCase):
         search = find_inbox_search(xml)
         self.assertIsNotNone(search)
         self.assertGreater(search[0], 200)
+        folders = parse_inbox_folders(xml)
+        self.assertEqual([c.name for c in folders], ["Focused"])
+        self.assertTrue(folders[0].checked)
+        self.assertIsNone(find_inbox_folder(xml, "Other"))
+
+    def test_other_folder_inbound_is_parsed(self):
+        """New stranger inbound sits on Other. Focused-only scan never sees it."""
+        focused = (FIXTURES / "linkedin_galaxy_messaging.xml").read_text(encoding="utf-8")
+        other = (FIXTURES / "linkedin_pixel_messaging_other.xml").read_text(encoding="utf-8")
+        self.assertNotIn("Priya Shah", [h.name for h in parse_messaging_list(focused)])
+        self.assertIsNone(find_inbox_folder(focused, "Other"))
+        folders = parse_inbox_folders(other)
+        self.assertEqual([c.name for c in folders], ["Focused", "Other"])
+        self.assertTrue(find_inbox_folder(other, "Other").checked)
+        self.assertFalse(find_inbox_folder(other, "Focused").checked)
+        hits = parse_messaging_list(other)
+        names = [h.name for h in hits]
+        self.assertIn("Priya Shah", names)
+        self.assertIn("Miles Okonkwo", names)
+        priya = next(h for h in hits if h.name == "Priya Shah")
+        self.assertTrue(priya.unread)
+        self.assertIn("grant round", priya.preview)
 
     def test_galaxy_feed_has_header_inbox(self):
         xml = (FIXTURES / "linkedin_galaxy_feed.xml").read_text(encoding="utf-8")
@@ -676,6 +701,66 @@ class LinkedInSpamTests(unittest.TestCase):
         opened_fp = message_spam_fp(they_opened)
         self.assertFalse(needs_spam_check(opened_fp, they_opened))
         self.assertTrue(needs_spam_check(opened_fp, they_opened + [("them", "Limited time offer")]))
+
+
+class LinkedInTobyInboundStoreTests(unittest.TestCase):
+    def test_other_folder_rows_are_stored_for_toby(self):
+        from src.linkedin_store import ensure_schema, get_person
+        from src.linkedin_sync import _store_hit, inbox_state_for_scan
+
+        xml = (FIXTURES / "linkedin_pixel_messaging_other.xml").read_text(encoding="utf-8")
+        hits = parse_messaging_list(xml)
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(Path(tmp) / "friends.db")
+            try:
+                ensure_schema(conn)
+                for hit in hits:
+                    _store_hit(conn, "toby", hit.name, hit.preview, "unread" if hit.unread else "", [])
+                stored = inbox_state_for_scan(conn, "toby")
+                self.assertIn("priya shah", stored)
+                self.assertIn("miles okonkwo", stored)
+                priya = get_person(conn, "Priya Shah", "toby")
+                self.assertIsNotNone(priya)
+                self.assertIn("grant round", str(priya["preview"] or priya["last_text"]))
+            finally:
+                conn.close()
+
+    def test_scan_memory_is_per_phone(self):
+        from src.linkedin_store import add_message, ensure_schema, upsert_chat
+        from src.linkedin_sync import _store_hit, inbox_state_for_scan
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(Path(tmp) / "friends.db")
+            try:
+                ensure_schema(conn)
+                with phone_scope("archie"):
+                    aid = upsert_chat(
+                        conn,
+                        "New Inbound",
+                        preview="old archie preview",
+                        last_from="you",
+                        last_text="Hi, founder of GrantGunner",
+                        phone_id="archie",
+                    )
+                    add_message(conn, aid, "you", "Hi, founder of GrantGunner")
+                    conn.commit()
+                stored = inbox_state_for_scan(conn, "toby")
+                self.assertNotIn("new inbound", stored)
+                _store_hit(
+                    conn,
+                    "toby",
+                    "New Inbound",
+                    "Can we book 20 minutes next week?",
+                    "unread",
+                    [("them", "Can we book 20 minutes next week?")],
+                )
+                stored = inbox_state_for_scan(conn, "toby")
+                self.assertEqual(stored["new inbound"]["messages"], 1)
+                self.assertEqual(stored["new inbound"]["preview"], "Can we book 20 minutes next week?")
+                archie = inbox_state_for_scan(conn, "archie")
+                self.assertEqual(archie["new inbound"]["last_text"], "Hi, founder of GrantGunner")
+            finally:
+                conn.close()
 
 
 class LinkedInInMailTests(unittest.TestCase):

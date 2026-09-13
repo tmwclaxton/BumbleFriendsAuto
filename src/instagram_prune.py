@@ -34,9 +34,10 @@ log = logging.getLogger(__name__)
 PACKAGE = "com.instagram.android"
 PIXEL_SERIAL = "29081FDH200GZ8"
 GALAXY_MARK = "192.168.0.168"
-MAX_MINUTES = 45
-INSPECT_PAUSE = (1.2, 3.2)
-STUCK_REPEAT = 2
+OWN_HANDLES = ("tobyc1axton", "tobyc1laxton")
+MAX_MINUTES = 90
+INSPECT_PAUSE = (0.15, 0.45)
+END_CONFIRMATIONS = 3
 REVIEW_ONLY = True
 NEVER_REVISIT = frozenset(
     {
@@ -55,10 +56,14 @@ ALWAYS_KEEP = frozenset(
         "grantgunner",
         "grantgunner_official",
         "canvassr",
+        "snitch",
+        "snitchsocial",
+        "snitchsocialnet",
         "vidgaze",
         "rapidresearch.ai",
         "rapidresearch",
         "tobyclaxton",
+        "tobyc1axton",
         "tobyc1laxton",
         "tmwclaxton",
         "archiewilding",
@@ -152,6 +157,20 @@ _HANDLE_BRAND = re.compile(
     r"shop|store|brand|podcastclip|aiart|midjourney)",
     re.I,
 )
+_CLEAR_PAGE_HANDLE = re.compile(
+    r"(?:ladbible|memes?|quotes?|motivation|startup(?:archive|stealth)|"
+    r"(?:video|podcast|logic)clips|students?union|enterprise|founders?club|hackclub|"
+    r"gym(?:hub|humou?r)|hopecore|gossip|keycaps|cocktails|reforest|"
+    r"ai(?:generated|jukebox)|crypto|web3|nft)",
+    re.I,
+)
+_CLEAR_ORG_DISPLAY = re.compile(
+    r"\b(students?'? union|enterprise|founders?'? club|hack club|venture capital|"
+    r"media|magazine|publication|cocktails|keycaps|motivation|meme(?:s| page)?|"
+    r"data science factory|reforestation|community organisation)\b",
+    re.I,
+)
+_KNOWN_NON_PERSON = frozenset({"a16z", "scrl", "onfound"})
 
 _HANDLE_OK = re.compile(r"^[A-Za-z0-9._]{2,30}$")
 _HUMAN_NAME = re.compile(r"^(?!The |A |An )[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$")
@@ -171,6 +190,7 @@ _FOLLOWER_COUNT = re.compile(
     r"([\d,.]+)\s*(k|m|b)?\s*followers?",
     re.I,
 )
+_FOLLOWING_COUNT = re.compile(r"([\d,.]+)\s*following\b", re.I)
 
 
 @dataclass
@@ -188,7 +208,7 @@ def progress_path(phone_id: str) -> Path:
 
 def review_path(phone_id: str) -> Path:
     pid = (phone_id or DEFAULT_PHONE_ID).strip() or DEFAULT_PHONE_ID
-    return ROOT / "data" / f"instagram_review_{pid}.json"
+    return ROOT / "data" / f"instagram_following_review_{pid}.json"
 
 
 def load_progress(phone_id: str) -> dict:
@@ -208,6 +228,16 @@ def load_progress(phone_id: str) -> dict:
     raw.setdefault("skipped", [])
     raw.setdefault("kept", [])
     raw.setdefault("log", [])
+    normalized: dict[str, dict] = {}
+    for old_handle, rec in raw["decided"].items():
+        if not isinstance(rec, dict):
+            continue
+        handle = _norm_handle(str(rec.get("handle") or old_handle))
+        if not handle:
+            continue
+        rec["handle"] = handle
+        normalized[handle] = rec
+    raw["decided"] = normalized
     return raw
 
 
@@ -215,27 +245,43 @@ def save_progress(phone_id: str, state: dict) -> None:
     path = progress_path(phone_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    records = sorted(
+        (
+            {
+                "handle": _norm_handle(str(rec.get("handle") or handle)),
+                "display_name": str(rec.get("display") or ""),
+                "decision": {
+                    "propose": "proposed_unfollow",
+                    "keep": "keep",
+                    "skip": "unsure",
+                }.get(str(rec.get("action") or ""), "unsure"),
+                "reason": str(rec.get("reason") or ""),
+                "followers": rec.get("followers"),
+                "inspected_at": str(rec.get("at") or ""),
+            }
+            for handle, rec in (state.get("decided") or {}).items()
+            if isinstance(rec, dict) and _norm_handle(str(rec.get("handle") or handle))
+        ),
+        key=lambda item: item["handle"],
+    )
+    proposed_count = sum(r["decision"] == "proposed_unfollow" for r in records)
+    keep_count = sum(r["decision"] == "keep" for r in records)
+    unsure_count = sum(r["decision"] == "unsure" for r in records)
     review = {
         "review_only": True,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "proposed": [
-            {
-                "handle": str(item.get("handle") or ""),
-                "display": str(item.get("display") or ""),
-                "reason": str(item.get("reason") or ""),
-            }
-            for item in state.get("proposed") or []
-            if isinstance(item, dict)
-        ],
-        "unsure": [
-            {
-                "handle": str(item.get("handle") or ""),
-                "display": str(item.get("display") or ""),
-                "reason": str(item.get("reason") or ""),
-            }
-            for item in state.get("skipped") or []
-            if isinstance(item, dict)
-        ],
+        "displayed_following_count": state.get("displayed_following_count"),
+        "unique_inspected_count": len(records),
+        "proposed_count": proposed_count,
+        "keep_count": keep_count,
+        "unsure_count": unsure_count,
+        "completed_end_of_list": bool(state.get("completed_end_of_list")),
+        "status": str(state.get("status") or ""),
+        "blocker": str(state.get("blocker") or ""),
+        "visible_range_history": (state.get("visible_range_history") or [])[-250:],
+        "records": records,
+        "proposed": [r for r in records if r["decision"] == "proposed_unfollow"],
+        "unsure": [r for r in records if r["decision"] == "unsure"],
         "unfollowed": [],
         "summary": (
             f"review-only decided={len(state.get('decided') or {})} "
@@ -331,6 +377,11 @@ def classify_account(
         return "propose", f"org/brand ({brand_hit.group(0)})"
     if re.search(r"\b(daily memes|meme page|quote page|ai art|fan page)\b", blob, re.I):
         return "propose", "meme/quote/fan page"
+    if h in _KNOWN_NON_PERSON:
+        return "propose", "organization/media account"
+    page_match = _CLEAR_PAGE_HANDLE.search(h) or _CLEAR_ORG_DISPLAY.search(f"{display} {bio}")
+    if page_match:
+        return "propose", f"organization/theme page ({page_match.group(0)})"
     if re.match(r"^the\s+", display, re.I) and not _HUMAN_NAME.match(display):
         return "propose", "page/band (The …), not a person"
     if h.endswith("fc") and not _HUMAN_NAME.match(display):
@@ -362,6 +413,16 @@ def parse_follower_count(text: str) -> int | None:
     suffix = (m.group(2) or "").lower()
     mul = {"": 1, "k": 1_000, "m": 1_000_000, "b": 1_000_000_000}[suffix]
     return int(num * mul)
+
+
+def parse_following_count(text: str) -> int | None:
+    m = _FOLLOWING_COUNT.search(text or "")
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(",", "").replace(".", ""))
+    except ValueError:
+        return None
 
 
 def _texts(xml: str) -> list[str]:
@@ -402,7 +463,7 @@ def looks_like_login(xml: str) -> bool:
 
 def looks_like_own_profile(xml: str) -> bool:
     blob = _blob(xml).lower()
-    mine = "tobyc1laxton" in blob or "edit profile" in blob
+    mine = any(handle in blob for handle in OWN_HANDLES) or "edit profile" in blob
     header = "row_profile_header" in xml or "profile_header_following" in xml
     return (
         mine
@@ -412,11 +473,24 @@ def looks_like_own_profile(xml: str) -> bool:
     )
 
 
+def looks_like_other_profile(xml: str) -> bool:
+    if looks_like_own_profile(xml) or looks_like_following_list(xml):
+        return False
+    blob = _blob(xml).lower()
+    return (
+        "posts" in blob
+        and "followers" in blob
+        and "following" in blob
+        and ("options" in blob or "more actions" in blob)
+        and ("follow" in blob or "message" in blob)
+    )
+
+
 def looks_like_following_list(xml: str) -> bool:
     if looks_like_own_profile(xml):
         return False
     blob = _blob(xml).lower()
-    if "tobyc1laxton" not in blob:
+    if not any(handle in blob for handle in OWN_HANDLES):
         return False
     if re.search(r"\b(2 mutual|suggested)\b", blob) and "1,053 following" not in blob and "1053 following" not in blob:
         if "follow_list_username" not in xml:
@@ -561,6 +635,23 @@ def find_label_point(xml: str, *needles: str, prefer_bottom: bool = False) -> tu
     return x, y
 
 
+def find_profile_tab(xml: str) -> tuple[int, int] | None:
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return None
+    hits: list[tuple[int, int]] = []
+    for node in root.iter():
+        text = (node.attrib.get("text") or "").strip().casefold()
+        desc = (node.attrib.get("content-desc") or "").strip().casefold()
+        if text != "profile" and desc != "profile":
+            continue
+        center = _bounds_center(node.attrib.get("bounds") or "")
+        if center and center[1] >= 1600:
+            hits.append(center)
+    return max(hits, key=lambda point: point[1]) if hits else None
+
+
 def find_following_stat(xml: str) -> tuple[int, int] | None:
     """Tap the Following count on a profile — never Followers."""
     try:
@@ -661,31 +752,41 @@ def _dismiss_popups(device, xml: str) -> str:
     return xml
 
 
-def _open_own_following(device) -> tuple[str, str]:
+def _open_own_following(device) -> tuple[str, str, int | None]:
     xml = _dismiss_popups(device, _xml(device))
-    for _ in range(2):
-        if looks_like_following_list(xml) or looks_like_own_profile(xml) or looks_like_login(xml):
+    for _ in range(3):
+        if looks_like_following_list(xml):
+            return xml, "", None
+        if looks_like_login(xml):
+            return xml, "instagram login wall", None
+        if looks_like_own_profile(xml):
             break
-        _press_back(device)
-        xml = _xml(device)
-    if looks_like_following_list(xml):
-        return xml, ""
-    if looks_like_login(xml):
-        return xml, "instagram login wall"
+        blob = _blob(xml).lower()
+        if looks_like_other_profile(xml) or "friending center" in blob:
+            back = find_label_point(xml, "Back")
+            if back:
+                tap(device, back[0], back[1])
+                wait_idle(device, 1.2)
+            else:
+                _press_back(device)
+            xml = _dismiss_popups(device, _xml(device))
+            continue
+        break
+    if looks_like_other_profile(xml):
+        return xml, "could not leave another account profile", None
+    if "friending center" in _blob(xml).lower():
+        return xml, "could not leave Friending Center", None
     if not looks_like_own_profile(xml):
-        profile = find_label_point(xml, "Profile", prefer_bottom=True)
+        profile = find_profile_tab(xml)
         if profile:
             tap(device, profile[0], profile[1])
             wait_idle(device, 1.4)
-            xml = _dismiss_popups(device, _xml(device))
+        xml = _dismiss_popups(device, _xml(device))
         if not looks_like_own_profile(xml):
-            info = device.info
-            w, h = int(info["displayWidth"]), int(info["displayHeight"])
-            tap(device, int(w * 0.90), int(h * 0.96))
-            wait_idle(device, 1.4)
-            xml = _dismiss_popups(device, _xml(device))
+            return xml, "could not open Toby profile tab", None
     if looks_like_following_list(xml):
-        return xml, ""
+        return xml, "", None
+    displayed_count = parse_following_count(_blob(xml)) if looks_like_own_profile(xml) else None
     try:
         node = device(resourceId="com.instagram.android:id/profile_header_following_stacked_familiar")
         if node.exists:
@@ -693,7 +794,7 @@ def _open_own_following(device) -> tuple[str, str]:
             wait_idle(device, 2.0)
             xml = _dismiss_popups(device, _xml(device))
             if looks_like_following_list(xml):
-                return xml, ""
+                return xml, "", displayed_count
     except Exception:
         pass
     stat = find_following_stat(xml)
@@ -702,34 +803,59 @@ def _open_own_following(device) -> tuple[str, str]:
         wait_idle(device, 2.0)
         xml = _dismiss_popups(device, _xml(device))
     if looks_like_following_list(xml):
-        return xml, ""
-    return xml, "could not open Following list"
+        return xml, "", displayed_count
+    return xml, "could not open Following list", displayed_count
 
 
-def _scroll_list(device) -> None:
-    try:
-        lst = device(resourceId="android:id/list")
-        if lst.exists:
-            try:
-                lst.scroll.vert.forward(steps=16)
-            except Exception:
-                lst.fling(direction="forward")
-            wait_idle(device, 0.8)
-            return
-    except Exception:
-        pass
+def _scroll_list(device, *, large: bool = False) -> bool | None:
+    attempts = 3 if large else 1
     info = device.info
     w, h = int(info["displayWidth"]), int(info["displayHeight"])
     x = int(w * random.uniform(0.36, 0.48))
     y1 = int(h * random.uniform(0.74, 0.80))
     y2 = int(h * random.uniform(0.36, 0.44))
-    try:
-        from src.gestures import _adb_swipe
+    for _ in range(attempts):
+        try:
+            from src.gestures import _adb_swipe
 
-        _adb_swipe(device, x, y1, x, y2, random.randint(420, 700))
-    except Exception:
-        device.swipe(x, y1, x, y2, duration=0.5)
-    wait_idle(device, 0.9)
+            _adb_swipe(device, x, y1, x, y2, random.randint(300, 500))
+        except Exception:
+            device.swipe(x, y1, x, y2, duration=0.4)
+        wait_idle(device, 0.65)
+    return None
+
+
+def _range_signature(rows: list[FollowRow]) -> tuple[str, str, str]:
+    if not rows:
+        return "", "", ""
+    handles = [r.handle for r in rows]
+    digest = hashlib.sha1(";".join(handles).encode("utf-8", "replace")).hexdigest()
+    return digest, handles[0], handles[-1]
+
+
+def _recover_to_range(
+    device,
+    target_handles: set[str],
+    *,
+    max_scrolls: int = 240,
+) -> tuple[str, str, bool]:
+    """Reopen Following and fast-forward until the prior visible range."""
+    _press_back(device)
+    xml, err, _ = _open_own_following(device)
+    if err:
+        return xml, err, False
+    best_overlap = 0
+    for _ in range(max_scrolls):
+        rows = parse_following_rows(xml)
+        overlap = len(target_handles.intersection(r.handle for r in rows))
+        best_overlap = max(best_overlap, overlap)
+        if overlap >= max(1, min(2, len(target_handles))):
+            return xml, "", True
+        _scroll_list(device)
+        xml = _dismiss_popups(device, _xml(device))
+        if looks_blocked(xml) or looks_like_login(xml):
+            return xml, "blocked while recovering list position", False
+    return xml, f"could not recover prior range (best overlap {best_overlap})", False
 
 
 def _press_back(device) -> None:
@@ -867,12 +993,19 @@ def run_prune(*, serial: str | None = None, phone_id: str = "toby") -> tuple[boo
     kept = 0
     rate_limited = False
     stop_reason = ""
-    same_sig = ""
-    same_n = 0
-    recovered_once = False
-    empty_scrolls = 0
+    completed_end = False
+    state["completed_end_of_list"] = False
+    state["status"] = "running"
+    state["blocker"] = ""
+    state.setdefault("visible_range_history", [])
 
-    xml, nav_err = _open_own_following(device)
+    xml, nav_err, displayed_count = _open_own_following(device)
+    if displayed_count is None and state.get("displayed_following_count") is None:
+        _press_back(device)
+        xml, nav_err, displayed_count = _open_own_following(device)
+    if displayed_count is not None:
+        state["displayed_following_count"] = displayed_count
+    save_progress(pid, state)
     if nav_err:
         _dump_stuck(device, "nav")
         return False, nav_err
@@ -892,16 +1025,33 @@ def run_prune(*, serial: str | None = None, phone_id: str = "toby") -> tuple[boo
             _dump_stuck(device, "login")
             break
         if not looks_like_following_list(xml):
-            xml, nav_err = _open_own_following(device)
+            xml, nav_err, count_seen = _open_own_following(device)
+            if count_seen is not None:
+                state["displayed_following_count"] = count_seen
             if nav_err:
                 stop_reason = nav_err
                 _dump_stuck(device, "lost-list")
                 break
 
         rows = parse_following_rows(xml)
-        sig = hashlib.sha1(
-            (";".join(r.handle for r in rows[:6]) or _blob(xml)[:400]).encode("utf-8", "replace")
-        ).hexdigest()
+        sig, first_handle, last_handle = _range_signature(rows)
+        if not rows:
+            stop_reason = "Following list yielded no parseable account rows"
+            _dump_stuck(device, "no-rows")
+            break
+        history = state.setdefault("visible_range_history", [])
+        if not history or history[-1].get("signature") != sig:
+            history.append(
+                {
+                    "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "first": first_handle,
+                    "last": last_handle,
+                    "visible_count": len(rows),
+                    "unique_inspected": len(decided),
+                    "signature": sig,
+                }
+            )
+            state["visible_range_history"] = history[-250:]
         pending = [
             r
             for r in rows
@@ -909,90 +1059,107 @@ def run_prune(*, serial: str | None = None, phone_id: str = "toby") -> tuple[boo
             and r.handle not in NEVER_REVISIT
             and "closetshare" not in r.handle.replace("_", "").replace(".", "")
         ]
-        if sig == same_sig and not pending:
-            same_n += 1
-        elif sig != same_sig:
-            same_sig = sig
-            same_n = 1
-        else:
-            same_n = 0
-        if same_n >= STUCK_REPEAT:
-            log.warning("same names/xml twice — bounded recovery, no swipe loop")
-            _dump_stuck(device, "repeat")
-            if not recovered_once:
-                recovered_once = True
-                try:
-                    device.app_stop(PACKAGE)
-                    wait_idle(device, 0.8)
-                    bring_app_foreground(device, PACKAGE)
-                    wait_idle(device, 1.6)
-                except Exception:
-                    pass
-                xml, nav_err = _open_own_following(device)
-                if nav_err:
-                    stop_reason = nav_err
-                    break
-                same_n = 0
-                _scroll_list(device)
-                continue
-            stop_reason = "stuck repeating the same following rows"
+        for row in pending:
+            inspected += 1
+            _pause(*INSPECT_PAUSE)
+            action, reason = classify_account(
+                row.handle,
+                row.display,
+                known_handles=known_handles,
+                known_names=known_names,
+            )
+            if action == "unfollow":
+                action = "propose"
+            rec = {
+                "handle": row.handle,
+                "display": row.display,
+                "action": action,
+                "reason": reason,
+                "followers": None,
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+            decided[row.handle] = rec
+            if action == "propose":
+                state.setdefault("proposed", []).append(rec)
+                proposed_n += 1
+            elif action == "keep":
+                state["kept"].append(rec)
+                kept += 1
+            else:
+                state["skipped"].append(rec)
+                skipped += 1
+            state["inspected"] = int(state.get("inspected") or 0) + 1
+            state["log"] = (state.get("log") or [])[-40:] + [
+                f"{rec['action']} @{row.handle} — {rec['reason']}"
+            ]
+            log.info("%s @%s — %s", rec["action"], row.handle, rec["reason"])
+        state["decided"] = decided
+        state["unfollowed"] = []
+        save_progress(pid, state)
+
+        _scroll_list(device)
+        after_xml = _dismiss_popups(device, _xml(device))
+        after_rows = parse_following_rows(after_xml)
+        after_sig, _, _ = _range_signature(after_rows)
+        if after_sig and after_sig != sig:
+            xml = after_xml
+            continue
+
+        log.info("same visible range after ordinary scroll; trying materially larger scroll")
+        _scroll_list(device, large=True)
+        after_xml = _dismiss_popups(device, _xml(device))
+        after_rows = parse_following_rows(after_xml)
+        after_sig, _, _ = _range_signature(after_rows)
+        if after_sig and after_sig != sig:
+            xml = after_xml
+            continue
+
+        target_handles = {r.handle for r in rows}
+        log.warning("same range after larger scroll; reopening Following and resuming")
+        _dump_stuck(device, "repeat-before-recovery")
+        recovered_xml, recovery_err, recovered = _recover_to_range(device, target_handles)
+        if recovery_err or not recovered:
+            stop_reason = recovery_err or "could not recover prior following range"
             break
 
-        if not pending:
-            empty_scrolls += 1
-            if empty_scrolls >= 18:
-                stop_reason = "reached end of following list"
+        end_confirmations = 0
+        xml = recovered_xml
+        for _ in range(END_CONFIRMATIONS):
+            recovered_rows = parse_following_rows(xml)
+            recovered_sig, _, _ = _range_signature(recovered_rows)
+            if not recovered_sig or not target_handles.intersection(r.handle for r in recovered_rows):
                 break
-            _scroll_list(device)
-            continue
-        empty_scrolls = 0
-
-        row = pending[0]
-        inspected += 1
-        _pause(*INSPECT_PAUSE)
-        action, reason = classify_account(
-            row.handle,
-            row.display,
-            known_handles=known_handles,
-            known_names=known_names,
-        )
-        if action == "unfollow":
-            action = "propose"
-        followers = None
-        rec = {
-            "handle": row.handle,
-            "display": row.display,
-            "action": action,
-            "reason": reason,
-            "followers": followers,
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        }
-        decided[row.handle] = rec
-        if action == "propose":
-            state.setdefault("proposed", []).append(rec)
-            proposed_n += 1
-        elif action == "keep":
-            state["kept"].append(rec)
-            kept += 1
-        else:
-            state["skipped"].append(rec)
-            skipped += 1
-        state["decided"] = decided
-        state["inspected"] = int(state.get("inspected") or 0) + 1
-        state["unfollowed"] = []
-        state["log"] = (state.get("log") or [])[-40:] + [
-            f"{rec['action']} @{row.handle} — {rec['reason']}"
-        ]
-        save_progress(pid, state)
-        log.info("%s @%s — %s", rec["action"], row.handle, rec["reason"])
-        if len(pending) <= 1:
-            _scroll_list(device)
+            _scroll_list(device, large=True)
+            next_xml = _dismiss_popups(device, _xml(device))
+            next_rows = parse_following_rows(next_xml)
+            next_sig, _, _ = _range_signature(next_rows)
+            if next_sig == recovered_sig:
+                end_confirmations += 1
+                xml = next_xml
+                continue
+            xml = next_xml
+            break
+        if end_confirmations >= END_CONFIRMATIONS:
+            displayed = state.get("displayed_following_count")
+            enough = not displayed or len(decided) >= max(1, int(displayed * 0.90))
+            if enough:
+                completed_end = True
+                stop_reason = "reached repeatedly confirmed end of Following list"
+            else:
+                stop_reason = (
+                    f"repeated range after recovery but only {len(decided)} unique "
+                    f"of displayed {displayed}; refusing to claim end"
+                )
+            break
 
     if not stop_reason:
         stop_reason = "time budget" if time.time() - started >= MAX_MINUTES * 60 else "pass complete"
 
+    state["completed_end_of_list"] = completed_end
+    state["status"] = "completed" if completed_end else "blocked"
+    state["blocker"] = "" if completed_end else stop_reason
     summary = (
-        f"instagram review inspected={inspected} proposed={proposed_n} "
+        f"instagram review new={inspected} unique={len(decided)} proposed={len(state['proposed'])} "
         f"kept={kept} skipped={skipped} unfollowed=0 rate_limited={rate_limited} stop={stop_reason}"
     )
     log.info(summary)

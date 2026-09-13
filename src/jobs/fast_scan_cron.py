@@ -60,18 +60,45 @@ def next_due_at() -> float:
         return 0.0
 
 
-def should_run(now: float | None = None) -> bool:
-    return (now if now is not None else time.time()) >= next_due_at()
-
-
-def mark_ran(now: float | None = None, rng: random.Random | None = None) -> float:
-    stamp = now if now is not None else time.time()
-    wait = (rng or random).randint(_MIN_GAP_SEC, _MAX_GAP_SEC)
-    due = stamp + wait
+def write_next_due(due: float) -> float:
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{due:.0f}\n", encoding="utf-8")
     return due
+
+
+def should_run(now: float | None = None) -> bool:
+    stamp = now if now is not None else time.time()
+    try:
+        from src.daily_schedule import next_unconsumed_fast_scan
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        planned = next_unconsumed_fast_scan(
+            now=datetime.fromtimestamp(stamp, ZoneInfo("Europe/London"))
+        )
+        if planned > 0:
+            return stamp >= planned
+    except Exception:
+        log.debug("fast scan plan unavailable", exc_info=True)
+    return stamp >= next_due_at()
+
+
+def mark_ran(now: float | None = None, rng: random.Random | None = None) -> float:
+    stamp = now if now is not None else time.time()
+    try:
+        from src.daily_schedule import consume_fast_scan_slot
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        return consume_fast_scan_slot(
+            now=datetime.fromtimestamp(stamp, ZoneInfo("Europe/London")),
+            rng=rng or random.Random(),
+        )
+    except Exception:
+        log.debug("fast scan plan consume failed", exc_info=True)
+    wait = (rng or random).randint(_MIN_GAP_SEC, _MAX_GAP_SEC)
+    return write_next_due(stamp + wait)
 
 
 def main() -> int:

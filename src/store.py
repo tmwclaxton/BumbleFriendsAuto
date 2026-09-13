@@ -87,8 +87,10 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _migrate(conn)
     from src.linkedin_store import ensure_schema as _ensure_li
+    from src.hinge_store import ensure_schema as _ensure_hinge
 
     _ensure_li(conn)
+    _ensure_hinge(conn)
     conn.commit()
     return conn
 

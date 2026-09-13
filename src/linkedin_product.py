@@ -24,7 +24,7 @@ PRODUCT_LABELS = {
 }
 PRODUCT_LOGOS = {
     "snitch": "/static/products/snitch.svg",
-    "grantgunner": "/static/products/grantgunner.svg",
+    "grantgunner": "/static/products/grantgunner.svg?v=binoculars",
     "canvassr": "/static/products/canvassr.png",
 }
 

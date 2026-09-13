@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Hinge · LeadsAuto</title>
+<style>
+  :root {
+    --bg: #120e10;
+    --rail: #1a1416;
+    --panel: #23181c;
+    --line: #3a2a30;
+    --text: #f7f0ee;
+    --muted: #b39aa0;
+    --hinge: #ff7a8a;
+    --hinge-deep: #c43d55;
+    --need: #ff8d6b;
+    --wait: #5ed4a8;
+    --you: #ffd2d8;
+    --shadow: 0 16px 36px #05020455;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden;
+    font: 14px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+    background: radial-gradient(900px 420px at 8% -20%, #ff7a8a28, transparent 55%),
+      radial-gradient(700px 380px at 100% 0%, #c43d5533, transparent 50%), var(--bg);
+    color: var(--text);
+  }
+  a { color: var(--hinge); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  #phone-warn { padding: 8px 22px; background: #3a2218; color: #ffc4a8; border-bottom: 1px solid #6a3a28; font-size: 13px; }
+  #phone-warn[hidden] { display: none !important; }
+  .topbar { display: flex; align-items: center; gap: 16px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: #161012d9; backdrop-filter: blur(14px); }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 198px; }
+  .mark { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center;
+    background: linear-gradient(180deg, #ff9aa6, var(--hinge-deep)); color: #fff; font: 800 13px/1 "Segoe UI", sans-serif; }
+  .brand h1 { margin: 0; font-size: 15px; font-weight: 700; }
+  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+  .top-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex: 1; }
+  select, button, input, textarea {
+    font: inherit; border-radius: 9px; border: 1px solid var(--line); background: #23181c; color: var(--text); padding: 7px 11px;
+  }
+  button { cursor: pointer; }
+  button:hover, select:hover { border-color: #6a4450; }
+  #scan, #swipe { font-weight: 650; background: linear-gradient(180deg, #ff9aa6, var(--hinge-deep)); border-color: transparent; color: #fff; }
+  dialog.sheet { width: min(560px, calc(100vw - 24px)); border: 1px solid var(--line); border-radius: 16px; background: #1c1418; color: var(--text); padding: 0; }
+  dialog.sheet::backdrop { background: #12080ccc; }
+  dialog.sheet h3 { margin: 0; font-size: 16px; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+  .sheet-body { padding: 14px 16px 18px; max-height: 70vh; overflow: auto; }
+  .hint { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+  .sheet-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 11px; }
+  textarea { width: 100%; min-height: 120px; resize: vertical; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .toggle { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; font-size: 13px; }
+  .toggle input { margin-top: 3px; }
+  .races { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; }
+  .races button {
+    background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 9px; font: 11px/1.3 inherit; cursor: pointer;
+  }
+  .races button.on { background: #3a2228; color: var(--hinge); border-color: #6a3a44; }
+  .workspace { flex: 1; display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); min-height: 0; overflow: hidden; }
+  body.has-chat .workspace { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) minmax(260px, 340px); }
+  .profile-col { display: none; min-width: 0; min-height: 0; overflow: auto; border-left: 1px solid var(--line); background: #1a1416; }
+  body.has-chat:not(.hide-profile) .profile-col { display: block; }
+  .rail { display: flex; flex-direction: column; min-height: 0; background: color-mix(in srgb, var(--rail) 92%, #000); border-right: 1px solid var(--line); }
+  .rail-head { padding: 14px 14px 10px; }
+  .phone-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .phone-tabs button { flex: 1; }
+  .phone-tabs button.on { border-color: var(--hinge); color: var(--hinge); }
+  .count { color: var(--muted); font-size: 11px; }
+  .col-meta { margin: 0 14px 8px; color: var(--muted); font-size: 12px; }
+  .status-filters { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 0; }
+  .status-filters button { font-size: 11px; padding: 3px 8px; }
+  .status-filters button.on { border-color: var(--hinge); color: var(--hinge); }
+  .col-scroll { flex: 1; overflow: auto; padding: 0 8px 16px; }
+  a.chat { display: grid; grid-template-columns: 44px 1fr; gap: 10px; padding: 10px; border-radius: 12px; color: inherit; text-decoration: none; }
+  a.chat:hover, a.chat.on { background: #2a1c21; }
+  a.chat.need .name-text { color: var(--hinge); }
+  .avatar { width: 44px; height: 44px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; font-weight: 700; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; }
+  .row1, .row2 { display: flex; justify-content: space-between; gap: 8px; }
+  .preview { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 10px; color: var(--need); }
+  .thread { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .thread-head { display: flex; gap: 12px; align-items: flex-start; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  #back-list { display: none; }
+  @media (max-width: 800px) { #back-list { display: inline-flex; } }
+  .who h2 { margin: 0; font-size: 18px; }
+  .who p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+  .chips { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; background: #2a1c21; font-size: 12px; }
+  .profile-card { padding: 14px 16px 24px; }
+  .profile-card[hidden], #composer-wrap[hidden], .profile-col[hidden] { display: none !important; }
+  .eth-filter { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 0; }
+  .eth-filter button { font-size: 11px; padding: 3px 8px; }
+  .eth-filter button.on { border-color: var(--hinge); color: var(--hinge); }
+  .tag { font-size: 10px; margin-left: 6px; color: var(--muted); }
+  .tag.draft { color: var(--you); }
+  #swipe-usage { color: var(--muted); font-size: 12px; }
+  .basics { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+  .basics span { border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; background: #2a1c21; color: var(--muted); font-size: 11px; }
+  .pics { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px; }
+  .pics img { height: 168px; width: auto; max-width: 140px; border-radius: 12px; object-fit: cover; background: #2a1c21; }
+  .prompts { display: grid; gap: 8px; }
+  .prompt { background: #2a1c21; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .prompt q { display: block; color: var(--muted); font-size: 11px; }
+  .thread-msgs { flex: 1; overflow: auto; padding: 16px 18px 24px; }
+  .bubble { max-width: min(520px, 86%); margin: 8px 0; padding: 9px 12px; border-radius: 14px; background: #2a1c21; }
+  .bubble.you { margin-left: auto; background: #4a2430; }
+  .bubble time { display: block; color: var(--muted); font-size: 10px; margin-top: 4px; }
+  .empty { color: var(--muted); }
+  #composer-wrap { padding: 10px 14px 16px; border-top: 1px solid var(--line); }
+  #composer { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: end; }
+  #draft { min-height: 52px; }
+  #queue { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; }
+  .job-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; background: #3a2228; border: 1px solid #6a3a44; color: var(--hinge); }
+  @media (max-width: 1100px) {
+    body.has-chat .workspace { grid-template-columns: minmax(0, 1fr) minmax(240px, 320px); }
+    body.has-chat .rail { display: none; }
+    #back-list { display: inline-flex; }
+    body.has-chat.hide-profile .workspace { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 800px) {
+    .workspace, body.has-chat .workspace, body.has-chat.hide-profile .workspace { grid-template-columns: 1fr; }
+    .rail, .profile-col { display: none; }
+    body.show-list .rail { display: flex; }
+    body.show-list .thread { display: none; }
+    body.has-chat.show-profile .thread { display: none; }
+    body.has-chat.show-profile .profile-col { display: block; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="mark" aria-hidden="true">H</div>
+    <div>
+      <h1>Hinge inbox</h1>
+      <p><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/bumble">Bumble</a> · Toby’s Hinge on Galaxy</p>
+    </div>
+  </div>
+  <div class="top-tools">
+    <select id="phone-target" title="Hinge account. Live device is always Galaxy.">
+      <option value="toby" selected>Toby · Galaxy (live)</option>
+      <option value="archie">Archie · future slot</option>
+    </select>
+    <button type="button" id="scan">Refresh matches</button>
+    <button type="button" id="swipe">Queue swipe</button>
+    <button type="button" id="swipe-settings">Swipe prefs</button>
+    <button type="button" id="draft-settings">AI prompt</button>
+    <span id="swipe-usage"></span>
+    <div id="queue"></div>
+  </div>
+</header>
+<div id="phone-warn" hidden role="status"></div>
+<div class="workspace">
+  <aside class="rail">
+    <div class="rail-head">
+      <div class="phone-tabs">
+        <button type="button" id="tab-toby" class="on" data-tab="toby">Toby <span class="count" id="count-toby">0</span></button>
+        <button type="button" id="tab-archie" data-tab="archie">Archie <span class="count" id="count-archie">0</span></button>
+      </div>
+      <input id="filter" placeholder="Search matches" autocomplete="off"/>
+      <div class="status-filters">
+        <button type="button" class="on" data-status="all">All</button>
+        <button type="button" data-status="needs_reply">Needs reply</button>
+        <button type="button" data-status="waiting">Waiting</button>
+        <button type="button" data-status="archived">Archived</button>
+      </div>
+      <div class="eth-filter" id="eth-filter"></div>
+    </div>
+    <p class="col-meta" id="list-meta">Loading…</p>
+    <div class="col-scroll" id="chat-list"></div>
+  </aside>
+  <section class="thread">
+    <div class="thread-head">
+      <button type="button" class="chip" id="back-list">Matches</button>
+      <div class="avatar" id="thread-av" hidden></div>
+      <div class="who">
+        <h2 id="thread-name">Select a match</h2>
+        <p id="thread-details"></p>
+        <p id="status">Toby’s Hinge lives on Galaxy. Pixel stays on Instagram.</p>
+      </div>
+      <div class="chips">
+        <span class="chip" id="thread-chip">Hinge · Toby</span>
+        <select class="chip" id="ethnicity-set" hidden>
+          <option value="">Ethnicity</option>
+        </select>
+        <button type="button" class="chip" id="profile-toggle" hidden>Profile</button>
+        <button type="button" class="chip" id="archive-chat" hidden>Archive</button>
+        <button type="button" class="chip" id="refresh-chat" hidden>Refresh</button>
+      </div>
+    </div>
+    <div class="thread-msgs" id="msgs">
+      <p class="empty"><strong>No chat open</strong> Pick someone on the left. Refresh pulls Matches from Galaxy into Toby’s inbox.</p>
+    </div>
+    <div id="composer-wrap" hidden>
+      <form id="composer">
+        <button type="button" id="ai-draft">Draft</button>
+        <textarea id="draft" placeholder="Write a message, or type an instruction and tap Draft…" rows="2"></textarea>
+        <button type="submit" id="send">Send</button>
+      </form>
+    </div>
+  </section>
+  <aside class="profile-col" id="profile-col" hidden>
+    <div class="profile-card" id="profile-card" hidden>
+      <div class="basics" id="profile-basics"></div>
+      <div class="pics" id="pics"></div>
+      <div class="prompts" id="prompts"></div>
+    </div>
+  </aside>
+</div>
+<dialog class="sheet" id="draft-sheet">
+  <div class="sheet-head"><h3>Hinge draft prompt</h3><button type="button" id="draft-prompt-close">Close</button></div>
+  <div class="sheet-body">
+    <p class="hint">Saved prompt for the background draft worker. Drafts stay editable and are never sent automatically.</p>
+    <label for="draft-system">System prompt</label>
+    <textarea id="draft-system"></textarea>
+    <label for="draft-user">User template</label>
+    <textarea id="draft-user"></textarea>
+    <div class="sheet-actions"><button type="button" id="draft-prompt-save">Save prompt</button></div>
+  </div>
+</dialog>
+<dialog class="sheet" id="swipe-sheet">
+  <div class="sheet-head"><h3>Swipe prefs</h3><button type="button" id="swipe-close">Close</button></div>
+  <div class="sheet-body">
+    <p class="hint">Toby’s Hinge on Galaxy Discover. Race filters use the same buckets as Bumble. Attractiveness is a 1–10 threshold — the runner skips below it (live scoring is a conservative stub, so default 8 will not like everyone).</p>
+    <div class="grid2">
+      <div><label>Age min</label><input id="age-min" type="number" min="18" max="80"/></div>
+      <div><label>Age max</label><input id="age-max" type="number" min="18" max="80"/></div>
+      <div><label>Distance max (miles)</label><input id="distance" type="number" min="1" max="200"/></div>
+      <div><label>Like percent</label><input id="like-percent" type="number" min="0" max="100"/></div>
+      <div><label>Daily cap</label><input id="daily-cap" type="number" min="1" max="80"/></div>
+      <div><label>Max likes / session</label><input id="max-likes" type="number" min="0" max="40"/></div>
+      <div><label>Max swipes / session</label><input id="max-swipes" type="number" min="1" max="80"/></div>
+      <div><label>Attractiveness min (1–10)</label><input id="attractiveness-min" type="number" min="1" max="10"/></div>
+      <div><label>Pause min (ms)</label><input id="pause-min" type="number"/></div>
+      <div><label>Pause max (ms)</label><input id="pause-max" type="number"/></div>
+      <div><label>Gender pref (on-device)</label><input id="gender-pref" placeholder="optional"/></div>
+      <div>
+        <label>If ethnicity missing</label>
+        <select id="ethnicity-missing">
+          <option value="allow">Allow</option>
+          <option value="skip">Skip</option>
+        </select>
+      </div>
+    </div>
+    <label>Race / ethnicity include (empty = any not excluded)</label>
+    <div class="races" id="eth-include"></div>
+    <label>Race / ethnicity exclude</label>
+    <div class="races" id="eth-exclude"></div>
+    <label>Dealbreakers (comma separated)</label>
+    <input id="dealbreakers" placeholder="kids, smoking, looking for marriage"/>
+    <label class="toggle"><input id="human-pacing" type="checkbox"/> Human pacing</label>
+    <label class="toggle"><input id="skip-verified-only" type="checkbox"/> Skip verified-only gates</label>
+    <label class="toggle"><input id="require-verified" type="checkbox"/> Require verified</label>
+    <label class="toggle"><input id="comment-like" type="checkbox"/> Comment on like (off by default)</label>
+    <label class="toggle"><input id="stop-like-limit" type="checkbox"/> Stop on like limit</label>
+    <label class="toggle"><input id="stop-cards" type="checkbox"/> Stop when out of cards</label>
+    <div class="sheet-actions"><button type="button" id="swipe-save">Save prefs</button></div>
+  </div>
+</dialog>
+<script>
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function initials(name){return String(name||"?").trim().split(/\s+/).slice(0,2).map(p=>p[0]||"").join("").toUpperCase()||"?";}
+function hue(name){let h=0;for(const ch of String(name||""))h=(h*31+ch.charCodeAt(0))>>>0;return `hsl(${(h%40)*7+330} 42% 42%)`;}
+function photoUrl(p, path){
+  if(!p) return "";
+  const qs=new URLSearchParams({name:p.name||"", phone:p.phone_id||"toby"});
+  const src=path||p.profile_pic||"";
+  if(src) qs.set("path", src);
+  return "/api/hinge/photo?"+qs.toString();
+}
+function findPerson(name, phone){
+  const want=(name||"").toLowerCase();
+  const pid=phone||"toby";
+  return people.find(p=>String(p.name||"").toLowerCase()===want&&p.phone_id===pid);
+}
+function personKey(name, phone){return (phone||"toby")+":"+(name||"");}
+const LOCAL_KEY="hinge-crm-v1";
+function loadLocal(){try{return JSON.parse(localStorage.getItem(LOCAL_KEY)||"{}");}catch(e){return {};}}
+function saveLocal(data){localStorage.setItem(LOCAL_KEY, JSON.stringify(data));}
+function overlayLocal(rows){
+  const loc=loadLocal();
+  for(const p of rows){
+    const key=personKey(p.name, p.phone_id);
+    if(loc.drafts && key in loc.drafts && !(p.draft||"").trim()) p.draft=loc.drafts[key];
+    if(loc.archived && key in loc.archived) p.archived=loc.archived[key]?1:0;
+    if(loc.ethnicity && key in loc.ethnicity && loc.ethnicity[key]) p.ethnicity=loc.ethnicity[key];
+  }
+  return rows;
+}
+let people=[], current="", currentPhone="toby", listPhone="toby", statusFilter="all", draftTimer=0, peopleBooted=false;
+let ethnicityChoices=[], ethInclude=new Set(), ethExclude=new Set(), ethnicityFilter=new Set();
+function setTab(phone){listPhone=phone;document.getElementById("tab-toby").classList.toggle("on",phone==="toby");document.getElementById("tab-archie").classList.toggle("on",phone==="archie");renderList();}
+function matchEth(p){
+  if(!ethnicityFilter.size) return true;
+  const key=(p.ethnicity||"").trim()||"unknown";
+  return ethnicityFilter.has(key);
+}
+function renderEthFilter(){
+  const el=document.getElementById("eth-filter");
+  const chips=(ethnicityChoices||[]).concat([{id:"unknown",label:"Unknown"}]);
+  el.innerHTML=chips.map(c=>`<button type="button" data-eth="${esc(c.id)}" class="${ethnicityFilter.has(c.id)?"on":""}">${esc(c.label)}</button>`).join("");
+}
+function fillEthnicitySelect(currentEth){
+  const sel=document.getElementById("ethnicity-set");
+  sel.innerHTML=`<option value="">Ethnicity</option>`+(ethnicityChoices||[]).map(c=>`<option value="${esc(c.id)}"${c.id===currentEth?" selected":""}>${esc(c.label)}</option>`).join("");
+}
+function renderList(){
+  const q=document.getElementById("filter").value.trim().toLowerCase();
+  document.getElementById("count-toby").textContent=people.filter(p=>p.phone_id==="toby").length;
+  document.getElementById("count-archie").textContent=people.filter(p=>p.phone_id==="archie").length;
+  const rows=people.filter(p=>{
+    if(p.phone_id!==listPhone) return false;
+    if(!q||String(p.name).toLowerCase().includes(q)){} else return false;
+    if(!matchEth(p)) return false;
+    if(statusFilter==="archived") return !!p.archived;
+    if(p.archived) return false;
+    return statusFilter==="all"||p.status===statusFilter;
+  });
+  const need=people.filter(p=>p.phone_id===listPhone&&!p.archived&&p.status==="needs_reply").length;
+  document.getElementById("list-meta").textContent=rows.length?rows.length+" match"+(rows.length===1?"":"es")+" · "+need+" need reply"+(listPhone==="archie"?" · future slot":" · Toby"):"No matches stored";
+  document.getElementById("chat-list").innerHTML=rows.map(p=>{
+    const on=current===p.name&&currentPhone===p.phone_id?" on":"";
+    const needRow=p.status==="needs_reply"?" need":"";
+    const face=p.profile_pic?`<img src="${esc(photoUrl(p))}" alt=""/>`:esc(initials(p.name));
+    const tags=[];
+    if(p.status==="needs_reply") tags.push("Your turn");
+    else if(p.status==="waiting") tags.push("Their turn");
+    if((p.draft||"").trim()) tags.push("Draft");
+    if(p.draft_status==="queued"||p.draft_status==="running") tags.push("Drafting");
+    const eth=(ethnicityChoices.find(c=>c.id===p.ethnicity)||{}).label||p.ethnicity||"";
+    const preview=p.last_text||p.preview||"No preview";
+    return `<a class="chat${on}${needRow}" href="?chat=${encodeURIComponent(p.name)}&phone=${encodeURIComponent(p.phone_id)}" data-name="${esc(p.name)}" data-phone="${esc(p.phone_id)}">
+      <div class="avatar" style="background:${hue(p.name)}">${face}</div>
+      <div><div class="row1"><span class="name-text">${esc(p.name)}${eth?`<span class="tag">${esc(eth)}</span>`:""}</span><span>${esc(p.age||"")}</span></div>
+      <div class="row2"><span class="preview">${esc(preview)}</span><span class="badge">${esc(tags.join(" · "))}</span></div></div></a>`;
+  }).join("");
+}
+function hideProfilePane(){
+  document.getElementById("profile-col").hidden=true;
+  document.getElementById("profile-card").hidden=true;
+  document.getElementById("profile-basics").innerHTML="";
+  document.getElementById("pics").innerHTML="";
+  document.getElementById("prompts").innerHTML="";
+  document.getElementById("archive-chat").hidden=true;
+  document.getElementById("ethnicity-set").hidden=true;
+  document.getElementById("profile-toggle").hidden=true;
+  document.body.classList.remove("show-profile");
+}
+function showProfilePane(){
+  document.getElementById("profile-col").hidden=false;
+  document.getElementById("profile-card").hidden=false;
+  document.getElementById("profile-toggle").hidden=false;
+  document.body.classList.add("has-chat");
+  document.body.classList.remove("hide-profile");
+}
+function resetComposer(text){
+  const box=document.getElementById("draft");
+  box.value=text||"";
+  box.dataset.person=current||"";
+  box.dataset.phone=currentPhone||"";
+}
+async function persistDraft(name, phone, text){
+  if(!name) return;
+  const person=findPerson(name, phone);
+  if(person) person.draft=text||"";
+  const loc=loadLocal();
+  loc.drafts=loc.drafts||{};
+  loc.drafts[personKey(name, phone)]=text||"";
+  saveLocal(loc);
+  try{
+    await fetch("/api/hinge/draft",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,phone_id:phone||"toby",text:text||""})});
+  }catch(e){}
+}
+function persistCurrentDraft(){return persistDraft(current, currentPhone, document.getElementById("draft").value);}
+async function loadPeople(opts){
+  const res=await fetch("/api/hinge/people");
+  const data=await res.json();
+  people=overlayLocal(data.people||[]);
+  if(data.ethnicity_choices) ethnicityChoices=data.ethnicity_choices;
+  if(data.swipe_usage){
+    const u=data.swipe_usage;
+    document.getElementById("swipe-usage").textContent=`Today ${u.likes||0} likes · ${u.swipes||0} swipes`;
+  }
+  renderEthFilter();
+  renderList();
+  if(opts&&opts.boot===false) return;
+  if(peopleBooted) return;
+  peopleBooted=true;
+  const params=new URLSearchParams(location.search);
+  const chat=params.get("chat");
+  if(chat) openThread(chat, params.get("phone")||"toby");
+}
+async function openThread(name, phone, opts){
+  phone=phone||"toby";
+  const forceDraft=!!(opts&&opts.forceDraft);
+  const switching=current!==name||currentPhone!==phone;
+  if(current && switching) await persistCurrentDraft();
+  current=name; currentPhone=phone;
+  document.body.classList.remove("show-list");
+  document.body.classList.add("has-chat");
+  history.replaceState({}, "", `?chat=${encodeURIComponent(name)}&phone=${encodeURIComponent(phone)}`);
+  renderList();
+  const known=findPerson(name, phone);
+  document.getElementById("thread-name").textContent=name;
+  document.getElementById("thread-details").textContent="";
+  document.getElementById("thread-chip").textContent=phone==="archie"?"Hinge · Archie":"Hinge · Toby";
+  document.getElementById("refresh-chat").hidden=false;
+  document.getElementById("composer-wrap").hidden=false;
+  document.getElementById("status").textContent="Loading…";
+  if(switching){
+    document.getElementById("profile-card").hidden=true;
+    document.getElementById("profile-basics").innerHTML="";
+    document.getElementById("pics").innerHTML="";
+    document.getElementById("prompts").innerHTML="";
+    resetComposer((known&&known.draft)||"");
+    document.getElementById("msgs").innerHTML=`<p class="empty">Loading ${esc(name)}…</p>`;
+    const av=document.getElementById("thread-av");
+    av.hidden=false; av.style.background=hue(name);
+    av.innerHTML=known&&known.profile_pic?`<img src="${esc(photoUrl(known))}" alt=""/>`:esc(initials(name));
+    document.getElementById("profile-toggle").hidden=false;
+  }
+  const res=await fetch(`/api/hinge/thread?name=${encodeURIComponent(name)}&phone=${encodeURIComponent(phone)}`);
+  const data=await res.json();
+  if(current!==name||currentPhone!==phone) return;
+  if(!data.ok && !known){document.getElementById("status").textContent=data.error||"missing";return;}
+  const p=data.ok?(data.person||{}):(known||{name,phone_id:phone});
+  const extras=data.extras||{};
+  document.getElementById("thread-name").textContent=p.name||name;
+  document.getElementById("thread-details").textContent=[p.age,p.job,p.location,p.school,p.ethnicity].filter(Boolean).join(" · ");
+  document.getElementById("thread-chip").textContent=p.phone_id==="archie"?"Hinge · Archie":"Hinge · Toby";
+  document.getElementById("refresh-chat").hidden=false;
+  document.getElementById("composer-wrap").hidden=false;
+  if(switching || forceDraft || !document.getElementById("draft").value) resetComposer(p.draft||"");
+  if(findPerson(name, phone)) findPerson(name, phone).draft=p.draft||"";
+  const av=document.getElementById("thread-av");
+  av.hidden=false; av.style.background=hue(p.name);
+  av.innerHTML=p.profile_pic?`<img src="${esc(photoUrl(p))}" alt=""/>`:esc(initials(p.name));
+  const photos=(data.photos||[]).filter(ph=>ph&&ph.path);
+  document.getElementById("pics").innerHTML=photos.length
+    ? photos.map(ph=>`<img src="${esc(photoUrl(p, ph.path))}" alt=""/>`).join("")
+    : (p.profile_pic?`<img src="${esc(photoUrl(p))}" alt=""/>`:"");
+  const skip=new Set(["age"]);
+  const basics=[p.age&&`Age ${p.age}`,p.job,p.location,p.school,p.ethnicity,p.gender,p.height,p.about].filter(Boolean);
+  for(const [k,v] of Object.entries(extras)){
+    if(!v||skip.has(k)||basics.includes(v)) continue;
+    basics.push(`${k}: ${v}`);
+  }
+  document.getElementById("profile-basics").innerHTML=basics.map(bit=>`<span>${esc(bit)}</span>`).join("");
+  const prompts=data.prompts||[];
+  document.getElementById("prompts").innerHTML=prompts.length
+    ? prompts.map(pr=>`<div class="prompt"><q>${esc(pr.question)}</q>${esc(pr.answer)}</div>`).join("")
+    : (p.about?`<div class="prompt">${esc(p.about)}</div>`:`<p class="empty">No prompts captured yet. Refresh this match to pull the full profile.</p>`);
+  showProfilePane();
+  document.getElementById("archive-chat").hidden=false;
+  document.getElementById("archive-chat").textContent=p.archived?"Unarchive":"Archive";
+  document.getElementById("ethnicity-set").hidden=false;
+  fillEthnicitySelect(p.ethnicity||"");
+  document.getElementById("msgs").innerHTML=(data.messages||[]).length
+    ? data.messages.map(m=>`<div class="bubble ${m.side}">${esc(m.body)}${m.captured_at?`<time>${esc(m.captured_at)}</time>`:""}</div>`).join("")
+    : `<p class="empty">No messages captured yet.</p>`;
+  const st=p.draft_status||"";
+  if(st==="queued"||st==="running") document.getElementById("status").textContent="Draft "+st+"…";
+  else if(st==="error") document.getElementById("status").textContent=p.draft_error||"Draft failed";
+  else if(p.draft) document.getElementById("status").textContent="Unsent draft ready";
+  else document.getElementById("status").textContent="Toby’s Hinge lives on Galaxy. Pixel stays on Instagram.";
+}
+async function loadQueue(){
+  const res=await fetch("/api/queue");
+  const data=await res.json();
+  const jobs=(data.jobs||[]).filter(j=>String(j.kind||"").startsWith("hinge_")&&["queued","running"].includes(j.status));
+  document.getElementById("queue").innerHTML=jobs.map(j=>`<span class="job-pill">${esc(j.title||j.kind)}</span>`).join("");
+  const warn=document.getElementById("phone-warn");
+  const hold=(data.phones||[]).find(p=>p.id==="toby"&&p.holding);
+  if(hold){warn.hidden=false;warn.textContent="Pixel / Instagram is busy ("+(hold.holding_title||hold.holding)+"). Hinge still uses Galaxy for Toby’s account.";}
+  else warn.hidden=true;
+}
+function renderRaces(){
+  for(const [id, set] of [["eth-include", ethInclude],["eth-exclude", ethExclude]]){
+    const box=document.getElementById(id);
+    box.innerHTML=ethnicityChoices.map(c=>`<button type="button" data-id="${esc(c.id)}" class="${set.has(c.id)?"on":""}">${esc(c.label)}</button>`).join("");
+  }
+}
+function fillPrefs(p){
+  document.getElementById("age-min").value=p.age_min;
+  document.getElementById("age-max").value=p.age_max;
+  document.getElementById("distance").value=p.distance_max_miles;
+  document.getElementById("like-percent").value=p.like_percent;
+  document.getElementById("daily-cap").value=p.daily_cap;
+  document.getElementById("max-likes").value=p.max_likes_session;
+  document.getElementById("max-swipes").value=p.max_swipes_session;
+  document.getElementById("attractiveness-min").value=p.attractiveness_min;
+  document.getElementById("pause-min").value=p.pause_min_ms;
+  document.getElementById("pause-max").value=p.pause_max_ms;
+  document.getElementById("gender-pref").value=p.gender_pref||"";
+  document.getElementById("ethnicity-missing").value=p.ethnicity_if_missing||"allow";
+  document.getElementById("dealbreakers").value=(p.dealbreakers||[]).join(", ");
+  document.getElementById("human-pacing").checked=!!p.human_pacing;
+  document.getElementById("skip-verified-only").checked=!!p.skip_verified_only;
+  document.getElementById("require-verified").checked=!!p.require_verified;
+  document.getElementById("comment-like").checked=!!p.comment_on_like;
+  document.getElementById("stop-like-limit").checked=!!p.stop_on_like_limit;
+  document.getElementById("stop-cards").checked=!!p.stop_on_out_of_cards;
+  ethnicityChoices=p.ethnicity_choices||ethnicityChoices;
+  ethInclude=new Set(p.ethnicity_include||[]);
+  ethExclude=new Set(p.ethnicity_exclude||[]);
+  renderRaces();
+}
+document.getElementById("tab-toby").onclick=()=>setTab("toby");
+document.getElementById("tab-archie").onclick=()=>setTab("archie");
+document.getElementById("filter").oninput=renderList;
+document.querySelector(".status-filters").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-status]"); if(!b)return;
+  statusFilter=b.dataset.status;
+  for(const btn of document.querySelectorAll(".status-filters button")) btn.classList.toggle("on",btn===b);
+  renderList();
+});
+document.getElementById("chat-list").addEventListener("click",e=>{
+  const a=e.target.closest("a.chat"); if(!a)return; e.preventDefault();
+  history.replaceState({}, "", a.getAttribute("href"));
+  openThread(a.dataset.name, a.dataset.phone);
+});
+document.getElementById("scan").onclick=async()=>{
+  await fetch("/api/hinge/scan",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({phone_id:"toby"})});
+  loadQueue();
+};
+document.getElementById("swipe").onclick=async()=>{
+  await fetch("/api/hinge/swipe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({phone_id:"toby"})});
+  loadQueue();
+};
+document.getElementById("refresh-chat").onclick=async()=>{
+  await fetch("/api/hinge/refresh",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:current,phone_id:currentPhone})});
+  loadQueue();
+};
+document.getElementById("draft").addEventListener("input",()=>{
+  clearTimeout(draftTimer);
+  draftTimer=setTimeout(()=>persistCurrentDraft(), 250);
+});
+document.getElementById("profile-toggle").onclick=()=>{
+  const narrow=window.matchMedia("(max-width: 800px)").matches;
+  if(narrow){
+    document.body.classList.toggle("show-profile");
+    document.getElementById("profile-col").hidden=!document.body.classList.contains("show-profile");
+    return;
+  }
+  document.body.classList.toggle("hide-profile");
+};
+document.getElementById("back-list").onclick=async()=>{
+  if(current) await persistCurrentDraft();
+  current="";
+  document.body.classList.remove("has-chat","show-profile","hide-profile");
+  hideProfilePane();
+  resetComposer("");
+  document.getElementById("composer-wrap").hidden=true;
+  document.getElementById("refresh-chat").hidden=true;
+  document.getElementById("thread-av").hidden=true;
+  document.getElementById("thread-name").textContent="Select a match";
+  document.getElementById("thread-details").textContent="";
+  document.getElementById("msgs").innerHTML='<p class="empty"><strong>No chat open</strong> Pick someone on the left. Refresh pulls Matches from Galaxy into Toby’s inbox.</p>';
+  document.body.classList.add("show-list");
+  history.replaceState({}, "", "/hinge");
+  renderList();
+};
+document.getElementById("ai-draft").onclick=async()=>{
+  if(!current)return;
+  await fetch("/api/hinge/draft/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:current,phone_id:currentPhone,text:document.getElementById("draft").value})});
+  document.getElementById("status").textContent="Draft queued";
+  for(let i=0;i<8;i++){
+    await new Promise(r=>setTimeout(r,1500));
+    await openThread(current, currentPhone, {forceDraft:true});
+    if(document.getElementById("status").textContent.includes("Unsent")) break;
+  }
+};
+document.getElementById("composer").onsubmit=async e=>{
+  e.preventDefault();
+  const text=document.getElementById("draft").value.trim();
+  if(!current||!text)return;
+  await fetch("/api/hinge/reply",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:current,phone_id:currentPhone,text})});
+  loadQueue();
+};
+document.getElementById("draft-settings").onclick=async()=>{
+  const res=await fetch("/api/hinge/draft/prompt");
+  const data=await res.json();
+  document.getElementById("draft-system").value=data.system||"";
+  document.getElementById("draft-user").value=data.user||"";
+  document.getElementById("draft-sheet").showModal();
+};
+document.getElementById("draft-prompt-close").onclick=()=>document.getElementById("draft-sheet").close();
+document.getElementById("draft-prompt-save").onclick=async()=>{
+  await fetch("/api/hinge/draft/prompt",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({save:true,system:document.getElementById("draft-system").value,user:document.getElementById("draft-user").value})});
+  document.getElementById("draft-sheet").close();
+};
+document.getElementById("swipe-settings").onclick=async()=>{
+  const res=await fetch("/api/hinge/swipe/prefs");
+  fillPrefs(await res.json());
+  document.getElementById("swipe-sheet").showModal();
+};
+document.getElementById("swipe-close").onclick=()=>document.getElementById("swipe-sheet").close();
+document.getElementById("eth-filter").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-eth]"); if(!b)return;
+  if(ethnicityFilter.has(b.dataset.eth)) ethnicityFilter.delete(b.dataset.eth); else ethnicityFilter.add(b.dataset.eth);
+  renderEthFilter(); renderList();
+});
+document.getElementById("archive-chat").onclick=async()=>{
+  if(!current)return;
+  const person=findPerson(current, currentPhone);
+  const next=!person||!person.archived;
+  if(person) person.archived=next?1:0;
+  const loc=loadLocal(); loc.archived=loc.archived||{}; loc.archived[personKey(current,currentPhone)]=next; saveLocal(loc);
+  try{
+    await fetch("/api/hinge/archive",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:current,phone_id:currentPhone,archived:next})});
+  }catch(e){}
+  renderList();
+  document.getElementById("archive-chat").textContent=next?"Unarchive":"Archive";
+};
+document.getElementById("ethnicity-set").onchange=async e=>{
+  if(!current)return;
+  const value=e.target.value;
+  const person=findPerson(current, currentPhone);
+  if(person) person.ethnicity=value;
+  const loc=loadLocal(); loc.ethnicity=loc.ethnicity||{}; loc.ethnicity[personKey(current,currentPhone)]=value; saveLocal(loc);
+  try{
+    await fetch("/api/hinge/ethnicity",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:current,phone_id:currentPhone,ethnicity:value})});
+  }catch(e){}
+  renderList();
+};
+document.getElementById("eth-include").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-id]"); if(!b)return;
+  if(ethInclude.has(b.dataset.id)) ethInclude.delete(b.dataset.id); else ethInclude.add(b.dataset.id);
+  renderRaces();
+});
+document.getElementById("eth-exclude").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-id]"); if(!b)return;
+  if(ethExclude.has(b.dataset.id)) ethExclude.delete(b.dataset.id); else ethExclude.add(b.dataset.id);
+  renderRaces();
+});
+document.getElementById("swipe-save").onclick=async()=>{
+  const payload={
+    age_min:document.getElementById("age-min").value,
+    age_max:document.getElementById("age-max").value,
+    distance_max_miles:document.getElementById("distance").value,
+    like_percent:document.getElementById("like-percent").value,
+    daily_cap:document.getElementById("daily-cap").value,
+    max_likes_session:document.getElementById("max-likes").value,
+    max_swipes_session:document.getElementById("max-swipes").value,
+    attractiveness_min:document.getElementById("attractiveness-min").value,
+    pause_min_ms:document.getElementById("pause-min").value,
+    pause_max_ms:document.getElementById("pause-max").value,
+    gender_pref:document.getElementById("gender-pref").value,
+    ethnicity_if_missing:document.getElementById("ethnicity-missing").value,
+    ethnicity_include:[...ethInclude],
+    ethnicity_exclude:[...ethExclude],
+    dealbreakers:document.getElementById("dealbreakers").value,
+    human_pacing:document.getElementById("human-pacing").checked,
+    skip_verified_only:document.getElementById("skip-verified-only").checked,
+    require_verified:document.getElementById("require-verified").checked,
+    comment_on_like:document.getElementById("comment-like").checked,
+    stop_on_like_limit:document.getElementById("stop-like-limit").checked,
+    stop_on_out_of_cards:document.getElementById("stop-cards").checked,
+    phone_id:"toby",
+  };
+  await fetch("/api/hinge/swipe/prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  document.getElementById("swipe-sheet").close();
+};
+if(!new URLSearchParams(location.search).get("chat")) document.body.classList.add("show-list");
+fetch("/api/hinge/swipe/prefs").then(r=>r.json()).then(p=>{ethnicityChoices=p.ethnicity_choices||ethnicityChoices; fillPrefs(p); renderEthFilter();}).catch(()=>{});
+loadPeople(); loadQueue(); setInterval(loadQueue, 8000); setInterval(()=>loadPeople({boot:false}), 20000);
+</script>
+</body>
+</html>

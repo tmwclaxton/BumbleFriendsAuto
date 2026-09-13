@@ -10,7 +10,11 @@ from src.jobs.fast_scan_cron import mark_ran, next_due_at, should_run
 class FastScanJitterTests(unittest.TestCase):
     def test_first_run_is_due(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("src.jobs.fast_scan_cron._state_path", return_value=Path(tmp) / "next.txt"):
+            plan = Path(tmp) / "plan.json"
+            with (
+                patch("src.jobs.fast_scan_cron._state_path", return_value=Path(tmp) / "next.txt"),
+                patch("src.daily_schedule._plan_path", return_value=plan),
+            ):
                 self.assertEqual(next_due_at(), 0.0)
                 self.assertTrue(should_run(now=1_700_000_000))
 
@@ -18,7 +22,11 @@ class FastScanJitterTests(unittest.TestCase):
         rng = random.Random(0)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "next.txt"
-            with patch("src.jobs.fast_scan_cron._state_path", return_value=path):
+            plan = Path(tmp) / "plan.json"
+            with (
+                patch("src.jobs.fast_scan_cron._state_path", return_value=path),
+                patch("src.daily_schedule._plan_path", return_value=plan),
+            ):
                 now = 1_700_000_000.0
                 due = mark_ran(now=now, rng=rng)
                 self.assertGreaterEqual(due - now, 30 * 60)

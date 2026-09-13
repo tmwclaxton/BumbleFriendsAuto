@@ -5,9 +5,9 @@
 # Also refreshes the New friends strip and rematches expired circles there.
 # Tick every 5 minutes; the job itself waits a random 30–90 minutes between runs.
 */5 8-23 * * * python -m src.jobs.fast_scan_cron
-# LinkedIn: rare, never 08:00. Job skips if last run < 4h or Bumble occupies the phone.
-0 11 * * * python -m src.jobs.linkedin_cron
-0 19 * * * python -m src.jobs.linkedin_cron
+# LinkedIn reply checks + short feed reacts through the day (plan-jittered).
+# Tick every 5 minutes; the job itself waits on the persisted daily plan.
+*/5 8-23 * * * python -m src.jobs.linkedin_cron
 # LinkedIn Home session: tick often; the job itself waits for a random daytime slot.
 */5 10-20 * * * python -m src.jobs.linkedin_session_cron
 # LinkedIn: quiet evening import of 5–10 older chats we do not have yet.

@@ -55,6 +55,19 @@ def _save_state(state: dict) -> None:
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+def due_map() -> dict[str, float]:
+    state = _load_state()
+    out: dict[str, float] = {}
+    for pid, row in state.items():
+        if not isinstance(row, dict):
+            continue
+        try:
+            out[str(pid)] = float(row.get("due") or 0)
+        except (TypeError, ValueError):
+            out[str(pid)] = 0.0
+    return out
+
+
 def _random_due(after: datetime, rng: random.Random | None = None) -> float:
     rng = rng or random.Random()
     day = after.date()

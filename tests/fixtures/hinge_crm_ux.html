@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Hinge CRM UX proof</title>
+<style>
+  body { font: 14px/1.45 sans-serif; background: #120e10; color: #f7f0ee; margin: 0; }
+  .wrap { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+  .rail { border-right: 1px solid #3a2a30; padding: 12px; }
+  a.chat { display: block; padding: 10px; color: inherit; text-decoration: none; border-radius: 10px; }
+  a.chat.on { background: #2a1c21; }
+  .preview { color: #b39aa0; font-size: 12px; }
+  .thread { padding: 16px; }
+  .profile-card[hidden], #composer-wrap[hidden] { display: none !important; }
+  .pics img { height: 80px; width: 64px; object-fit: cover; border-radius: 8px; background: #2a1c21; }
+  .prompt { background: #2a1c21; margin: 8px 0; padding: 8px; border-radius: 8px; }
+  #draft { width: 100%; min-height: 48px; }
+  #proof { padding: 12px 16px; border-top: 1px solid #3a2a30; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; }
+  .pass { color: #5ed4a8; } .fail { color: #ff8d6b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside class="rail" id="chat-list"></aside>
+  <section class="thread">
+    <h2 id="thread-name">Select a match</h2>
+    <div class="profile-card" id="profile-card" hidden>
+      <div id="profile-basics"></div>
+      <div class="pics" id="pics"></div>
+      <div id="prompts"></div>
+    </div>
+    <div id="msgs"><p>No chat open</p></div>
+    <div id="composer-wrap" hidden>
+      <textarea id="draft" placeholder="draft"></textarea>
+    </div>
+  </section>
+</div>
+<pre id="proof">running…</pre>
+<script>
+const people = [
+  {name:"Tia", phone_id:"toby", last_text:"Do it!!", draft:"hey tia", age:24, job:"Producer",
+   extras:{location:"London"}, photos:[{path:"tia-face.jpg"}], prompts:[{question:"Win me over", answer:"Be funny"}, {question:"Dating me is like", answer:"A late bus"}]},
+  {name:"rosie", phone_id:"toby", last_text:"hey", draft:"", age:26, job:"Nurse",
+   extras:{school:"UCL"}, photos:[{path:"rosie-face.jpg"}], prompts:[{question:"Green flags", answer:"Kindness"}]}
+];
+let current="", currentPhone="toby";
+function renderList(){
+  document.getElementById("chat-list").innerHTML = people.map(p => {
+    const on = current===p.name ? " on" : "";
+    return `<a class="chat${on}" href="#${p.name}" data-name="${p.name}"><strong>${p.name}</strong><div class="preview">${p.last_text}</div></a>`;
+  }).join("");
+}
+function hideProfilePane(){
+  document.getElementById("profile-card").hidden = true;
+  document.getElementById("pics").innerHTML = "";
+  document.getElementById("prompts").innerHTML = "";
+  document.getElementById("profile-basics").innerHTML = "";
+}
+function resetComposer(text){ document.getElementById("draft").value = text || ""; }
+function openThread(name){
+  const switching = current !== name;
+  const known = people.find(p => p.name === name);
+  if (current && switching) known && (people.find(p => p.name === current).draft = document.getElementById("draft").value);
+  current = name;
+  renderList();
+  if (switching) {
+    hideProfilePane();
+    resetComposer((known && known.draft) || "");
+  }
+  document.getElementById("thread-name").textContent = name;
+  document.getElementById("composer-wrap").hidden = false;
+  const photos = known.photos || [];
+  document.getElementById("pics").innerHTML = photos.map(ph => `<img src="${ph.path}" alt="${name} photo"/>`).join("");
+  document.getElementById("profile-basics").innerHTML = [known.age, known.job, ...(Object.values(known.extras||{}))].filter(Boolean).join(" · ");
+  document.getElementById("prompts").innerHTML = (known.prompts||[]).map(pr => `<div class="prompt"><q>${pr.question}</q> ${pr.answer}</div>`).join("");
+  document.getElementById("profile-card").hidden = false;
+  document.getElementById("msgs").innerHTML = `<p>${known.last_text}</p>`;
+}
+document.getElementById("chat-list").addEventListener("click", e => {
+  const a = e.target.closest("a.chat"); if (!a) return;
+  e.preventDefault();
+  openThread(a.dataset.name);
+});
+renderList();
+const lines = [];
+function check(ok, msg){ lines.push((ok ? "PASS" : "FAIL") + "  " + msg); }
+const closed = document.getElementById("profile-card").hidden && document.getElementById("composer-wrap").hidden;
+check(closed, "profile pane hidden until a chat is opened");
+check(!document.getElementById("chat-list").innerHTML.includes("Win me over"), "match list stays compact (no prompts dumped)");
+openThread("Tia");
+document.getElementById("draft").value = "hello from Tia box";
+check(document.getElementById("draft").value === "hello from Tia box", "typed draft stays on Tia");
+check(!document.getElementById("profile-card").hidden, "opened chat reveals profile pane");
+check(document.getElementById("prompts").querySelectorAll(".prompt").length >= 2, "opened chat shows multiple prompts");
+check(!document.getElementById("pics").innerHTML.includes("screenshot"), "photos are individual files, not raw screenshot dumps");
+openThread("rosie");
+check(document.getElementById("draft").value === "", "switching to Rosie clears Tia draft");
+check(document.getElementById("prompts").textContent.includes("Green flags"), "Rosie profile reloads her own prompts");
+openThread("Tia");
+check(document.getElementById("draft").value === "hello from Tia box", "switching back reloads Tia draft");
+document.getElementById("proof").className = lines.every(l => l.startsWith("PASS")) ? "pass" : "fail";
+document.getElementById("proof").textContent = lines.join("\n");
+</script>
+</body>
+</html>

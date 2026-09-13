@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="com.linkedin.android" class="android.widget.FrameLayout" bounds="[0,0][1080,2400]">
+    <node resource-id="com.linkedin.android:id/conversation_list_container" bounds="[0,0][1080,2400]">
+      <node resource-id="com.linkedin.android:id/pill_inbox_search_box" text="Search messages" content-desc="Search messages" clickable="true" bounds="[180,100][900,200]"/>
+      <node resource-id="com.linkedin.android:id/messaging_pill_inbox_filter_list" class="androidx.recyclerview.widget.RecyclerView" scrollable="true" bounds="[0,210][1080,340]">
+        <node resource-id="com.linkedin.android:id/messaging_folder_chip" text="Focused" checkable="true" checked="false" clickable="true" bounds="[24,210][260,340]"/>
+        <node resource-id="com.linkedin.android:id/messaging_folder_chip" text="Other" checkable="true" checked="true" clickable="true" bounds="[280,210][500,340]"/>
+      </node>
+      <node resource-id="com.linkedin.android:id/conversation_list" class="androidx.recyclerview.widget.RecyclerView" bounds="[0,350][1080,2300]">
+        <node resource-id="com.linkedin.android:id/messaging_conversation_list_item_container" class="android.widget.Button" content-desc="Button, Priya Shah, Hi Toby — we have a grant round closing next month and wondered if GrantGunner could help, Today, 1 unread message" clickable="true" bounds="[0,360][1080,560]">
+          <node resource-id="com.linkedin.android:id/messaging_conversation_list_item_title" text="Priya Shah"/>
+          <node resource-id="com.linkedin.android:id/messaging_conversation_summary" text="Hi Toby — we have a grant round closing next month and wondered if GrantGunner could help"/>
+          <node resource-id="com.linkedin.android:id/messaging_conversation_unread_count" text="1"/>
+        </node>
+        <node resource-id="com.linkedin.android:id/messaging_conversation_list_item" class="android.widget.Button" content-desc="Button, Miles Okonkwo, Book a 15 minute demo of our outreach platform, Today, 1 unread message" clickable="true" bounds="[0,560][1080,760]">
+          <node resource-id="com.linkedin.android:id/messaging_conversation_list_item_title" text="Miles Okonkwo"/>
+          <node resource-id="com.linkedin.android:id/messaging_conversation_summary" text="Book a 15 minute demo of our outreach platform"/>
+          <node resource-id="com.linkedin.android:id/messaging_conversation_unread_count" text="2"/>
+        </node>
+      </node>
+    </node>
+  </node>
+</hierarchy>

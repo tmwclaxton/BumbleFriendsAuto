@@ -616,17 +616,18 @@
     <div>
       <button type="button" class="back" id="back">← Inbox</button>
       <h1>LinkedIn inbox</h1>
-      <p id="meta"><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · Messaging capture</p>
+      <p id="meta"><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/bumble">Bumble</a> · <a href="/hinge">Hinge</a> · Messaging capture</p>
     </div>
   </div>
   <div class="top-tools">
-    <select id="phone-target" title="Which phone Scan uses">
+    <select id="phone-target" title="Which phone LinkedIn jobs use">
       <option value="all">Run on both phones</option>
       <option value="toby">Run on Toby / Pixel</option>
       <option value="archie">Run on Archie / Galaxy</option>
     </select>
-    <button type="button" id="scan" title="Feed cover, then open unread/changed chats (max 4)">Scan</button>
-    <button type="button" id="session" title="Scroll Home and react to some posts">Session</button>
+    <button type="button" id="scan" title="Inbox reply check — open unread or changed chats">Reply check</button>
+    <button type="button" id="feed" title="Short Home scroll and a few reactions">Feed</button>
+    <button type="button" id="session" title="Longer Home session with more reactions">Session</button>
     <button type="button" id="draft-settings" title="Edit the LinkedIn drafting prompt">AI prompt</button>
     <div id="queue"></div>
   </div>
@@ -651,7 +652,7 @@
         <h2 id="thread-name">Select a conversation</h2>
         <p id="thread-headline" hidden></p>
         <p id="thread-details" hidden></p>
-        <p id="status">Scan when you want a refresh. A quiet evening pass imports a few older chats.</p>
+        <p id="status">Reply check for unread chats. Feed is a short human-looking Home pass. Evening import picks up older threads.</p>
       </div>
       <div class="chips">
         <a class="chip" id="profile-link" hidden target="_blank" rel="noopener noreferrer">Profile</a>
@@ -842,7 +843,7 @@ function roleFromHeadline(p) {
 }
 const PRODUCTS = {
   snitch: {label: "Snitch", logo: "/static/products/snitch.svg"},
-  grantgunner: {label: "GrantGunner", logo: "/static/products/grantgunner.svg"},
+  grantgunner: {label: "GrantGunner", logo: "/static/products/grantgunner.svg?v=binoculars"},
   canvassr: {label: "Canvassr", logo: "/static/products/canvassr.png"},
 };
 function productMeta(key) {
@@ -892,7 +893,9 @@ function jobPhoneLabel(job) {
 }
 function jobLabel(job) {
   const who = jobPhoneLabel(job);
-  if (job.kind === "linkedin_scan") return who + " · Scan";
+  if (job.kind === "linkedin_scan") return who + " · Reply check";
+  if (job.kind === "linkedin_feed") return who + " · Feed react";
+  if (job.kind === "linkedin_profile") return who + " · Profile " + (job.name || "");
   if (job.kind === "linkedin_seed" || job.kind === "linkedin_backfill") return who + " · Older chats";
   if (job.kind === "linkedin_reply") return who + " · Reply " + (job.name || "");
   if (job.kind === "linkedin_session") return who + " · Session";
@@ -1065,7 +1068,7 @@ async function loadPeople() {
     ];
     phones = [{id: "toby", label: "Toby"}, {id: "archie", label: "Archie"}];
     renderList();
-    document.getElementById("meta").innerHTML = `<a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · demo layout`;
+    document.getElementById("meta").innerHTML = `<a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/bumble">Bumble</a> · demo layout`;
     return;
   }
   const res = await fetch("/api/li/people");
@@ -1074,7 +1077,7 @@ async function loadPeople() {
   phones = data.phones || [];
   renderList();
   document.getElementById("meta").innerHTML =
-    `<a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · ${people.length} stored`;
+    `<a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/bumble">Bumble</a> · ${people.length} stored`;
 }
 
 async function openThread(name, phone, opts) {
@@ -1235,6 +1238,7 @@ async function postJob(url) {
   pollQueue();
 }
 document.getElementById("scan").addEventListener("click", () => postJob("/api/li/scan"));
+document.getElementById("feed").addEventListener("click", () => postJob("/api/li/feed"));
 document.getElementById("refresh-chat").addEventListener("click", async () => {
   if (!current) return;
   if (DEMO) {
@@ -1398,7 +1402,7 @@ async function pollQueue() {
   const res = await fetch("/api/queue");
   const data = await res.json();
   const jobs = (data.jobs || []).filter(j =>
-    ["linkedin_scan", "linkedin_seed", "linkedin_backfill", "linkedin_reply", "linkedin_session", "linkedin_archive", "linkedin_refresh"].includes(j.kind) &&
+    ["linkedin_scan", "linkedin_feed", "linkedin_seed", "linkedin_backfill", "linkedin_reply", "linkedin_session", "linkedin_archive", "linkedin_refresh", "linkedin_profile"].includes(j.kind) &&
     ["queued", "running"].includes(j.status)
   );
   const refreshing = jobs.some(j => j.kind === "linkedin_refresh");

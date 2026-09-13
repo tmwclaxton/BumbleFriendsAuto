@@ -125,16 +125,67 @@ def bring_app_foreground(device: u2.Device, package: str) -> None:
     wait_idle(device, 1.2)
 
 
+def _serial_of(device: u2.Device) -> str:
+    serial = getattr(device, "serial", None)
+    return serial if isinstance(serial, str) else ""
+
+
+def _u2_dump(device: u2.Device, *, compressed: bool) -> str:
+    try:
+        xml = device.dump_hierarchy(compressed=compressed)
+    except TypeError:
+        xml = device.dump_hierarchy()
+    return xml or ""
+
+
+def _adb_compressed_dump(device: u2.Device) -> str:
+    """Low-memory fallback: `uiautomator dump --compressed` then pull the file."""
+    serial = _serial_of(device)
+    remote = "/data/local/tmp/ui_dump.xml"
+    pull_to = Path("/tmp/ui_dump.xml")
+    cmd_prefix = ["adb"]
+    if serial:
+        cmd_prefix.extend(["-s", serial])
+    dump_cmd = cmd_prefix + ["shell", "uiautomator", "dump", "--compressed", remote]
+    subprocess.check_output(dump_cmd, stderr=subprocess.STDOUT, timeout=20)
+    try:
+        raw = subprocess.check_output(
+            cmd_prefix + ["exec-out", "cat", remote],
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        text = raw.decode("utf-8", errors="replace")
+        if "<hierarchy" in text:
+            return text
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pass
+    pull_to.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.check_output(cmd_prefix + ["pull", remote, str(pull_to)], timeout=15)
+    return pull_to.read_text(encoding="utf-8", errors="replace")
+
+
 def dump_hierarchy(device: u2.Device) -> str:
-    """Return the current UI hierarchy as XML. Retry briefly on ADB blips."""
+    """Return the current UI hierarchy as XML.
+
+    Galaxy S7 (and similar) OOM-kills uncompressed `uiautomator dump`.
+    Try compressed uiautomator2 first, then an adb --compressed pull.
+    """
     last: Exception | None = None
-    for attempt in range(4):
+    strategies = (
+        lambda: _u2_dump(device, compressed=True),
+        lambda: _adb_compressed_dump(device),
+        lambda: _u2_dump(device, compressed=False),
+    )
+    for attempt, strategy in enumerate(strategies):
         try:
-            return device.dump_hierarchy()
+            xml = strategy()
+            if xml and "<hierarchy" in xml:
+                return xml
+            last = RuntimeError("empty hierarchy dump")
         except Exception as exc:
             last = exc
             log.warning("hierarchy dump failed (%s); retry %d", exc, attempt + 1)
-            time.sleep(0.6 + attempt * 0.4)
+            time.sleep(0.5 + attempt * 0.35)
     if last:
         raise last
     return ""

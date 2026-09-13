@@ -945,7 +945,7 @@
     <div class="mark" aria-hidden="true">B</div>
     <div>
       <h1>Bumble inbox</h1>
-      <p id="meta"><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · Loading…</p>
+      <p id="meta"><a href="/">LeadsAuto</a> · <a href="/jobs">Jobs</a> · <a href="/hinge">Hinge</a> · Loading…</p>
     </div>
   </div>
   <div class="top-tools">
@@ -2339,7 +2339,8 @@ function jobLabel(job) {
   if (job.kind === "message_new_friends") return who + "Send opener to new friends";
   if (job.kind === "grab_photos") return who + "Grab photos";
   if (job.kind === "refresh_new_friends") return who + "Refresh New friends strip";
-  if (job.kind === "linkedin_scan") return who + "LinkedIn scan";
+  if (job.kind === "linkedin_scan") return who + "LinkedIn reply check";
+  if (job.kind === "linkedin_feed") return who + "LinkedIn feed react";
   if (job.kind === "linkedin_seed" || job.kind === "linkedin_backfill") return who + "LinkedIn older chats";
   if (job.kind === "swipe") return who + "Swipe";
   if (job.kind === "unmatch") return who + "Unmatch " + job.name;

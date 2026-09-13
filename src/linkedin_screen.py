@@ -68,6 +68,15 @@ _SKIP_NAMES = {
 
 
 @dataclass(frozen=True)
+class LiFolderChip:
+    name: str
+    checked: bool
+    x: int
+    y: int
+    bounds: str
+
+
+@dataclass(frozen=True)
 class LiListHit:
     name: str
     preview: str
@@ -132,6 +141,19 @@ def looks_like_in_app_web(xml: str) -> bool:
 
 def looks_like_blocker(xml: str) -> bool:
     return looks_like_share_sheet(xml) or looks_like_in_app_web(xml)
+
+
+def looks_like_security_wall(xml: str) -> bool:
+    """Checkpoint, rate-limit, or login challenge — stop reacting."""
+    blob = (xml or "").lower()
+    return bool(
+        re.search(
+            r"checkpoint|unusual activity|try again later|temporarily limited|"
+            r"we restricted|action blocked|too many attempts|verify it.?s you|"
+            r"confirm it.?s you|suspicious activity|let.?s confirm",
+            blob,
+        )
+    )
 
 
 def hierarchy_is_linkedin(xml: str) -> bool:
@@ -257,11 +279,61 @@ def parse_messaging_list(xml: str) -> list[LiListHit]:
     return []
 
 
+_CONVERSATION_ROW_IDS = {
+    "messaging_conversation_list_item_container",
+    "messaging_conversation_list_item",
+    "conversation_list_item_container",
+    "inbox_conversation_item",
+}
+
+
+def parse_inbox_folders(xml: str) -> list[LiFolderChip]:
+    """Focused / Other folder chips — not the swipe-to-Other action on a row."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return []
+    chips: list[LiFolderChip] = []
+    seen: set[str] = set()
+    for node in root.iter():
+        if _rid(node) != "messaging_folder_chip":
+            continue
+        text = (node.attrib.get("text") or node.attrib.get("content-desc") or "").strip()
+        if not text or text.casefold() in {"jobs", "unread", "drafts", "inmail", "archived"}:
+            continue
+        center = _bounds_center(node.attrib.get("bounds") or "")
+        if center is None:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        chips.append(
+            LiFolderChip(
+                name=text,
+                checked=(node.attrib.get("checked") or "").lower() == "true",
+                x=center[0],
+                y=center[1],
+                bounds=node.attrib.get("bounds") or "",
+            )
+        )
+    chips.sort(key=lambda c: c.x)
+    return chips
+
+
+def find_inbox_folder(xml: str, label: str) -> LiFolderChip | None:
+    want = (label or "").strip().casefold()
+    for chip in parse_inbox_folders(xml):
+        if chip.name.casefold() == want:
+            return chip
+    return None
+
+
 def _parse_conversation_rows(root: ET.Element) -> list[LiListHit]:
     hits: list[LiListHit] = []
     seen: set[str] = set()
     for node in root.iter():
-        if _rid(node) != "messaging_conversation_list_item_container":
+        if _rid(node) not in _CONVERSATION_ROW_IDS:
             continue
         name = ""
         preview = ""
@@ -576,14 +648,22 @@ def inmail_kind(*texts: str | None) -> str:
     return kinds[0] if kinds else ""
 
 
-def should_open_row(hit: LiListHit, stored_preview: str | None) -> bool:
+def should_open_row(
+    hit: LiListHit,
+    stored_preview: str | None,
+    stored_last_text: str | None = None,
+) -> bool:
     if looks_like_inmail_promo(hit.preview):
         return False
     if hit.unread:
         return True
-    stored = (stored_preview or "").strip()
-    if stored and hit.preview and hit.preview.strip() != stored:
-        return True
+    incoming = (hit.preview or "").strip()
+    if not incoming:
+        return False
+    for stored in (stored_preview, stored_last_text):
+        old = (stored or "").strip()
+        if old and incoming != old:
+            return True
     return False
 
 

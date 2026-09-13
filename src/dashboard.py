@@ -525,6 +525,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path in {"/linkedin", "/linkedin.html"}:
             self._html(Path(__file__).with_name("linkedin.html"))
             return
+        if parsed.path in {"/hinge", "/hinge.html"}:
+            self._html(Path(__file__).with_name("hinge.html"))
+            return
+        if parsed.path in {"/jobs", "/jobs.html"}:
+            self._html(Path(__file__).with_name("jobs.html"))
+            return
         if parsed.path.startswith("/static/products/"):
             name = Path(parsed.path).name
             ctype = _PRODUCT_FILES.get(name)

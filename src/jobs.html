@@ -3,280 +3,178 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Jobs · LeadsAuto</title>
+<title>Today · Phone jobs</title>
 <style>
-  :root {
-    --bg: #0e0d0b;
-    --text: #f6f1e4;
-    --muted: #a89c86;
-    --line: #322c22;
-    --you: #f0c94a;
-    --you-deep: #c89a14;
-    --li: #70b5ff;
-    --li-deep: #0a66c2;
-    --ok: #5ed4a8;
-    --need: #ff8d6b;
-    --shadow: 0 22px 48px #05030266;
-  }
-  * { box-sizing: border-box; }
-  html, body { min-height: 100%; margin: 0; }
-  body {
-    font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
-    color: var(--text);
-    background:
-      radial-gradient(900px 420px at 12% -16%, #f0c94a26, transparent 55%),
-      radial-gradient(800px 400px at 92% 0%, #0a66c233, transparent 50%),
-      var(--bg);
-    padding: 28px 20px 48px;
-  }
-  .wrap { width: min(980px, 100%); margin: 0 auto; }
-  .top {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 22px;
-  }
-  .brand { display: flex; align-items: center; gap: 12px; }
-  .mark {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
-    display: grid;
-    place-items: center;
-    background: linear-gradient(180deg, #f6d56a, var(--you-deep));
-    color: #1a1508;
-    font: 800 14px/1 "Segoe UI", sans-serif;
-  }
-  h1 { margin: 0; font-size: 24px; letter-spacing: -0.02em; }
-  .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-  .nav { display: flex; gap: 10px; flex-wrap: wrap; }
-  .nav a {
-    color: var(--muted);
-    text-decoration: none;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    padding: 6px 12px;
-    font-size: 13px;
-  }
-  .nav a:hover { color: var(--text); border-color: #4a4030; }
-  .legend {
-    color: var(--muted);
-    font-size: 13px;
-    margin: 0 0 18px;
-    max-width: 640px;
-  }
-  .phones {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-  }
-  .phone {
-    border: 1px solid var(--line);
-    border-radius: 18px;
-    background: #17140fcc;
-    box-shadow: var(--shadow);
-    min-height: 280px;
-    overflow: hidden;
-  }
-  .phone-head {
-    padding: 16px 18px 14px;
-    border-bottom: 1px solid var(--line);
-  }
-  .phone-head h2 { margin: 0; font-size: 18px; }
-  .phone-head .dev { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
-  .hold {
-    margin-top: 10px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    border-radius: 999px;
-    padding: 3px 9px;
-    font-size: 11px;
-    font-weight: 650;
-    border: 1px solid var(--line);
-    color: var(--muted);
-  }
-  .pill.on { color: var(--ok); border-color: #2a5a48; background: #14362c; }
-  .pill.off { color: #c4b8a4; }
-  .pill.bumble { color: #1a1508; background: var(--you); border-color: transparent; }
-  .pill.linkedin { color: #fff; background: var(--li-deep); border-color: transparent; }
-  .pill.wait { color: #ffc4a8; background: #3a2218; border-color: #6a3a28; }
-  .lanes { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--line); }
-  .lane { padding: 12px 14px 14px; }
-  .lane + .lane { border-left: 1px solid var(--line); }
-  .lane h3 { margin: 0 0 6px; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
-  .lane.bumble h3 { color: var(--you); }
-  .lane.linkedin h3 { color: var(--li); }
-  .lane p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
-  .list { padding: 8px 10px 14px; }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 8px;
-    border-radius: 10px;
-  }
-  .row.run { background: #221c12; }
-  .row .who { flex: 1; min-width: 0; }
-  .row .title { font-size: 13px; }
-  .row .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
-  .dot {
-    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
-    background: #5a5040;
-  }
-  .dot.bumble { background: var(--you); }
-  .dot.linkedin { background: var(--li); }
-  .dot.run { box-shadow: 0 0 0 4px #f0c94a33; }
-  button {
-    font: inherit;
-    font-size: 11px;
-    border-radius: 8px;
-    border: 1px solid var(--line);
-    background: #221c12;
-    color: var(--text);
-    padding: 4px 8px;
-    cursor: pointer;
-  }
-  button:hover { border-color: #5a5040; }
-  .empty { color: var(--muted); font-size: 13px; padding: 12px 16px 16px; }
-  .recent {
-    border-top: 1px solid var(--line);
-    padding: 10px 16px 14px;
-  }
-  .recent h3 { margin: 0 0 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-  .recent .row { padding: 4px 0; opacity: .75; }
-  @media (max-width: 720px) {
-    .phones, .lanes { grid-template-columns: 1fr; }
-    .lane + .lane { border-left: 0; border-top: 1px solid var(--line); }
-    .top { flex-direction: column; }
-  }
+:root{
+  --bg:#0e0d0b;--panel:#17140f;--text:#f6f1e4;--muted:#a89c86;--line:#393126;
+  --toby:#f0c94a;--archie:#70b5ff;--ok:#5ed4a8;--bad:#ff8d6b;
+  --bumble:#f0c94a;--bumble-bg:#322811;--bumble-ink:#ffe9a0;
+  --linkedin:#4da3ff;--linkedin-bg:#14243a;--linkedin-ink:#cfe6ff;
+  --hinge:#ff8aa0;--hinge-bg:#32151c;--hinge-ink:#ffd0d8;
+  --instagram:#e1306c;--instagram-bg:#32141f;--instagram-ink:#ffc3d6;
+  --whatsapp:#25d366;--whatsapp-bg:#12301c;--whatsapp-ink:#b7f5cd;
+  --other:#a89c86;--other-bg:#221e18;--other-ink:#e6dcc8;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;max-width:100%;overflow:hidden}
+body{background:radial-gradient(800px 400px at 10% -10%,#f0c94a22,transparent 55%),var(--bg);color:var(--text);font:13px/1.25 "Avenir Next","Segoe UI",sans-serif}
+.page{height:100dvh;width:min(1180px,100%);margin:auto;padding:8px 10px 8px;display:grid;grid-template-rows:auto auto minmax(0,1fr);gap:8px}
+.top{display:flex;justify-content:space-between;gap:10px;align-items:center}
+.brand{display:flex;gap:8px;align-items:center}.mark{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;background:var(--toby);color:#181306;font-weight:800;font-size:12px}
+h1{font-size:18px;margin:0}.sub,.legend{color:var(--muted);margin:2px 0 0;font-size:11px}
+.nav{display:flex;flex-wrap:wrap;gap:6px}.nav a{color:var(--muted);text-decoration:none;border:1px solid var(--line);padding:3px 8px;border-radius:99px;font-size:12px}
+.calendar,.queue{border:1px solid var(--line);border-radius:10px;background:#17140fd9;overflow:hidden;min-width:0}
+.queue{min-height:0}
+.calendar-head,.queue-head{padding:6px 10px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;align-items:center}
+.calendar-head h2,.queue-head h2{font-size:13px;margin:0}
+.svc-legend{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.svc-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px 1px 3px;border-radius:99px;font-size:10px;font-weight:650}
+.svc-chip.bumble{background:var(--bumble-bg);color:var(--bumble-ink);border:1px solid var(--bumble)}
+.svc-chip.linkedin{background:var(--linkedin-bg);color:var(--linkedin-ink);border:1px solid var(--linkedin)}
+.svc-chip.hinge{background:var(--hinge-bg);color:var(--hinge-ink);border:1px solid var(--hinge)}
+.svc-chip.instagram{background:var(--instagram-bg);color:var(--instagram-ink);border:1px solid var(--instagram)}
+.svc-chip.whatsapp{background:var(--whatsapp-bg);color:var(--whatsapp-ink);border:1px solid var(--whatsapp)}
+.calendar{min-height:0;display:flex;flex-direction:column}
+.grid-head,.hour{display:grid;grid-template-columns:42px minmax(0,1fr) minmax(0,1fr)}
+.grid-head{position:sticky;top:0;z-index:3;background:#211d16;border-bottom:1px solid var(--line);flex:0 0 auto}
+.grid-head div{padding:4px 8px;font-weight:700;font-size:12px}
+.grid-head div:nth-child(2){color:var(--toby)}.grid-head div:nth-child(3){color:var(--archie)}
+#hours{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.hour{flex:1 1 0;min-height:0;border-bottom:1px solid #2a241c;align-items:stretch}
+.hour:last-child{border:0}
+.time{color:var(--muted);padding:2px 4px;text-align:right;font-variant-numeric:tabular-nums;font-size:10px;line-height:1.1}
+.lane{min-width:0;border-left:1px solid var(--line);padding:1px 3px;overflow:hidden;display:flex;flex-wrap:wrap;gap:2px;align-content:flex-start}
+.event{position:relative;min-width:0;margin:0;padding:2px 5px 2px 4px;border-radius:5px;border-left:3px solid var(--muted);background:#2b261e;overflow:hidden;max-height:100%;flex:1 1 88px}
+.event.svc-bumble{background:var(--bumble-bg);border-color:var(--bumble);color:var(--bumble-ink)}
+.event.svc-linkedin{background:var(--linkedin-bg);border-color:var(--linkedin);color:var(--linkedin-ink)}
+.event.svc-hinge{background:var(--hinge-bg);border-color:var(--hinge);color:var(--hinge-ink)}
+.event.svc-instagram{background:var(--instagram-bg);border-color:var(--instagram);color:var(--instagram-ink)}
+.event.svc-whatsapp{background:var(--whatsapp-bg);border-color:var(--whatsapp);color:var(--whatsapp-ink)}
+.event.svc-other{background:var(--other-bg);border-color:var(--other);color:var(--other-ink)}
+.event.running{box-shadow:inset 0 0 0 1px var(--ok)}
+.event.error,.event.cancelled{opacity:.72;border-color:var(--bad)}
+.event .title{font-size:10px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:4px}
+.event .title span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.event .meta{font-size:9px;color:inherit;opacity:.78;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.svc-logo{width:12px;height:12px;flex:0 0 12px;display:block;border-radius:3px}
+.job .svc-logo{width:16px;height:16px;flex:0 0 16px;border-radius:4px}
+.planned{opacity:.92}
+.phones{display:grid;grid-template-columns:1fr 1fr}
+.phone{min-width:0;padding:6px 8px}.phone+ .phone{border-left:1px solid var(--line)}
+.phone h3{margin:0;font-size:12px}.status{font-size:10px;color:var(--muted);margin:1px 0 4px}
+.job{display:flex;gap:6px;align-items:center;padding:4px 6px;border-top:1px solid #29231b;border-left:3px solid var(--line);border-radius:0 6px 6px 0;margin-top:3px}
+.job.svc-bumble{background:var(--bumble-bg);border-left-color:var(--bumble);color:var(--bumble-ink)}
+.job.svc-linkedin{background:var(--linkedin-bg);border-left-color:var(--linkedin);color:var(--linkedin-ink)}
+.job.svc-hinge{background:var(--hinge-bg);border-left-color:var(--hinge);color:var(--hinge-ink)}
+.job.svc-instagram{background:var(--instagram-bg);border-left-color:var(--instagram);color:var(--instagram-ink)}
+.job.svc-whatsapp{background:var(--whatsapp-bg);border-left-color:var(--whatsapp);color:var(--whatsapp-ink)}
+.job.svc-other{background:var(--other-bg);border-left-color:var(--other);color:var(--other-ink)}
+.job-info{min-width:0;flex:1}.job-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:650}
+.job-meta{color:inherit;opacity:.78;font-size:10px}.job button{border:1px solid var(--line);background:#241f18;color:var(--text);border-radius:6px;padding:2px 6px;cursor:pointer;font-size:11px}
+.empty{color:var(--muted);font-size:11px;margin:0}
+@media(max-width:700px){
+  html,body{height:auto;overflow:auto}
+  .page{height:auto;min-height:100dvh;grid-template-rows:auto auto auto;padding:8px}
+  #hours{overflow:visible}
+  .hour{flex:none;min-height:28px}
+  .top{flex-direction:column;align-items:flex-start}
+  .grid-head,.hour{grid-template-columns:36px minmax(0,1fr) minmax(0,1fr)}
+  .phones{grid-template-columns:1fr}
+  .phone+ .phone{border-left:0;border-top:1px solid var(--line)}
+}
 </style>
 </head>
-<body>
-  <div class="wrap">
-    <div class="top">
-      <div class="brand">
-        <div class="mark" aria-hidden="true">LA</div>
-        <div>
-          <h1>Phone jobs</h1>
-          <p class="sub">One job at a time per phone. Cron will not start the other channel while this one is occupying it.</p>
-        </div>
-      </div>
-      <div class="nav">
-        <a href="/">Home</a>
-        <a href="/bumble">Bumble</a>
-        <a href="/linkedin">LinkedIn</a>
-      </div>
-    </div>
-    <p class="legend" id="legend">Loading queues…</p>
-    <div class="phones" id="phones"></div>
-  </div>
+<body><div class="page">
+<header class="top"><div class="brand"><div class="mark">LA</div><div><h1>Today</h1><p class="sub" id="date">Europe/London · 00:00–24:00</p></div></div><nav class="nav"><a href="/">Home</a><a href="/bumble">Bumble</a><a href="/hinge">Hinge</a><a href="/linkedin">LinkedIn</a></nav></header>
+<section class="queue"><div class="queue-head"><h2>Queue controls</h2><span class="legend">Running and waiting work</span></div><div class="phones" id="phones"></div></section>
+<section class="calendar"><div class="calendar-head"><h2>Phone plan</h2><div class="svc-legend" id="legend"></div></div><div class="grid-head"><div></div><div>Toby · Pixel</div><div>Archie · Galaxy</div></div><div id="hours"></div></section>
+</div>
 <script>
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, c => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-  }[c]));
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const DEFAULT_DUR=600;
+const SERVICES={
+  bumble:{name:"Bumble",logo:'<svg class="svc-logo" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="4" fill="#f5c542"/><text x="8" y="12" text-anchor="middle" font-size="9" font-weight="800" font-family="Segoe UI,Avenir Next,sans-serif" fill="#1a1508">B</text></svg>'},
+  linkedin:{name:"LinkedIn",logo:'<svg class="svc-logo" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="3" fill="#0a66c2"/><text x="8" y="11.5" text-anchor="middle" font-size="7.5" font-weight="800" font-family="Segoe UI,Avenir Next,sans-serif" fill="#fff">in</text></svg>'},
+  hinge:{name:"Hinge",logo:'<svg class="svc-logo" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="4" fill="#d4537e"/><text x="8" y="12" text-anchor="middle" font-size="9" font-weight="800" font-family="Segoe UI,Avenir Next,sans-serif" fill="#fff">H</text></svg>'},
+  instagram:{name:"Instagram",logo:'<svg class="svc-logo" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="4" fill="#d62976"/><rect x="3.2" y="3.2" width="9.6" height="9.6" rx="3" fill="none" stroke="#fff" stroke-width="1.2"/><circle cx="8" cy="8" r="2.3" fill="none" stroke="#fff" stroke-width="1.2"/><circle cx="11.1" cy="4.9" r=".8" fill="#fff"/></svg>'},
+  whatsapp:{name:"WhatsApp",logo:'<svg class="svc-logo" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="4" fill="#25d366"/><path d="M4.2 11.4l.5-1.8A4 4 0 118 12.1l-1.8.5z" fill="none" stroke="#fff" stroke-width="1.2"/><path d="M6.2 6.3c.2-.4.3-.4.6-.4h.2c.1 0 .2 0 .3.3l.3 1c.1.2 0 .3-.1.4l-.3.3c-.1.1 0 .3.2.5.3.4.7.7 1.1.9.2.1.4.1.5-.1l.4-.4c.1-.1.3-.1.4 0l.9.5c.2.1.3.2.2.4-.1.6-.8 1.2-1.6 1.2-.9 0-2.3-.6-3.2-1.8-.7-1-1-1.9-.8-2.5.1-.3.3-.4.4-.5z" fill="#fff"/></svg>'},
+  other:{name:"Other",logo:'<svg class="svc-logo" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="4" fill="#6d6456"/><text x="8" y="12" text-anchor="middle" font-size="8" font-weight="800" font-family="Segoe UI,Avenir Next,sans-serif" fill="#f6f1e4">LA</text></svg>'}
+};
+function serviceOf(item){
+  const k=String(item.kind||""), ch=String(item.channel||"");
+  if(k.startsWith("instagram")||ch==="instagram")return "instagram";
+  if(k.startsWith("whatsapp")||ch==="whatsapp")return "whatsapp";
+  if(k.startsWith("linkedin")||ch==="linkedin")return "linkedin";
+  if(k.startsWith("hinge")||ch==="hinge")return "hinge";
+  if(k.startsWith("other")||ch==="other")return "other";
+  return "bumble";
 }
-function waitLine(phone) {
-  const bits = [];
-  if (phone.bumble_cron_wait) bits.push("Bumble cron waiting — " + phone.bumble_cron_wait);
-  if (phone.linkedin_cron_wait) bits.push("LinkedIn cron waiting — " + phone.linkedin_cron_wait);
-  if (!bits.length) {
-    return phone.running
-      ? "Queued work on this phone waits until the current job finishes."
-      : "Idle. Either channel can take the next job.";
+function serviceMark(id){const svc=SERVICES[id]||SERVICES.other;return `${svc.logo}<span>${esc(svc.name)}</span>`}
+const londonTime=value=>new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/London",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(new Date(value));
+const duration=s=>{s=Number(s);if(!Number.isFinite(s)||s<=0)s=DEFAULT_DUR;if(s<60)return `${Math.round(s)}s`;return `${Math.round(s/60)}m`};
+const toMs=value=>{const t=Date.parse(value);return Number.isFinite(t)?t:0};
+function itemDuration(item){
+  const raw=Number(item.expected_duration_seconds||item.average_duration_seconds||item.duration_seconds);
+  if(Number.isFinite(raw)&&raw>=60)return raw;
+  return DEFAULT_DUR;
+}
+function spaceItems(items){
+  const by={};
+  for(const item of items)(by[item.phone_id||"toby"]||=[]).push({...item});
+  const out=[];
+  for(const rows of Object.values(by)){
+    rows.sort((a,b)=>(toMs(a.scheduled_at||a.projected_start_at)-toMs(b.scheduled_at||b.projected_start_at))||String(a.kind||"").localeCompare(String(b.kind||"")));
+    let cursor=0;
+    for(const row of rows){
+      const dur=itemDuration(row)*1000;
+      let start=toMs(row.scheduled_at||row.projected_start_at||row.started_at);
+      if(cursor&&start<cursor)start=cursor;
+      const end=start+dur;
+      row.scheduled_at=new Date(start).toISOString();
+      row.projected_start_at=new Date(start).toISOString();
+      row.projected_end_at=new Date(end).toISOString();
+      row.expected_duration_seconds=dur/1000;
+      cursor=end+60*1000;
+      out.push(row);
+    }
   }
-  return bits.join(" ");
+  return out;
 }
-function rowHtml(job, runningBehind) {
-  const ch = job.channel === "linkedin" ? "linkedin" : (job.channel === "bumble" ? "bumble" : "");
-  const run = job.status === "running";
-  const wait = job.status === "queued" && runningBehind
-    ? "Waiting for " + runningBehind
-    : (job.message || job.status || "");
-  const stop = job.status === "running" || job.status === "queued"
-    ? `<button type="button" data-cancel="${job.id}">${job.status === "running" ? "Stop" : "Cancel"}</button>`
-    : "";
-  return `<div class="row ${run ? "run" : ""}">
-    <span class="dot ${ch}${run ? " run" : ""}"></span>
-    <div class="who">
-      <div class="title">${esc(job.title || job.kind)}</div>
-      <div class="meta">${esc(wait)}</div>
-    </div>
-    ${stop}
-  </div>`;
+function eventHtml(item,planned=false){
+  const status=item.status||"planned", start=item.started_at||item.projected_start_at||item.scheduled_at;
+  let end=item.finished_at||item.projected_end_at;
+  const startMs=toMs(start), endMs=toMs(end);
+  if(startMs&&(!endMs||endMs<=startMs))end=new Date(startMs+itemDuration(item)*1000).toISOString();
+  const timing=start?`${londonTime(start)}${end?"–"+londonTime(end):""}`:"";
+  const svc=serviceOf(item);
+  const label=item.title||item.kind||SERVICES[svc].name;
+  return `<article class="event svc-${svc} ${esc(status)} ${planned?"planned":""}" title="${esc(SERVICES[svc].name)} · ${esc(label)}"><div class="title">${SERVICES[svc].logo}<span>${esc(label)}</span></div><div class="meta">${esc(timing)} · ${duration(item.expected_duration_seconds)} · ${esc(status)}</div></article>`;
 }
-function phoneHtml(p) {
-  const hold = p.holding === "linkedin" ? "linkedin" : (p.holding === "bumble" ? "bumble" : "");
-  const holdLabel = p.holding === "linkedin" ? "Holding LinkedIn" : (p.holding === "bumble" ? "Holding Bumble" : "Idle");
-  const online = p.online ? "on" : "off";
-  const runningTitle = p.running ? p.running.title : "";
-  const bumbleJobs = [...(p.running && p.running.channel === "bumble" ? [p.running] : []), ...(p.queued || []).filter(j => j.channel === "bumble")];
-  const liJobs = [...(p.running && p.running.channel === "linkedin" ? [p.running] : []), ...(p.queued || []).filter(j => j.channel === "linkedin")];
-  const allActive = [...(p.running ? [p.running] : []), ...(p.queued || [])];
-  return `<section class="phone">
-    <div class="phone-head">
-      <h2>${esc(p.label || p.id)}</h2>
-      <p class="dev">${esc(p.device || "")} · ${p.online ? "online" : "offline"}</p>
-      <div class="hold">
-        <span class="pill ${online}">${p.online ? "Online" : "Offline"}</span>
-        <span class="pill ${hold || "off"}">${esc(holdLabel)}</span>
-        <span class="pill ${p.bumble_cron_wait ? "wait" : "on"}">${p.bumble_cron_wait ? "Bumble cron waits" : "Bumble cron free"}</span>
-        <span class="pill ${p.linkedin_cron_wait ? "wait" : "on"}">${p.linkedin_cron_wait ? "LinkedIn cron waits" : "LinkedIn cron free"}</span>
-      </div>
-    </div>
-    <div class="lanes">
-      <div class="lane bumble">
-        <h3>Bumble</h3>
-        <p>${p.holding === "linkedin"
-          ? "Will not start a new Bumble cron while LinkedIn has the phone."
-          : (bumbleJobs.length ? "In the phone queue." : "Nothing from Bumble right now.")}</p>
-      </div>
-      <div class="lane linkedin">
-        <h3>LinkedIn</h3>
-        <p>${p.holding === "bumble"
-          ? "Will not start a new LinkedIn cron while Bumble has the phone."
-          : (liJobs.length ? "In the phone queue." : "Nothing from LinkedIn right now.")}</p>
-      </div>
-    </div>
-    <div class="list">
-      ${allActive.length ? allActive.map(j => rowHtml(j, runningTitle && j.status === "queued" ? runningTitle : "")).join("") : `<p class="empty">Queue empty on this phone.</p>`}
-    </div>
-    ${(p.recent || []).length ? `<div class="recent"><h3>Recently finished</h3>${p.recent.slice().reverse().map(j => rowHtml(j)).join("")}</div>` : ""}
-  </section>`;
+function renderCalendar(data){
+  const schedule=spaceItems((data.schedule&&data.schedule.items)||[]), jobs=data.jobs||[];
+  const buckets={};
+  for(let h=0;h<24;h++)for(const p of ["toby","archie"])buckets[`${h}-${p}`]=[];
+  for(const item of schedule){const h=Number(londonTime(item.scheduled_at).split(":")[0]);(buckets[`${h}-${item.phone_id}`]||=[]).push(eventHtml(item,true))}
+  for(const item of jobs){const at=item.started_at||item.projected_start_at||item.queued_at;if(!at)continue;const h=Number(londonTime(at).split(":")[0]);if(buckets[`${h}-${item.phone_id}`])buckets[`${h}-${item.phone_id}`].push(eventHtml(item))}
+  document.getElementById("hours").innerHTML=Array.from({length:24},(_,h)=>`<div class="hour"><div class="time">${String(h).padStart(2,"0")}</div><div class="lane">${buckets[`${h}-toby`].join("")}</div><div class="lane">${buckets[`${h}-archie`].join("")}</div></div>`).join("");
+  if(data.schedule)document.getElementById("date").textContent=`${data.schedule.date} · Europe/London · 00:00–24:00`;
 }
-function render(data) {
-  const phones = data.phones || [];
-  const active = phones.reduce((n, p) => n + (p.active || 0), 0);
-  const waiting = phones.filter(p => p.bumble_cron_wait || p.linkedin_cron_wait).length;
-  document.getElementById("legend").textContent = active
-    ? (active + " job" + (active === 1 ? "" : "s") + " live · " + (waiting ? waiting + " phone(s) making the other channel wait" : "neither channel is blocked"))
-    : "Both phones are idle. Scheduled Bumble and LinkedIn jobs can start when they are due.";
-  document.getElementById("phones").innerHTML = phones.map(phoneHtml).join("")
-    || `<p class="empty">No phones configured.</p>`;
+function queueJob(job){
+  const stop=["queued","running"].includes(job.status)?`<button data-cancel="${Number(job.id)}">${job.status==="running"?"Stop":"Cancel"}</button>`:"";
+  const timing=["completed","done","error","cancelled"].includes(job.status)&&job.duration_seconds!=null
+    ?`${duration(job.duration_seconds)} actual`
+    :job.projected_start_at?`${londonTime(job.projected_start_at)}–${londonTime(job.projected_end_at)}`:"timing unavailable";
+  const svc=serviceOf(job);
+  return `<div class="job svc-${svc}"><div aria-hidden="true">${SERVICES[svc].logo}</div><div class="job-info"><div class="job-title">${esc(SERVICES[svc].name)} · ${esc(job.title||job.kind)}</div><div class="job-meta">${esc(job.status)} · ${esc(timing)}</div></div>${stop}</div>`;
 }
-document.getElementById("phones").addEventListener("click", async e => {
-  const id = e.target.dataset && e.target.dataset.cancel;
-  if (!id) return;
-  e.target.disabled = true;
-  await fetch("/api/queue/cancel", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({id: Number(id)}),
-  });
-  poll();
-});
-async function poll() {
-  const res = await fetch("/api/queue");
-  render(await res.json());
+function render(data){
+  renderCalendar(data);const phones=data.phones||[];
+  const used=new Set(((data.schedule&&data.schedule.items)||[]).map(serviceOf));
+  used.add("bumble");used.add("linkedin");
+  document.getElementById("legend").innerHTML=[...used].filter(id=>SERVICES[id]).map(id=>`<span class="svc-chip ${id}">${SERVICES[id].logo}${esc(SERVICES[id].name)}</span>`).join("")+`<span class="legend">${(data.schedule?.items||[]).length} planned · ${(data.jobs||[]).length} recorded</span>`;
+  document.getElementById("phones").innerHTML=phones.map(p=>{const active=[...(p.running?[p.running]:[]),...(p.queued||[])];return `<div class="phone"><h3>${esc(p.label)} · ${esc(p.device)}</h3><div class="status">${p.online?"Online":"Offline"} · ${p.holding?"Holding "+esc(p.holding):"Idle"}</div>${active.map(queueJob).join("")||'<p class="empty">Queue empty.</p>'}</div>`}).join("");
 }
-poll();
-setInterval(poll, 3000);
-</script>
-</body>
-</html>
+async function poll(){const r=await fetch("/api/queue");if(r.ok)render(await r.json())}
+document.getElementById("phones").addEventListener("click",async e=>{const id=e.target.dataset?.cancel;if(!id)return;e.target.disabled=true;await fetch("/api/queue/cancel",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:Number(id)})});poll()});
+poll();setInterval(poll,5000);
+</script></body></html>

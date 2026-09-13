@@ -87,6 +87,11 @@ async def linkedin_page(_: Request) -> Response:
     return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
+async def hinge_page(_: Request) -> Response:
+    path = Path(__file__).with_name("hinge.html")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
 _PRODUCT_STATIC = Path(__file__).with_name("static") / "products"
 _PRODUCT_FILES = {
     "snitch.svg": "image/svg+xml",
@@ -329,7 +334,24 @@ async def api_li_scan(request: Request) -> JSONResponse:
             "jobs": jobs,
             "skipped": skipped,
             "job": jobs[0] if jobs else None,
-            "message": f"queued LinkedIn scan on {len(jobs)} phone(s)",
+            "message": f"queued LinkedIn reply check on {len(jobs)} phone(s)",
+        }
+    )
+
+
+async def api_li_feed(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    jobs, skipped = _enqueue_phone_jobs("linkedin_feed", data, channel="linkedin")
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": bool(jobs),
+            "jobs": jobs,
+            "skipped": skipped,
+            "job": jobs[0] if jobs else None,
+            "message": f"queued LinkedIn feed react on {len(jobs)} phone(s)",
         }
     )
 
@@ -1170,6 +1192,295 @@ async def api_li_refresh(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued LinkedIn refresh of {name}"})
 
 
+async def api_hinge_people(_: Request) -> JSONResponse:
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        from src.hinge_store import people_payload
+
+        from src.profile_filters import ETHNICITY_CHOICES
+        from src.hinge_swipe import _usage
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "people": people_payload(conn),
+                "ethnicity_choices": [{"id": cid, "label": label} for cid, label in ETHNICITY_CHOICES],
+                "swipe_usage": _usage(),
+            }
+        )
+    finally:
+        conn.close()
+
+
+async def api_hinge_thread(request: Request) -> JSONResponse:
+    qs = parse_qs(request.url.query)
+    name = (qs.get("name") or [""])[0].strip()
+    phone_id = (qs.get("phone") or ["toby"])[0].strip() or "toby"
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        from src.hinge_store import thread_payload
+        from src.phones import phone_scope
+
+        with phone_scope(phone_id):
+            payload = thread_payload(conn, name, phone_id)
+        return JSONResponse(payload)
+    finally:
+        conn.close()
+
+
+async def api_hinge_photo(request: Request) -> Response:
+    from pathlib import Path as _Path
+
+    from src.hinge_store import photos_dir
+
+    qs = parse_qs(request.url.query)
+    name = (qs.get("name") or [""])[0]
+    phone_id = (qs.get("phone") or ["toby"])[0] or "toby"
+    raw_path = (qs.get("path") or [""])[0]
+    from src.config import ROOT as _ROOT
+
+    root = photos_dir(phone_id).resolve()
+    hinge_root = (_ROOT / "data" / "hinge_photos").resolve()
+    if raw_path:
+        path = _Path(raw_path)
+        if not path.is_absolute():
+            path = root / path
+    else:
+        path = root / f"{name.lower().replace(' ', '-')}-face.jpg"
+    try:
+        path = path.resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            path.relative_to(hinge_root)
+    except (OSError, ValueError):
+        return Response(status_code=404)
+    if not path.is_file():
+        return Response(status_code=404)
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=3600"})
+
+
+async def api_hinge_scan(request: Request) -> JSONResponse:
+    from src.hinge_swipe import live_account_id
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    phone_id = live_account_id(data.get("phone_id"))
+    jobs, skipped = _enqueue_phone_jobs("hinge_scan", {**data, "phone_id": phone_id}, channel="hinge")
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": bool(jobs),
+            "jobs": jobs,
+            "skipped": skipped,
+            "job": jobs[0] if jobs else None,
+            "message": f"queued Hinge match refresh on {phone_id}",
+        }
+    )
+
+
+async def api_hinge_swipe(request: Request) -> JSONResponse:
+    from src.hinge_swipe import live_account_id
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        data = {}
+    phone_id = live_account_id(data.get("phone_id"))
+    jobs, skipped = _enqueue_phone_jobs("hinge_swipe", {**data, "phone_id": phone_id}, channel="hinge")
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": bool(jobs),
+            "jobs": jobs,
+            "skipped": skipped,
+            "job": jobs[0] if jobs else None,
+            "message": f"queued Hinge swipe on {phone_id}",
+        }
+    )
+
+
+async def api_hinge_swipe_prefs(request: Request) -> JSONResponse:
+    from src.hinge_swipe import load_prefs, prefs_payload, save_prefs
+
+    if request.method == "POST":
+        data = await _read_json(request)
+        if isinstance(data, JSONResponse):
+            return data
+        return JSONResponse(prefs_payload(save_prefs(data)))
+    return JSONResponse(prefs_payload(load_prefs()))
+
+
+async def api_hinge_refresh(request: Request) -> JSONResponse:
+    from src.hinge_swipe import live_account_id
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    phone_id = live_account_id(data.get("phone_id"))
+    job = enqueue("hinge_refresh", name, phone_id=phone_id)
+    return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued Hinge refresh of {name}"})
+
+
+async def api_hinge_reply(request: Request) -> JSONResponse:
+    from src.hinge_swipe import live_account_id
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    text = str(data.get("text") or "").strip()
+    if not name or not text:
+        return JSONResponse({"ok": False, "error": "name and text required"}, status_code=400)
+    phone_id = live_account_id(data.get("phone_id"))
+    job = enqueue(
+        "hinge_reply",
+        name,
+        text,
+        phone_id=phone_id,
+        force=bool(data.get("force")),
+    )
+    return JSONResponse({"ok": True, "queued": True, "job": job, "message": f"queued Hinge reply to {name}"})
+
+
+async def api_hinge_archive(request: Request) -> JSONResponse:
+    from src.hinge_store import set_archived
+    from src.hinge_swipe import live_account_id
+    from src.phones import phone_scope
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    phone_id = live_account_id(data.get("phone_id"))
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            ok = set_archived(conn, name, bool(data.get("archived")), phone_id=phone_id)
+    finally:
+        conn.close()
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return JSONResponse({"ok": True, "name": name, "archived": bool(data.get("archived")), "phone_id": phone_id})
+
+
+async def api_hinge_ethnicity(request: Request) -> JSONResponse:
+    from src.hinge_store import set_ethnicity
+    from src.hinge_swipe import live_account_id
+    from src.phones import phone_scope
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    phone_id = live_account_id(data.get("phone_id"))
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            ok = set_ethnicity(conn, name, data.get("ethnicity"), phone_id=phone_id)
+    finally:
+        conn.close()
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return JSONResponse({"ok": True, "name": name, "ethnicity": data.get("ethnicity") or "", "phone_id": phone_id})
+
+
+async def api_hinge_draft(request: Request) -> JSONResponse:
+    from src.hinge_store import set_draft
+    from src.hinge_swipe import live_account_id
+    from src.phones import phone_scope
+
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    text = str(data.get("text") or "")
+    if not name:
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    phone_id = live_account_id(data.get("phone_id"))
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            ok = set_draft(conn, name, text, phone_id=phone_id)
+    finally:
+        conn.close()
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return JSONResponse({"ok": True, "name": name, "phone_id": phone_id})
+
+
+async def api_hinge_draft_prompt(request: Request) -> JSONResponse:
+    from src.hinge_draft import preview_prompt, save_prompt
+    from src.phones import phone_scope
+
+    if request.method == "POST":
+        data = await _read_json(request)
+        if isinstance(data, JSONResponse):
+            return data
+    else:
+        qs = parse_qs(request.url.query)
+        data = {
+            "name": (qs.get("name") or [""])[0],
+            "phone_id": (qs.get("phone") or ["toby"])[0],
+            "text": (qs.get("text") or [""])[0],
+        }
+    if data.get("save"):
+        save_prompt(str(data.get("system") or ""), str(data.get("user") or ""))
+    name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or "toby").strip() or "toby"
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            return JSONResponse(
+                preview_prompt(conn, name, phone_id, composer_text=str(data.get("text") or ""), cfg=cfg)
+            )
+    finally:
+        conn.close()
+
+
+async def api_hinge_draft_generate(request: Request) -> JSONResponse:
+    data = await _read_json(request)
+    if isinstance(data, JSONResponse):
+        return data
+    name = str(data.get("name") or "").strip()
+    phone_id = str(data.get("phone_id") or "toby").strip() or "toby"
+    if not name:
+        return JSONResponse({"ok": False, "error": "open a Hinge chat first"}, status_code=400)
+    from src.hinge_store import incoming_turn_fingerprint, list_thread as list_hinge_thread, queue_draft, upsert_chat
+    from src.phones import phone_scope
+
+    cfg = load_config()
+    conn = db_connect(db_path_from_config(cfg))
+    try:
+        with phone_scope(phone_id):
+            pairs = [
+                (str(row["side"]), str(row["body"]))
+                for row in list_hinge_thread(conn, name, phone_id=phone_id)
+            ]
+            fingerprint = incoming_turn_fingerprint(pairs) or incoming_turn_fingerprint([("them", name)])
+            upsert_chat(conn, name, phone_id=phone_id)
+            if not queue_draft(conn, name, fingerprint, phone_id=phone_id, composer_text=str(data.get("text") or "")):
+                return JSONResponse({"ok": False, "error": "Hinge chat not found"}, status_code=404)
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True, "queued": True, "draft_status": "queued", "message": f"queued draft for {name}"})
+
+
 def build_app() -> Starlette:
     ensure_worker()
     from src.draft_worker import ensure_draft_worker
@@ -1185,6 +1496,8 @@ def build_app() -> Starlette:
         Route("/bumble.html", bumble_page),
         Route("/linkedin", linkedin_page),
         Route("/linkedin.html", linkedin_page),
+        Route("/hinge", hinge_page),
+        Route("/hinge.html", hinge_page),
         Route("/static/products/{name}", product_logo),
         Route("/swipe", swipe_page),
         Route("/swipe.html", swipe_page),
@@ -1195,6 +1508,7 @@ def build_app() -> Starlette:
         Route("/api/li/seed", api_li_seed, methods=["POST"]),
         Route("/api/li/backfill", api_li_backfill, methods=["POST"]),
         Route("/api/li/scan", api_li_scan, methods=["POST"]),
+        Route("/api/li/feed", api_li_feed, methods=["POST"]),
         Route("/api/li/session", api_li_session, methods=["POST"]),
         Route("/api/li/session/prefs", api_li_session_prefs, methods=["GET", "POST"]),
         Route("/api/li/reply", api_li_reply, methods=["POST"]),
@@ -1203,6 +1517,19 @@ def build_app() -> Starlette:
         Route("/api/li/spam/scan", api_li_spam_scan, methods=["POST"]),
         Route("/api/li/archive", api_li_archive, methods=["POST"]),
         Route("/api/li/refresh", api_li_refresh, methods=["POST"]),
+        Route("/api/hinge/people", api_hinge_people),
+        Route("/api/hinge/thread", api_hinge_thread),
+        Route("/api/hinge/photo", api_hinge_photo),
+        Route("/api/hinge/scan", api_hinge_scan, methods=["POST"]),
+        Route("/api/hinge/swipe", api_hinge_swipe, methods=["POST"]),
+        Route("/api/hinge/swipe/prefs", api_hinge_swipe_prefs, methods=["GET", "POST"]),
+        Route("/api/hinge/refresh", api_hinge_refresh, methods=["POST"]),
+        Route("/api/hinge/reply", api_hinge_reply, methods=["POST"]),
+        Route("/api/hinge/draft", api_hinge_draft, methods=["POST"]),
+        Route("/api/hinge/draft/prompt", api_hinge_draft_prompt, methods=["GET", "POST"]),
+        Route("/api/hinge/draft/generate", api_hinge_draft_generate, methods=["POST"]),
+        Route("/api/hinge/archive", api_hinge_archive, methods=["POST"]),
+        Route("/api/hinge/ethnicity", api_hinge_ethnicity, methods=["POST"]),
         Route("/api/instagram/prune", api_instagram_prune, methods=["POST"]),
         Route("/api/photo", api_photo),
         Route("/api/thread", api_thread),

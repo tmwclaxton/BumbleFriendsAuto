@@ -1,0 +1,21 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="co.hinge.app" class="android.widget.FrameLayout" bounds="[0,0][1080,2400]">
+    <node text="Your turn (2)" bounds="[40,180][400,250]"/>
+    <node clickable="true" bounds="[0,260][1080,420]">
+      <node text="Sara" bounds="[120,280][400,340]"/>
+      <node text="Start the chat" bounds="[120,350][500,400]"/>
+    </node>
+    <node clickable="true" bounds="[0,430][1080,590]">
+      <node text="Maya" bounds="[120,450][400,510]"/>
+      <node text="Reply? Weird menu item" bounds="[120,520][700,570]"/>
+    </node>
+    <node text="Their turn" bounds="[40,610][400,680]"/>
+    <node clickable="true" bounds="[0,690][1080,850]">
+      <node text="Priya" bounds="[120,710][400,770]"/>
+      <node text="Sunday walk sounds good" bounds="[120,780][700,830]"/>
+    </node>
+    <node content-desc="Discover" clickable="true" bounds="[40,2280][200,2380]"/>
+    <node content-desc="Matches" clickable="true" selected="true" bounds="[860,2280][1040,2380]"/>
+  </node>
+</hierarchy>

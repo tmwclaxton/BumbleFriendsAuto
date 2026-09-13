@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="co.hinge.app" class="android.widget.FrameLayout" bounds="[0,0][1440,2560]">
+    <node text="Matches" bounds="[324,324][600,444]"/>
+    <node text="Your turn (5)" bounds="[80,619][500,687]"/>
+    <node text="Tia" bounds="[200,839][400,907]"/>
+    <node text="Do it!!" bounds="[200,928][500,988]"/>
+    <node text="rosie" bounds="[200,1172][400,1240]"/>
+    <node text="Signals" bounds="[900,1181][1100,1232]"/>
+    <node text="you too x what work do you do" bounds="[200,1269][900,1329]"/>
+    <node text="elizabeth" bounds="[200,1505][500,1573]"/>
+    <node text="i just never update it lol" bounds="[200,1594][900,1654]"/>
+    <node text="Anastasia" bounds="[200,1878][500,1946]"/>
+    <node text="Soyeon" bounds="[200,2171][500,2239]"/>
+    <node text="Omg okay so no cliff diving for a date.." bounds="[200,2260][1000,2320]"/>
+    <node clickable="true" bounds="[0,2350][288,2560]">
+      <node text="Discover" bounds="[40,2380][240,2520]"/>
+    </node>
+    <node clickable="true" bounds="[864,2350][1152,2560]">
+      <node text="Matches, 5 new messages" bounds="[900,2380][1120,2520]"/>
+    </node>
+  </node>
+</hierarchy>

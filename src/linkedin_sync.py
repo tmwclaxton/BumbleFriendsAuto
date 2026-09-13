@@ -16,6 +16,7 @@ from src.linkedin_screen import (
     find_archive_action,
     find_conversation_hit,
     find_dismiss_point,
+    find_inbox_folder,
     find_inbox_search,
     find_more_options,
     find_home_tab,
@@ -28,6 +29,7 @@ from src.linkedin_screen import (
     looks_like_blocker,
     looks_like_inmail_promo,
     looks_like_feed,
+    looks_like_security_wall,
     looks_like_messaging,
     looks_like_profile,
     message_visible,
@@ -47,9 +49,11 @@ log = logging.getLogger(__name__)
 
 SEED_LIMIT = 9
 SCAN_OPEN_CAP = 4
+SCAN_LIST_SCROLLS = 2
 BACKFILL_OPEN_MIN = 5
 BACKFILL_OPEN_MAX = 10
 BACKFILL_SCROLLS = (8, 14)
+_INBOX_FOLDERS = ("Other", "Focused")
 
 
 def _unlock(serial: str | None):
@@ -170,9 +174,12 @@ def _tap_nav(device, xml: str, label: str, fallback_frac: float) -> None:
     wait_idle(device, 1.2)
 
 
-def cover_feed(device) -> int:
+def cover_feed(device, *, max_reacts: int | None = None) -> int:
     """Scroll a few posts and react only when Like/Celebrate is obvious."""
     xml = ensure_feed(device)
+    if looks_like_security_wall(xml):
+        log.info("skip feed cover — rate-limit/checkpoint")
+        return 0
     if not looks_like_feed(xml):
         log.info("skip feed cover — not on Home")
         return 0
@@ -180,26 +187,31 @@ def cover_feed(device) -> int:
     if home:
         tap(device, home[0], home[1])
         wait_idle(device, 1.0)
+    cap = 3 if max_reacts is None else max(0, int(max_reacts))
     reacted = 0
     info = device.info
     w, h = int(info["displayWidth"]), int(info["displayHeight"])
-    for _ in range(random.randint(4, 8)):
-        time.sleep(random.uniform(0.8, 2.0))
+    for _ in range(random.randint(4, 7)):
+        time.sleep(random.uniform(1.2, 3.4))
         xml = _dismiss_blocker(device, _xml(device))
+        if looks_like_security_wall(xml):
+            log.info("leave feed cover — rate-limit/checkpoint")
+            break
         if not looks_like_feed(xml):
             xml = ensure_feed(device)
-            if not looks_like_feed(xml):
+            if looks_like_security_wall(xml) or not looks_like_feed(xml):
                 break
         pts = find_reaction_points(xml)
         choice = None
-        if pts.get("celebrate") and random.random() < 0.25:
-            choice = pts["celebrate"]
-        elif pts.get("like"):
-            choice = pts["like"]
+        if reacted < cap and random.random() >= 0.45:
+            if pts.get("celebrate") and random.random() < 0.2:
+                choice = pts["celebrate"]
+            elif pts.get("like"):
+                choice = pts["like"]
         if choice:
             tap(device, choice[0], choice[1])
             reacted += 1
-            time.sleep(random.uniform(0.4, 1.1))
+            time.sleep(random.uniform(0.8, 2.0))
         try:
             device.swipe(w // 2, int(h * 0.72), w // 2, int(h * 0.32), 0.45)
         except Exception:
@@ -239,6 +251,7 @@ def _store_hit(
             last_from=last_from,
             last_text=last_text,
             profile_url=profile_url,
+            phone_id=phone_id,
         )
         extra = profile or {}
         if extra.get("headline") or extra.get("verified"):
@@ -364,6 +377,57 @@ def tracked_thread_names(conn, phone_id: str) -> set[str]:
     }
 
 
+def inbox_state_for_scan(conn, phone_id: str) -> dict[str, dict]:
+    """Per-phone inbox memory. Archie/Toby must not share 'already seen' keys."""
+    pid = phone_id or DEFAULT_PHONE_ID
+    stored: dict[str, dict] = {}
+    for row in list_people(conn):
+        if str(row["phone_id"] or DEFAULT_PHONE_ID) != pid:
+            continue
+        stored[str(row["name"]).casefold()] = {
+            "preview": str(row["preview"] or row["last_text"] or ""),
+            "last_text": str(row["last_text"] or ""),
+            "messages": int(row["message_count"] or 0),
+        }
+    return stored
+
+
+def _scroll_filter_bar(device, *, left: bool) -> None:
+    info = device.info
+    w, h = int(info["displayWidth"]), int(info["displayHeight"])
+    y = int(h * 0.22)
+    x1, x2 = int(w * 0.78), int(w * 0.22)
+    if not left:
+        x1, x2 = x2, x1
+    try:
+        device.swipe(x1, y, x2, y, 0.35)
+    except Exception:
+        pass
+    time.sleep(0.5)
+
+
+def _ensure_inbox_folder(device, xml: str, label: str) -> str:
+    """Open Focused/Other. New stranger inbound lives on Other, not Focused."""
+    chip = find_inbox_folder(xml, label)
+    if chip and chip.checked:
+        return xml
+    if chip is None:
+        for left in (True, False, True):
+            _scroll_filter_bar(device, left=left)
+            xml = _xml(device)
+            chip = find_inbox_folder(xml, label)
+            if chip:
+                break
+    if chip is None:
+        log.info("LinkedIn inbox has no %s folder chip", label)
+        return xml
+    if chip.checked:
+        return xml
+    tap(device, chip.x, chip.y)
+    wait_idle(device, 1.2)
+    return _xml(device)
+
+
 def _scroll_inbox(device) -> None:
     info = device.info
     w, h = int(info["displayWidth"]), int(info["displayHeight"])
@@ -442,6 +506,31 @@ def run_seed(cfg: dict | None = None, serial: str | None = None, *, phone_id: st
     return run_backfill(cfg, serial, phone_id=phone_id)
 
 
+def run_feed(cfg: dict | None = None, serial: str | None = None, *, phone_id: str | None = None) -> tuple[bool, str]:
+    """Short Home pass: scroll, like a couple of posts, then leave."""
+    cfg = cfg or load_config()
+    pid = phone_id or str(cfg.get("phone_id") or DEFAULT_PHONE_ID)
+    device, err = _unlock(serial)
+    if device is None:
+        return False, err
+    xml = _xml(device)
+    if looks_like_security_wall(xml):
+        return True, "skipped — rate-limit/checkpoint"
+    xml = ensure_feed(device)
+    if looks_like_security_wall(xml):
+        return True, "skipped — rate-limit/checkpoint"
+    if not looks_like_feed(xml):
+        return True, "skipped — LinkedIn Home did not open"
+    time.sleep(random.uniform(1.6, 4.2))
+    reacted = cover_feed(device, max_reacts=random.randint(1, 3))
+    try:
+        device.press("home")
+    except Exception:
+        pass
+    log.info("%s feed react done — %s", pid, reacted)
+    return True, f"scrolled feed, reactions {reacted}"
+
+
 def run_scan(cfg: dict | None = None, serial: str | None = None, *, phone_id: str | None = None) -> tuple[bool, str]:
     from src.phone_queue import check_cancel
 
@@ -450,38 +539,57 @@ def run_scan(cfg: dict | None = None, serial: str | None = None, *, phone_id: st
     device, err = _unlock(serial)
     if device is None:
         return False, err
-    reacted = cover_feed(device)
+    xml = _xml(device)
+    if looks_like_security_wall(xml):
+        return True, "skipped — rate-limit/checkpoint"
     xml = ensure_messaging(device)
-    hits = parse_messaging_list(xml)
+    if looks_like_security_wall(xml):
+        return True, "skipped — rate-limit/checkpoint"
+    if not looks_like_messaging(xml):
+        return False, "could not open LinkedIn Messaging"
     conn = db_connect(db_path_from_config(cfg))
     opened = 0
     listed = 0
+    listed_names: set[str] = set()
     try:
-        from src.phones import phone_scope
-
-        stored = {}
-        with phone_scope(pid):
-            for row in list_people(conn):
-                stored[str(row["name"]).casefold()] = {
-                    "preview": str(row["preview"] or row["last_text"] or ""),
-                    "messages": int(row["message_count"] or 0),
-                }
-        for hit in hits:
+        stored = inbox_state_for_scan(conn, pid)
+        for folder in _INBOX_FOLDERS:
             check_cancel()
-            listed += 1
-            info = stored.get(hit.name.casefold()) or {}
-            empty = int(info.get("messages") or 0) == 0
-            _store_hit(conn, pid, hit.name, hit.preview, "unread" if hit.unread else "", [])
-            if looks_like_inmail_promo(hit.preview):
-                continue
-            if opened >= SCAN_OPEN_CAP:
-                continue
-            if not empty and not should_open_row(hit, info.get("preview")):
-                continue
-            name, msgs, profile = _open_conversation(device, hit)
-            _store_hit(conn, pid, name, hit.preview, "", msgs, profile)
-            opened += 1
-        return True, f"listed {listed}, opened {opened}, feed reactions {reacted}"
+            xml = _ensure_inbox_folder(device, xml, folder)
+            if not looks_like_messaging(xml):
+                xml = ensure_messaging(device)
+                xml = _ensure_inbox_folder(device, xml, folder)
+            for step in range(SCAN_LIST_SCROLLS + 1):
+                check_cancel()
+                if step:
+                    _scroll_inbox(device)
+                    xml = _dismiss_blocker(device, _xml(device))
+                    if not looks_like_messaging(xml):
+                        xml = ensure_messaging(device)
+                        xml = _ensure_inbox_folder(device, xml, folder)
+                for hit in parse_messaging_list(xml):
+                    key = hit.name.casefold()
+                    if not key or key in listed_names:
+                        continue
+                    listed_names.add(key)
+                    listed += 1
+                    info = stored.get(key) or {}
+                    empty = int(info.get("messages") or 0) == 0
+                    _store_hit(conn, pid, hit.name, hit.preview, "unread" if hit.unread else "", [])
+                    if looks_like_inmail_promo(hit.preview):
+                        continue
+                    if opened >= SCAN_OPEN_CAP:
+                        continue
+                    if not empty and not should_open_row(hit, info.get("preview"), info.get("last_text")):
+                        continue
+                    name, msgs, profile = _open_conversation(device, hit)
+                    _store_hit(conn, pid, name, hit.preview, "", msgs, profile)
+                    opened += 1
+                    xml = _xml(device)
+                    if not looks_like_messaging(xml):
+                        xml = ensure_messaging(device)
+                        xml = _ensure_inbox_folder(device, xml, folder)
+        return True, f"listed {listed}, opened {opened}"
     finally:
         conn.close()
 

@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node package="co.hinge.app" class="android.widget.FrameLayout" bounds="[0,0][1080,2400]">
+    <node content-desc="Back" clickable="true" bounds="[10,80][140,180]"/>
+    <node content-desc="Sara, Verified" bounds="[400,90][680,160]"/>
+    <node text="Sara" bounds="[420,100][620,150]"/>
+    <node text="Chat" bounds="[80,190][500,260]"/>
+    <node text="Profile" bounds="[540,190][1000,260]"/>
+    <node content-desc="You: Weird menu item is a loyalty test I respect. Last brave order?" bounds="[80,400][900,520]"/>
+    <node content-desc="Sara: Kimchi sundae. Would do it again." bounds="[80,540][900,660]"/>
+    <node text="Send a message" resource-id="co.hinge.app:id/messageComposition" class="android.widget.EditText" clickable="true" editable="true" bounds="[40,2180][820,2320]"/>
+    <node resource-id="co.hinge.app:id/sendChatButton" content-desc="Send" clickable="true" bounds="[860,2180][1020,2320]"/>
+  </node>
+</hierarchy>

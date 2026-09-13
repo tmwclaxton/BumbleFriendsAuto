@@ -88,7 +88,7 @@ class ParseTests(unittest.TestCase):
 
 class QueueOccupyTests(unittest.TestCase):
     def test_instagram_occupies_both_crons(self):
-        self.assertEqual(job_channel("instagram_prune"), "bumble")
+        self.assertEqual(job_channel("instagram_prune"), "instagram")
         self.assertEqual(job_title({"kind": "instagram_prune"}), "Instagram prune")
         busy = [{"phone_id": "toby", "kind": "instagram_prune", "status": "queued"}]
         with patch("src.phone_queue.queue_snapshot", return_value=busy):
